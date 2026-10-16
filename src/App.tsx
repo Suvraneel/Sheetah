@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getEngine, quoteIdent } from './engine/db'
 import { ACCEPTED, createDemo, ingestFile, listTables, type TableMeta } from './engine/ingest'
 import { CancelledError, cancelRunning, exportResult, rangeStats, runSql, type RangeStats, type ResultSet } from './engine/result'
 import { compose, describeFilter, emptyOps, hasOps, type Filter, type Ops } from './engine/compose'
 import { Grid, type GridHandle, type SelectionInfo } from './grid/Grid'
-import { SqlEditor } from './components/SqlEditor'
+// CodeMirror is only needed in the workspace: load it on demand (and warm it while the landing page is idle).
+const loadEditor = () => import('./components/SqlEditor')
+const SqlEditor = lazy(() => loadEditor().then((m) => ({ default: m.SqlEditor })))
 import { focusEditor, insertIntoEditor } from './components/editorBridge'
 import { Landing } from './components/Landing'
 import { ChartPanel } from './components/ChartPanel'
@@ -47,12 +49,12 @@ interface HistoryItem {
   at: number
   rows: number
 }
-const HISTORY_KEY = 'quarry:history'
-const REMEMBER_KEY = 'quarry:remember-history'
-const KEEP_KEY = 'quarry:keep-tables'
-const EDITOR_KEY = 'quarry:editor-height'
+const HISTORY_KEY = 'sheetah:history'
+const REMEMBER_KEY = 'sheetah:remember-history'
+const KEEP_KEY = 'sheetah:keep-tables'
+const EDITOR_KEY = 'sheetah:editor-height'
 const editorElement = () => document.getElementById('sql-editor')
-const STARTERS_KEY = 'quarry:starters'
+const STARTERS_KEY = 'sheetah:starters'
 /** What a snapshot on disk corresponds to: row count + schema. A mutating query marks it 'dirty'. */
 const signature = (t: TableMeta) => `${t.rows}|${t.columns.map((c) => `${c.name}:${c.type}`).join(',')}`
 const store = {
@@ -99,7 +101,8 @@ export default function App() {
   const [menu, setMenu] = useState<{ col: number; anchor: DOMRect } | null>(null)
   const [adding, setAdding] = useState(false)
   const [sel, setSel] = useState<SelectionInfo | null>(null)
-  const [stats, setStats] = useState<RangeStats | null>(null)
+  // Range stats are kept with the selection and result they were computed for, so a stale answer never shows.
+  const [statsFor, setStatsFor] = useState<{ sel: SelectionInfo; result: ResultSet; stats: RangeStats | null } | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [tab, setTab] = useState<'tables' | 'saved' | 'history'>('tables')
   const [view, setView] = useState<'grid' | 'chart'>('grid')
@@ -119,7 +122,8 @@ export default function App() {
   })
   const editorShell = useRef<HTMLElement>(null)
   // Phones: the sidebar becomes a bottom sheet and the SQL editor collapses to one line.
-  const isPhone = useMediaQuery('(max-width: 767px)')
+  // Same condition as the phone rules in index.css: narrow screens, or short touch screens (landscape).
+  const isPhone = useMediaQuery('(max-width: 767px), (max-height: 500px) and (pointer: coarse)')
   const [sheetOpen, setSheetOpen] = useState(false)
   if (!isPhone && sheetOpen) setSheetOpen(false) // leaving phone width ends the sheet (state adjusted during render)
   const sheet = isPhone && sheetOpen
@@ -161,7 +165,7 @@ export default function App() {
       .then(() => setReady(true))
       .catch((e) => setError(`The engine couldn’t start: ${e instanceof Error ? e.message : e}`))
     if (import.meta.env.DEV && new URLSearchParams(location.search).has('debug')) {
-      ;(window as unknown as Record<string, unknown>).quarry = { getEngine, runSql, createDemo, listTables }
+      ;(window as unknown as Record<string, unknown>).sheetah = { getEngine, runSql, createDemo, listTables }
     }
   }, [])
 
@@ -397,6 +401,17 @@ export default function App() {
     if (refocus) requestAnimationFrame(() => sheetButton.current?.focus())
   }, [])
 
+  // Fetch the editor chunk in the background, so the workspace opens without waiting for it.
+  useEffect(() => {
+    const warm = () => void loadEditor().catch(() => {})
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(warm, { timeout: 4000 })
+      return () => window.cancelIdleCallback(id)
+    }
+    const t = window.setTimeout(warm, 1500)
+    return () => window.clearTimeout(t)
+  }, [])
+
   // "?" opens the shortcut list, unless the key is being typed into something.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -495,14 +510,16 @@ export default function App() {
 
   // Status-bar math for multi-cell selections, done in SQL so it works on any range size.
   useEffect(() => {
-    setStats(null)
     if (!sel || !result?.table || (sel.r0 === sel.r1 && sel.c0 === sel.c1)) return
     const cols = result.columns.slice(sel.c0, sel.c1 + 1)
     const t = window.setTimeout(() => {
-      rangeStats(result, cols, sel.r0, sel.r1).then(setStats).catch(() => setStats(null))
+      rangeStats(result, cols, sel.r0, sel.r1)
+        .then((stats) => setStatsFor({ sel, result, stats }))
+        .catch(() => {})
     }, 120)
     return () => window.clearTimeout(t)
   }, [sel, result])
+  const stats = statsFor && statsFor.sel === sel && statsFor.result === result ? statsFor.stats : null
 
   const source = useMemo(
     () =>
@@ -519,7 +536,7 @@ export default function App() {
       const blob = await exportResult(result, format, { excelSafe })
       const a = document.createElement('a')
       a.href = URL.createObjectURL(blob)
-      a.download = `quarry-result.${format}`
+      a.download = `sheetah-result.${format}`
       a.click()
       setTimeout(() => URL.revokeObjectURL(a.href), 2000)
       say(`Downloaded ${nf.format(result.rowCount)} rows as ${format.toUpperCase()}${format === 'csv' && !excelSafe ? ' (exact values)' : ''}`)
@@ -593,7 +610,7 @@ export default function App() {
       </a>
       <header className="topbar" inert={sheet || undefined}>
         <span className="brand">
-          <Logo /> <span className="collapse-sm">Quarry</span>
+          <Logo /> <span className="collapse-sm">Sheetah</span>
         </span>
         <button
           ref={sheetButton}
@@ -617,7 +634,7 @@ export default function App() {
               except this site.
             </p>
             <p className="fine">Check it yourself: open DevTools → Network while you work. Nothing goes out.</p>
-            {offlineReady && <p className="fine">Quarry is saved for offline use, so it opens even without internet.</p>}
+            {offlineReady && <p className="fine">Sheetah is saved for offline use, so it opens even without internet.</p>}
           </div>
         </details>
         <span className="spacer" />
@@ -773,7 +790,7 @@ export default function App() {
                         setKeepTables(false)
                         try {
                           Object.keys(localStorage)
-                            .filter((k) => k.startsWith('quarry:') && k !== REMEMBER_KEY && k !== THEME_KEY)
+                            .filter((k) => k.startsWith('sheetah:') && k !== REMEMBER_KEY && k !== THEME_KEY)
                             .forEach((k) => localStorage.removeItem(k))
                         } catch {
                           /* nothing stored */
@@ -781,7 +798,7 @@ export default function App() {
                         setHistory([])
                         setViews([])
                         setConfirmWipe(false)
-                        say('Cleared everything Quarry stored in this browser')
+                        say('Cleared everything Sheetah stored in this browser')
                       }}
                     >
                       Yes, clear
@@ -824,7 +841,7 @@ export default function App() {
       </div>
 
       <main className="main" inert={sheet || undefined}>
-        <h1 className="sr-only">Quarry workspace</h1>
+        <h1 className="sr-only">Sheetah workspace</h1>
         <section
           ref={editorShell}
           className={`shell editor-shell${sqlPeek ? ' is-peek' : ''}`}
@@ -848,7 +865,9 @@ export default function App() {
                 </span>
               </button>
             )}
-            <SqlEditor id="sql-editor" value={editor} onChange={setEditor} onRun={runEditor} tables={tables} />
+            <Suspense fallback={<div className="editor editor-loading" id="sql-editor" aria-busy="true" />}>
+              <SqlEditor id="sql-editor" value={editor} onChange={setEditor} onRun={runEditor} tables={tables} />
+            </Suspense>
             <div className="run-bar">
               <button className="btn btn-ghost btn-sm" onClick={() => setSaving(true)} disabled={!editor.trim()}>
                 <Icon name="bookmark" /> <span className="collapse-sm">Save view</span>

@@ -154,7 +154,7 @@ export function SharedQueryDialog({
             <span className="eyebrow">Shared query</span>
             <h2 id="shared-title">Someone shared a query</h2>
             <p className="muted">
-              Review it before running. It works on the files you open here, and Quarry’s engine can’t send your data anywhere,
+              Review it before running. It works on the files you open here, and Sheetah’s engine can’t send your data anywhere,
               even if the query tries.
             </p>
             <pre className="sql-preview tall">{sql}</pre>

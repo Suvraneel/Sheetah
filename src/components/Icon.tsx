@@ -66,7 +66,10 @@ export function Logo({ size = 22 }: { size?: number }) {
     <svg className="logo" width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
       <rect x="3.5" y="3.5" width="17" height="17" rx="5" stroke="currentColor" strokeWidth="1.25" />
       <path d="M3.5 9.5h17M9.5 9.5v11" stroke="currentColor" strokeWidth="1.25" opacity="0.55" />
-      <circle cx="15" cy="15" r="2.2" fill="currentColor" />
+      {/* Cheetah spots on a sheet */}
+      <circle cx="13.4" cy="13.6" r="1.55" fill="currentColor" />
+      <circle cx="17.4" cy="14.9" r="1.1" fill="currentColor" />
+      <circle cx="14.9" cy="17.7" r="1.2" fill="currentColor" />
     </svg>
   )
 }

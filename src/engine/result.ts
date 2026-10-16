@@ -87,16 +87,22 @@ function tableToRows(table: Table): { columns: ColumnInfo[]; rows: Row[] } {
     const v = table.getChildAt(i)
     return v ? Array.from(v as Iterable<unknown>) : []
   })
+  const kinds = columns.map((c) => (/^Date/i.test(c.type) ? 'date' : /^Timestamp/i.test(c.type) ? 'ts' : null))
   const rows: Row[] = []
   for (let r = 0; r < table.numRows; r++) {
-    rows.push(cols.map((c) => formatValue(c[r])))
+    rows.push(cols.map((c, i) => formatValue(c[r], kinds[i])))
   }
   return { columns, rows }
 }
 
-function formatValue(v: unknown): string | null {
+/** Arrow hands dates and timestamps over as epoch milliseconds; show them the way the grid does. */
+function formatValue(v: unknown, kind: 'date' | 'ts' | null = null): string | null {
   if (v === null || v === undefined) return null
-  if (v instanceof Date) return v.toISOString().replace('T', ' ').replace('.000Z', '')
+  if (kind && (typeof v === 'number' || typeof v === 'bigint')) v = new Date(Number(v))
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    const iso = v.toISOString()
+    return kind === 'date' ? iso.slice(0, 10) : iso.replace('T', ' ').replace(/\.000Z$|Z$/, '')
+  }
   if (typeof v === 'object') return JSON.stringify(v, (_, x) => (typeof x === 'bigint' ? x.toString() : x))
   return String(v)
 }
@@ -121,7 +127,8 @@ export async function runSql(sql: string): Promise<ResultSet> {
 
   try {
     // send() (not query()) so the statement can be interrupted with cancelRunning().
-    await conn.send(`CREATE OR REPLACE TEMP TABLE ${table} AS SELECT * FROM (${last})`)
+    // The newline keeps a trailing "-- comment" from swallowing the closing parenthesis.
+    await conn.send(`CREATE OR REPLACE TEMP TABLE ${table} AS SELECT * FROM (${last}\n)`)
   } catch (e) {
     if (isCancel(e)) throw new CancelledError()
     // Not a query (CREATE / INSERT / PRAGMA …) or a genuine error: run it as written so
@@ -248,7 +255,7 @@ export async function profileColumn(result: ResultSet, column: ColumnInfo): Prom
   const c = quoteIdent(column.name)
   const stats = (
     await conn.query(`SELECT count(${c})::DOUBLE AS non_null, (count(*) - count(${c}))::DOUBLE AS nulls,
-      approx_count_distinct(${c})::DOUBLE AS distinct_n, min(${c})::VARCHAR AS min, max(${c})::VARCHAR AS max
+      least(approx_count_distinct(${c}), count(${c}))::DOUBLE AS distinct_n /* the estimate can overshoot */, min(${c})::VARCHAR AS min, max(${c})::VARCHAR AS max
       ${column.numeric ? `, avg(${c})::DOUBLE AS avg` : ''} FROM ${result.table}`)
   ).toArray()[0]?.toJSON() as Record<string, unknown>
   const top = (

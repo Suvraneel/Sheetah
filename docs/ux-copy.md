@@ -1,4 +1,4 @@
-## UX copy review: Quarry
+## UX copy review: Sheetah
 
 | Element | Before | After | Why |
 |---|---|---|---|

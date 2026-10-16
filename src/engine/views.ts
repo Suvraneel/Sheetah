@@ -13,7 +13,7 @@ export interface SavedView {
   lastRunAt?: number
 }
 
-const KEY = 'quarry:views'
+const KEY = 'sheetah:views'
 
 export function loadViews(): SavedView[] {
   try {

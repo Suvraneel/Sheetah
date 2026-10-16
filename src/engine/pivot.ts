@@ -1,5 +1,5 @@
 import { getEngine, quoteIdent, quoteLiteral } from './db'
-import { AGGS, isTemporal, sourceCte, type Agg } from './chart'
+import { AGGS, isTemporal, sourceCte, timeExpr, type Agg } from './chart'
 import type { ColumnInfo } from './result'
 
 /*
@@ -54,7 +54,7 @@ const byName = (cols: ColumnInfo[], name: string) => cols.find((c) => c.name ===
 function fieldExpr(f: Field, cols: ColumnInfo[]) {
   const col = byName(cols, f.column)
   const q = quoteIdent(f.column)
-  return col && isTemporal(col) && f.grain !== 'none' ? `date_trunc('${f.grain}', ${q})::DATE` : q
+  return col && isTemporal(col) && f.grain !== 'none' ? `date_trunc('${f.grain}', ${timeExpr(col)})::DATE` : q
 }
 const fieldAlias = (f: Field) => (f.grain === 'none' ? f.column : `${f.column} (${f.grain})`)
 

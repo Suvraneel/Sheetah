@@ -42,6 +42,14 @@ export interface ChartData {
 
 const TEMPORAL = /^(DATE|TIMESTAMP)/i
 export const isTemporal = (c: ColumnInfo) => TEMPORAL.test(c.type)
+/** TIMESTAMP WITH TIME ZONE. */
+export const isZoned = (c: ColumnInfo) => /WITH TIME ZONE|TIMESTAMPTZ/i.test(c.type)
+/**
+ * A time column as an expression date math can use. Time-zone-aware values are read as UTC wall
+ * time: date_trunc, epoch and friends on TIMESTAMPTZ need DuckDB's ICU extension (6.4 MB), which
+ * the sealed engine doesn't ship, while the cast to TIMESTAMP is core. The grid already shows UTC.
+ */
+export const timeExpr = (c: ColumnInfo) => (isZoned(c) ? `${quoteIdent(c.name)}::TIMESTAMP` : quoteIdent(c.name))
 export const TOP_N = 20
 const BINS = 20
 
@@ -77,7 +85,7 @@ async function rows(sql: string) {
   return (await conn.query(sql)).toArray().map((r) => r.toJSON() as Record<string, unknown>)
 }
 
-const GRAINS = ['hour', 'day', 'week', 'month'] as const
+const GRAINS = ['hour', 'day', 'week', 'month', 'quarter', 'year'] as const
 type Grain = (typeof GRAINS)[number]
 
 /**
@@ -87,7 +95,8 @@ type Grain = (typeof GRAINS)[number]
  */
 function pickBucket(spanSeconds: number, isDate: boolean, dataGrain: Grain | null): Grain {
   const day = 86_400
-  const bySpan: Grain = spanSeconds > 3 * 365 * day ? 'month' : spanSeconds > 120 * day ? 'week' : spanSeconds > 2 * day || isDate ? 'day' : 'hour'
+  const bySpan: Grain =
+    spanSeconds > 20 * 365 * day ? 'year' : spanSeconds > 3 * 365 * day ? 'month' : spanSeconds > 120 * day ? 'week' : spanSeconds > 2 * day || isDate ? 'day' : 'hour'
   return dataGrain && GRAINS.indexOf(dataGrain) > GRAINS.indexOf(bySpan) ? dataGrain : bySpan
 }
 
@@ -110,17 +119,20 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
   }
 
   if (isTemporal(col)) {
+    const t = timeExpr(col)
     // One pass: the span, and the coarsest grain every value already sits on.
     const [span] = await rows(
-      `SELECT (epoch(max(${x})) - epoch(min(${x})))::DOUBLE AS s,
-        bool_and(${x} = date_trunc('month', ${x})) AS m,
-        bool_and(${x} = date_trunc('week', ${x})) AS w,
-        bool_and(${x} = date_trunc('day', ${x})) AS d
+      `SELECT (epoch(max(${t})) - epoch(min(${t})))::DOUBLE AS s,
+        bool_and(${t} = date_trunc('year', ${t})) AS y,
+        bool_and(${t} = date_trunc('quarter', ${t})) AS q,
+        bool_and(${t} = date_trunc('month', ${t})) AS m,
+        bool_and(${t} = date_trunc('week', ${t})) AS w,
+        bool_and(${t} = date_trunc('day', ${t})) AS d
       FROM ${result.table} WHERE ${x} IS NOT NULL`,
     )
-    const grain: Grain | null = span?.m ? 'month' : span?.w ? 'week' : span?.d ? 'day' : null
+    const grain: Grain | null = span?.y ? 'year' : span?.q ? 'quarter' : span?.m ? 'month' : span?.w ? 'week' : span?.d ? 'day' : null
     const bucket = pickBucket(Number(span?.s ?? 0), /^DATE$/i.test(col.type), grain)
-    const label = bucket === 'hour' ? `strftime(date_trunc('hour', ${x}), '%Y-%m-%d %H:00')` : `date_trunc('${bucket}', ${x})::DATE::VARCHAR`
+    const label = bucket === 'hour' ? `strftime(date_trunc('hour', ${t}), '%Y-%m-%d %H:00')` : `date_trunc('${bucket}', ${t})::DATE::VARCHAR`
     const body = (from: string) =>
       `SELECT ${label} AS ${quoteIdent(`${bucket}`)}, ${value}::DOUBLE AS value FROM ${from} WHERE ${x} IS NOT NULL GROUP BY 1 ORDER BY 1`
     const data = await rows(`${body(result.table)} LIMIT 5000`)
@@ -129,7 +141,7 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
       bucket,
       points: data.map((r) => ({ label: String(r[bucket]), value: Number(r.value) })),
       groups: data.length,
-      title: `${measureLabel(spec)} by ${bucket}`,
+      title: `${measureLabel(spec)} by ${bucket}${isZoned(col) ? ' (UTC)' : ''}`,
       sql: `${sourceCte(result)}${body('q')}`,
     }
   }

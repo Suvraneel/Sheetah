@@ -18,7 +18,7 @@ export function Landing({ ready, offlineReady, busy, sharedSql, onPick, onDemo }
     <div className="landing">
       <header className="land-nav">
         <span className="brand">
-          <Logo /> Quarry
+          <Logo /> Sheetah
         </span>
         <span className={`engine-pill${ready ? ' is-ready' : ''}`} role="status">
           <span className="dot" aria-hidden />
@@ -47,7 +47,7 @@ export function Landing({ ready, offlineReady, busy, sharedSql, onPick, onDemo }
             Open the <span className="hl">whole</span> file.
           </h1>
           <p className="lede">
-            Scroll millions of rows like a spreadsheet, then ask anything in SQL. Quarry runs DuckDB inside this tab,
+            Scroll millions of rows like a spreadsheet, then ask anything in SQL. Sheetah runs DuckDB inside this tab,
             so your data never leaves your computer.
           </p>
         </Reveal>
@@ -75,7 +75,7 @@ export function Landing({ ready, offlineReady, busy, sharedSql, onPick, onDemo }
           <div className="hero-ctas">
             <p className="stat">
               <span className="stat-num">1,048,576</span>
-              <span className="stat-cap">rows is where Excel stops. Quarry keeps scrolling.</span>
+              <span className="stat-cap">rows is where Excel stops. Sheetah keeps scrolling.</span>
             </p>
             <button className="btn btn-primary" onClick={onDemo} disabled={!!busy}>
               Try 1,000,000 sample rows
@@ -105,7 +105,7 @@ export function Landing({ ready, offlineReady, busy, sharedSql, onPick, onDemo }
           <Reveal className="b-a">
             <Feature title="Smooth at a million rows" big visual={<GridSketch />}>
               A canvas grid draws only what’s on screen and pulls rows from DuckDB as you scroll. Excel stops at
-              1,048,576 rows. Quarry doesn’t.
+              1,048,576 rows. Sheetah doesn’t.
             </Feature>
           </Reveal>
           <Reveal className="b-b" delay={80}>
@@ -136,7 +136,7 @@ export function Landing({ ready, offlineReady, busy, sharedSql, onPick, onDemo }
 
       <footer className="land-foot">
         <span>
-          <Logo size={16} /> Quarry
+          <Logo size={16} /> Sheetah
         </span>
         <span>Built with DuckDB-WASM. A static site: no server ever sees your data.</span>
       </footer>

@@ -1,6 +1,6 @@
 /** Colour theme preference; applied by public/theme.js (which also runs before first paint). */
 export type ThemePref = 'system' | 'light' | 'dark'
-export const THEME_KEY = 'quarry:theme'
+export const THEME_KEY = 'sheetah:theme'
 
 export function getThemePref(): ThemePref {
   try {
@@ -20,5 +20,5 @@ export function setThemePref(pref: ThemePref) {
     // Storage blocked: remember it for this page, where theme.js looks next.
     document.documentElement.dataset.themePref = pref
   }
-  window.dispatchEvent(new Event('quarry:theme'))
+  window.dispatchEvent(new Event('sheetah:theme'))
 }

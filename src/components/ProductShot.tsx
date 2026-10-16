@@ -46,12 +46,12 @@ export function ProductShot() {
       <div
         className="shell shot-frame"
         role="img"
-        aria-label={`The Quarry workspace: a SQL query over the 1,000,000-row sample returns ${ROW_COUNT} rows in ${ELAPSED}; six cells of the total column are selected and the status bar shows their count, sum and average.`}
+        aria-label={`The Sheetah workspace: a SQL query over the 1,000,000-row sample returns ${ROW_COUNT} rows in ${ELAPSED}; six cells of the total column are selected and the status bar shows their count, sum and average.`}
       >
         <div className="core pv" aria-hidden>
           <div className="pv-top">
             <span className="pv-brand">
-              <Logo size={16} /> Quarry
+              <Logo size={16} /> Sheetah
             </span>
             <span className="pv-lock">
               <Icon name="lock" size={11} /> Network locked

@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Quarry · "Soft Structuralism" (light) / graphite (dark)
+   Sheetah · "Soft Structuralism" (light) / graphite (dark)
    Landing: massive type + asymmetrical bento. Workspace: double-bezel panels.
    ========================================================================== */
 
@@ -837,6 +837,7 @@ h1, h2, h3 { margin: 0; }
 /* The editor fits its query: 3 to 8 lines, then scrolls. A dragged height (--editor-h) pins it. */
 .editor .cm-scroller { min-height: var(--editor-h, 98px); max-height: var(--editor-h, 214px); overflow: auto; }
 /* Not being edited: hold the current height (see SqlEditor's setFrozen) */
+.editor-loading { min-height: var(--editor-h, 98px); } /* reserve the pinned height too: no jump when the editor arrives */
 .editor.is-frozen .cm-scroller { min-height: var(--editor-h, var(--editor-freeze)); max-height: var(--editor-h, var(--editor-freeze)); }
 
 /* Splitter: a grip in the gap below the editor, with a generous invisible hit area */
@@ -1244,7 +1245,7 @@ kbd {
 .starters-close:hover { color: var(--text); background: var(--surface); box-shadow: 0 0 0 1px var(--hair); }
 
 /* ---------- Shortcut sheet ---------- */
-.modal-wrap-wide { width: min(720px, 100%); }
+.modal-wrap.modal-wrap-wide { width: min(760px, 100%); }
 .keys { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto 1fr; gap: 8px 28px; margin-top: 18px; }
 .keys-group:nth-child(2) { grid-row: span 2; }
 .keys-group dl { margin: 0; }
@@ -1298,7 +1299,8 @@ kbd {
   .main { min-height: 75dvh; }
   .grid-shell { min-height: 260px; }
 }
-@media (max-width: 767px) {
+/* Phones, including landscape (short touch screens) */
+@media (max-width: 767px), (max-height: 500px) and (pointer: coarse) {
   .landing { padding: 0 16px; }
   .land-nav { width: auto; margin: 12px 0 0; }
   .engine-pill { font-size: 11.5px; }
@@ -1434,7 +1436,7 @@ kbd {
 .history-controls .fine { margin: 0 0 0 22px; font-size: 12px; line-height: 1.45; color: var(--faint); }
 .wipe-confirm { font-size: 12.5px; color: var(--danger); }
 .danger-link { color: var(--danger) !important; font-weight: 600; }
-@media (max-width: 767px) {
+@media (max-width: 767px), (max-height: 500px) and (pointer: coarse) {
   .netlock-panel { position: fixed; left: 12px; right: 12px; top: 64px; width: auto; }
 }
 

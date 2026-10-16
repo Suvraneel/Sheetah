@@ -1,9 +1,10 @@
 /*
- * Quarry service worker: makes the whole app (UI, DuckDB engine, extensions) available offline after
+ * Sheetah service worker: makes the whole app (UI, DuckDB engine, extensions) available offline after
  * the first visit. It only ever talks to this origin. The list of files comes from
  * precache-manifest.json, generated at build time (see vite.config.ts).
  */
-const PREFIX = 'quarry-'
+const PREFIX = 'sheetah-'
+const LEGACY_PREFIX = 'quarry-' // caches from before the rebrand to Sheetah
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -20,7 +21,7 @@ self.addEventListener('install', (event) => {
           /* optional asset (e.g. an extension not in this build) */
         }
       }
-      await cache.put('quarry-version', new Response(version))
+      await cache.put('sheetah-version', new Response(version))
       await self.skipWaiting()
     })(),
   )
@@ -30,7 +31,9 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
       const current = await currentCacheName()
-      for (const key of await caches.keys()) if (key.startsWith(PREFIX) && key !== current) await caches.delete(key)
+      for (const key of await caches.keys()) {
+        if ((key.startsWith(PREFIX) && key !== current) || key.startsWith(LEGACY_PREFIX)) await caches.delete(key)
+      }
       await self.clients.claim()
     })(),
   )
@@ -40,7 +43,7 @@ async function currentCacheName() {
   for (const key of await caches.keys()) {
     if (!key.startsWith(PREFIX)) continue
     const cache = await caches.open(key)
-    if (await cache.match('quarry-version')) return key
+    if (await cache.match('sheetah-version')) return key
   }
   return null
 }

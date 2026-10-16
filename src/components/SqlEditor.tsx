@@ -8,6 +8,7 @@ import { autocompletion, closeBrackets, closeCompletion, completionKeymap } from
 import { tags as t } from '@lezer/highlight'
 import type { TableMeta } from '../engine/ingest'
 import { EDITOR_FIT_MAX, EDITOR_MIN } from './editorSize'
+import { registerEditor } from './editorBridge'
 
 const highlight = HighlightStyle.define([
   { tag: [t.keyword, t.operatorKeyword], color: 'var(--syn-keyword)', fontWeight: '600' },
@@ -111,7 +112,11 @@ export function SqlEditor({ value, onChange, onRun, tables, id }: Props) {
       }),
     })
     setFrozen(view.current, true)
-    return () => view.current?.destroy()
+    registerEditor(view.current)
+    return () => {
+      registerEditor(null)
+      view.current?.destroy()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

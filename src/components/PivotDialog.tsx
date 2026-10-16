@@ -102,7 +102,7 @@ export function PivotDialog({ sourceSql, columns, rowCount, initial, onCreate, o
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="pivot-title" className="modal-wrap">
+      <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="pivot-title" className="modal-wrap modal-wrap-wide">
         <form className="shell modal modal-wide" onSubmit={(e) => void submit(e)}>
           <div className="core">
             <span className="eyebrow">Pivot table</span>

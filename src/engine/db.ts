@@ -13,8 +13,8 @@ export interface Engine {
   sealed: boolean
 }
 
-/** Every file Quarry hands to DuckDB (opened files, sheets, exports) lives under this virtual folder. */
-export const SANDBOX_DIR = '/quarry/'
+/** Every file Sheetah hands to DuckDB (opened files, sheets, exports) lives under this virtual folder. */
+export const SANDBOX_DIR = '/sheetah/'
 
 /** Builds a safe virtual path inside the sandbox folder for a user-supplied name. */
 export const sandboxPath = (name: string) => `${SANDBOX_DIR}${name.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/\.{2,}/g, '_')}`
@@ -66,7 +66,7 @@ export async function ensureExtension(name: 'parquet' | 'json'): Promise<void> {
   const { extensions } = await getEngine()
   if (extensions[name]) return
   throw new Error(
-    `${name === 'parquet' ? 'Parquet' : 'JSON'} support isn’t included in this build. Quarry only runs code served from its own site, so it won’t fetch it from elsewhere. CSV and Excel files work.`,
+    `${name === 'parquet' ? 'Parquet' : 'JSON'} support isn’t included in this build. Sheetah only runs code served from its own site, so it won’t fetch it from elsewhere. CSV and Excel files work.`,
   )
 }
 

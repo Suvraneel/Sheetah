@@ -1,4 +1,4 @@
-// Downloads the DuckDB-WASM extensions Quarry needs (parquet, json) into public/, so the site serves
+// Downloads the DuckDB-WASM extensions Sheetah needs (parquet, json) into public/, so the site serves
 // them itself. The app never fetches code from anywhere else at runtime (the engine is sealed and
 // the CSP only allows this origin), so these files are the only way those formats work.
 //
@@ -8,7 +8,7 @@
 //   2. DuckDB itself refuses extensions without a valid DuckDB signature (allow_unsigned_extensions
 //      is off and the engine's configuration is locked).
 //
-// On CI/Vercel a missing extension fails the build (set QUARRY_ALLOW_MISSING_EXTENSIONS=1 to ship
+// On CI/Vercel a missing extension fails the build (set SHEETAH_ALLOW_MISSING_EXTENSIONS=1 to ship
 // without Parquet/JSON). Locally it just warns.
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -19,7 +19,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const LOCK = join(root, 'scripts/duckdb-extensions.lock.json')
 const EXTENSIONS = ['parquet', 'json']
 const PLATFORM = 'wasm_eh'
-const strict = (process.env.CI || process.env.VERCEL) && !process.env.QUARRY_ALLOW_MISSING_EXTENSIONS
+// QUARRY_ALLOW_MISSING_EXTENSIONS is the pre-rebrand name, still honoured.
+const strict = (process.env.CI || process.env.VERCEL) && !(process.env.SHEETAH_ALLOW_MISSING_EXTENSIONS || process.env.QUARRY_ALLOW_MISSING_EXTENSIONS)
 
 function coreVersion() {
   if (process.env.DUCKDB_VERSION) return process.env.DUCKDB_VERSION
@@ -81,6 +82,6 @@ for (const name of EXTENSIONS) {
 
 if (lockChanged) writeFileSync(LOCK, JSON.stringify(lock, null, 2) + '\n')
 if (failures && strict) {
-  console.error('[extensions] Missing extensions on CI. Set QUARRY_ALLOW_MISSING_EXTENSIONS=1 to deploy without Parquet/JSON.')
+  console.error('[extensions] Missing extensions on CI. Set SHEETAH_ALLOW_MISSING_EXTENSIONS=1 to deploy without Parquet/JSON.')
   process.exit(1)
 }

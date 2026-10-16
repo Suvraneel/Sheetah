@@ -6,13 +6,41 @@ import { getEngine, quoteIdent } from './db'
  * (OPFS), a per-site storage area other sites can't read. It's opt-in and off by default, because it
  * means your data now lives on disk in this browser (not encrypted). "Clear all local data" removes it.
  */
-const DIR = 'quarry-tables'
+const DIR = 'sheetah-tables'
 export const MAX_PERSIST_ROWS = 5_000_000
 
 export const persistSupported = () => typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory
 
+const LEGACY_DIR = 'quarry-tables' // before the rebrand to Sheetah
+let migrated: Promise<void> | null = null
+
+/** Copies snapshots from the pre-rebrand folder into the current one (once), then removes it. */
+function migrateLegacyFolder(root: FileSystemDirectoryHandle) {
+  migrated ??= (async () => {
+    let old: FileSystemDirectoryHandle
+    try {
+      old = await root.getDirectoryHandle(LEGACY_DIR)
+    } catch {
+      return // nothing to carry over
+    }
+    const dir = await root.getDirectoryHandle(DIR, { create: true })
+    for await (const [name, handle] of old as unknown as AsyncIterable<[string, FileSystemHandle]>) {
+      if (handle.kind !== 'file') continue
+      const exists = await dir.getFileHandle(name).then(() => true, () => false)
+      if (exists) continue
+      const file = await (handle as FileSystemFileHandle).getFile()
+      const out = await (await dir.getFileHandle(name, { create: true })).createWritable()
+      await out.write(await file.arrayBuffer())
+      await out.close()
+    }
+    await root.removeEntry(LEGACY_DIR, { recursive: true })
+  })().catch(() => {})
+  return migrated
+}
+
 async function folder(create = true) {
   const root = await navigator.storage.getDirectory()
+  await migrateLegacyFolder(root)
   return root.getDirectoryHandle(DIR, { create })
 }
 
@@ -77,10 +105,7 @@ export async function restoreAll(): Promise<string[]> {
 }
 
 export async function clearSaved(): Promise<void> {
-  try {
-    const root = await navigator.storage.getDirectory()
-    await root.removeEntry(DIR, { recursive: true })
-  } catch {
-    /* nothing saved */
-  }
+  const root = await navigator.storage.getDirectory().catch(() => null)
+  // Both folders: a pre-rebrand one that was never migrated must not come back later.
+  for (const name of [DIR, LEGACY_DIR]) await root?.removeEntry(name, { recursive: true }).catch(() => {})
 }

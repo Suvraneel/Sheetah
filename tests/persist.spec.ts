@@ -6,7 +6,7 @@ import { openDemo, runSql } from './helpers'
 const hasSnapshot = (page: Page, file: string) =>
   page.evaluate(async (f) => {
     try {
-      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('quarry-tables')
+      const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sheetah-tables')
       await dir.getFileHandle(f)
       return true
     } catch {
@@ -14,7 +14,7 @@ const hasSnapshot = (page: Page, file: string) =>
     }
   }, file)
 const hasFolder = (page: Page) =>
-  page.evaluate(() => navigator.storage.getDirectory().then((d) => d.getDirectoryHandle('quarry-tables')).then(() => true, () => false))
+  page.evaluate(() => navigator.storage.getDirectory().then((d) => d.getDirectoryHandle('sheetah-tables')).then(() => true, () => false))
 
 const MIXED = `CREATE TABLE kept AS SELECT
   range AS id,

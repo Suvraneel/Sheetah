@@ -1,9 +1,18 @@
-import { EditorView } from '@codemirror/view'
+import type { EditorView } from '@codemirror/view'
 
-/** Inserts text at the cursor of the (single) editor on the page. */
+/*
+ * The (single) SQL editor registers its view here, so the rest of the app can talk to it without
+ * importing CodeMirror itself. Type-only import: CodeMirror stays in the lazily loaded editor chunk.
+ */
+let current: EditorView | null = null
+
+export function registerEditor(view: EditorView | null) {
+  current = view
+}
+
+/** Inserts text at the cursor of the editor. */
 export function insertIntoEditor(text: string) {
-  const el = document.querySelector('.editor .cm-editor')
-  const v = el ? EditorView.findFromDOM(el as HTMLElement) : null
+  const v = current
   if (!v) return
   const { from, to } = v.state.selection.main
   v.dispatch({ changes: { from, to, insert: text }, selection: { anchor: from + text.length } })
@@ -12,7 +21,5 @@ export function insertIntoEditor(text: string) {
 
 /** Moves keyboard focus into the editor. */
 export function focusEditor() {
-  const el = document.querySelector('.editor .cm-editor')
-  const v = el ? EditorView.findFromDOM(el as HTMLElement) : null
-  v?.focus()
+  current?.focus()
 }

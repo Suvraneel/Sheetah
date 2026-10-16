@@ -1,10 +1,10 @@
-# Quarry
+# Sheetah
 
 **Open the whole file.** A spreadsheet that scrolls millions of rows and speaks SQL, running entirely in your browser.
-Quarry ships DuckDB (compiled to WebAssembly) with the page, so files are read from your disk and never uploaded.
+Sheetah ships DuckDB (compiled to WebAssembly) with the page, so files are read from your disk and never uploaded.
 There is no backend; it deploys as a static site for free.
 
-![Quarry landing](docs/screenshots/landing.png)
+![Sheetah landing](docs/screenshots/landing.png)
 ![Workspace, dark mode, with a selected range](docs/screenshots/workspace-dark.png)
 ![Quick chart: sum of total by category over 1M rows](docs/screenshots/chart.png)
 ![Pivot table builder](docs/screenshots/pivot.png)
@@ -14,7 +14,7 @@ There is no backend; it deploys as a static site for free.
 - **Point-and-click** sort, filter, formula columns and column profiles, each composing readable SQL you can keep editing
 - **Spreadsheet status bar**: select any range for count / sum / average / min / max, computed by SQL so it works on a million rows
 - **Open** CSV, TSV, Excel (.xlsx, every sheet becomes a table), JSON / NDJSON, Parquet, and gzipped CSV; drop several files at once and join them
-- **Saved views**: name a query and re-run it next month; if the file has a new name, Quarry asks which table to point it at and can update the view
+- **Saved views**: name a query and re-run it next month; if the file has a new name, Sheetah asks which table to point it at and can update the view
 - **Pivot tables**: rows, columns (dates by year, quarter, month, week or day), up to three values, totals; the pivot is readable SQL you can edit, chart, save or share
 - **Quick charts**: flip any result to a chart (trend over time, top groups, or a distribution), computed by SQL over every row; "Open as query" turns the chart back into a table
 - **Share a query as a link**: only the SQL travels, inside the URL fragment, so not even the host sees it; links never auto-run
@@ -134,9 +134,9 @@ scripts/
 
 ## Security
 
-Quarry treats every query as untrusted: people paste SQL from the internet. Two independent layers keep data in the tab:
+Sheetah treats every query as untrusted: people paste SQL from the internet. Two independent layers keep data in the tab:
 
-1. **Sealed engine.** Before the app can run anything, DuckDB is restricted to a virtual `/quarry/` folder,
+1. **Sealed engine.** Before the app can run anything, DuckDB is restricted to a virtual `/sheetah/` folder,
    `enable_external_access` is switched off and the configuration is locked. URL reads, `ATTACH`, `COPY TO` a URL,
    remote extensions and path traversal all fail, and SQL can't undo it.
 2. **Content-Security-Policy.** The browser refuses connections to any other origin (`connect-src 'self'`), with no
@@ -151,7 +151,7 @@ threat model.
 
 ## Accessibility
 
-The grid is drawn on a canvas, so Quarry also renders a visually hidden ARIA grid for the visible window (header row plus
+The grid is drawn on a canvas, so Sheetah also renders a visually hidden ARIA grid for the visible window (header row plus
 the rows on screen) and points `aria-activedescendant` at the active cell. Screen readers get real rows, columns, headers,
 sort state and selection, and range totals are announced through a live region. axe-core reports 0 WCAG 2.1 A/AA
 violations on every screen in both themes. The full audit and keyboard map are in [docs/accessibility.md](docs/accessibility.md).

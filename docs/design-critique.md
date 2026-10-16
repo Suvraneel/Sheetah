@@ -1,4 +1,4 @@
-## Design Critique: Quarry (refinement pass)
+## Design Critique: Sheetah (refinement pass)
 
 ### Overall Impression
 The landing reads instantly: one huge promise ("Open the whole file.") and one obvious action. The workspace feels calm

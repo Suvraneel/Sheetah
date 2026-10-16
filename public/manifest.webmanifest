@@ -1,6 +1,6 @@
 {
-  "name": "Quarry",
-  "short_name": "Quarry",
+  "name": "Sheetah",
+  "short_name": "Sheetah",
   "description": "A spreadsheet that opens millions of rows and speaks SQL. Runs entirely on your device.",
   "start_url": "./",
   "scope": "./",

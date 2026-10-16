@@ -5,7 +5,7 @@ import { FIXTURES } from './global-setup'
 export const fixture = (name: string) => join(FIXTURES, name)
 export const committedFixture = (name: string) => join(import.meta.dirname, 'fixtures', name)
 
-/** Opens Quarry and waits until the sealed engine is ready. */
+/** Opens Sheetah and waits until the sealed engine is ready. */
 export async function openApp(page: Page, path = '/') {
   await page.goto(path)
   await expect(page.locator('.engine-pill.is-ready')).toBeVisible({ timeout: 90_000 })

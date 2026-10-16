@@ -7,7 +7,7 @@
 People hit a wall when a CSV outgrows the spreadsheet they already know: Excel truncates at 1,048,576 rows and Google Sheets
 rejects large imports and slows down long before its limits. The usual escape hatches (Python, paid big-data spreadsheets,
 uploading to a cloud tool) add setup, cost, or a privacy problem. Browser-native DuckDB has made "real SQL on a local file,
-nothing uploaded" possible, and several tools now offer it, but they mostly look like developer consoles. The gap Quarry
+nothing uploaded" possible, and several tools now offer it, but they mostly look like developer consoles. The gap Sheetah
 targets: **spreadsheet-feel browsing of millions of rows plus SQL when you need it, with zero install and zero upload.**
 
 ### Key Themes

@@ -42,6 +42,8 @@ function niceDomain(values: number[]): [number, number] {
 const parseTime = (label: string) => Date.parse(label.length > 10 ? label.replace(' ', 'T') + ':00Z' : label + 'T00:00:00Z')
 
 function timeFormat(bucket?: string) {
+  if (bucket === 'year') return (t: number) => String(new Date(t).getUTCFullYear())
+  if (bucket === 'quarter') return (t: number) => `Q${Math.floor(new Date(t).getUTCMonth() / 3) + 1} ${new Date(t).getUTCFullYear()}`
   const opts: Intl.DateTimeFormatOptions =
     bucket === 'month' ? { month: 'short', year: 'numeric' } : bucket === 'hour' ? { hour: '2-digit', minute: '2-digit', hour12: false } : { month: 'short', day: 'numeric' }
   const f = new Intl.DateTimeFormat('en-US', { ...opts, timeZone: 'UTC' })
@@ -148,7 +150,7 @@ export function Chart({ kind, points, label, valueName, bucket, compact }: Props
   const linePath = kind === 'line' ? points.map((p, i) => `${i ? 'L' : 'M'}${sx(times[i])},${sv(p.value)}`).join('') : ''
   const areaPath = kind === 'line' && points.length > 1 ? `${linePath}L${sx(times[times.length - 1])},${sv(0)}L${sx(times[0])},${sv(0)}Z` : ''
   // As many x labels as fit the plot width (month labels like "Sep 2024" need the most room), up to 6.
-  const tickN = Math.min(6, points.length, Math.max(2, Math.floor(iw / (bucket === 'month' ? 68 : bucket === 'hour' ? 44 : 52))))
+  const tickN = Math.min(6, points.length, Math.max(2, Math.floor(iw / (bucket === 'month' || bucket === 'quarter' ? 68 : bucket === 'hour' || bucket === 'year' ? 44 : 52))))
   const xTickIdx = kind === 'line' ? Array.from(new Set(Array.from({ length: tickN }, (_, k) => Math.round((k * (points.length - 1)) / Math.max(1, tickN - 1))))) : []
 
   return (

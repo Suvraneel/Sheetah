@@ -1,4 +1,4 @@
-## Accessibility Audit: Quarry
+## Accessibility Audit: Sheetah
 **Standard:** WCAG 2.1 AA | **Date:** October 2026 | **Method:** axe-core 4 (WCAG 2.0/2.1 A + AA + best practice) on the landing page, workspace, column menu and add-column dialog in light and dark themes; scripted keyboard pass; accessibility-tree inspection; 200% zoom check. No manual VoiceOver/NVDA session yet.
 
 ### Summary

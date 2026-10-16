@@ -19,7 +19,7 @@ const securityHeaders = Object.fromEntries(
 function precacheManifest(): Plugin {
   let outDir = 'dist'
   return {
-    name: 'quarry-precache-manifest',
+    name: 'sheetah-precache-manifest',
     apply: 'build',
     configResolved(c) {
       outDir = c.build.outDir
@@ -51,7 +51,7 @@ function precacheManifest(): Plugin {
 function duckdbWorkerWithoutSourcemap(): Plugin {
   const worker = /[\\/]@duckdb[\\/]duckdb-wasm[\\/]dist[\\/]duckdb-browser-eh\.worker\.js$/
   return {
-    name: 'quarry-duckdb-worker-no-sourcemap',
+    name: 'sheetah-duckdb-worker-no-sourcemap',
     apply: 'serve',
     load(id) {
       const file = id.split('?')[0]
@@ -63,5 +63,20 @@ function duckdbWorkerWithoutSourcemap(): Plugin {
 
 export default defineConfig({
   plugins: [react(), precacheManifest(), duckdbWorkerWithoutSourcemap()],
+  build: {
+    rolldownOptions: {
+      output: {
+        // Long-lived vendor chunks: an app-only deploy doesn't make visitors re-download these.
+        // CodeMirror is split out too, and only loaded with the workspace (see App.tsx).
+        codeSplitting: {
+          groups: [
+            { name: 'duckdb', test: /node_modules[\\/](@duckdb|apache-arrow|flatbuffers|tslib)[\\/]/, priority: 3 },
+            { name: 'codemirror', test: /node_modules[\\/](@codemirror|@lezer|crelt|style-mod|w3c-keyname)[\\/]/, priority: 2 },
+            { name: 'react', test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/, priority: 1 },
+          ],
+        },
+      },
+    },
+  },
   preview: { headers: securityHeaders },
 })

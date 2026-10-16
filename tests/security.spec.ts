@@ -16,7 +16,7 @@ const ATTACKS: [string, string, RegExp][] = [
   ['widen allowed directories', "SET allowed_directories = ['https://']", /locked/],
   ['load a remote extension', "INSTALL httpfs FROM 'https://example.org/ext'; LOAD httpfs", /disabled/],
   ['allow unsigned extensions', 'SET allow_unsigned_extensions = true', /locked/],
-  ['path traversal', "SELECT * FROM read_csv_auto('/quarry/../etc/passwd')", /disabled by configuration/],
+  ['path traversal', "SELECT * FROM read_csv_auto('/sheetah/../etc/passwd')", /disabled by configuration/],
   ['read outside the sandbox', "SELECT * FROM read_text('/etc/hosts')", /disabled by configuration/],
 ]
 

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { openApp, runSql } from './helpers'
 
-test('after one visit, Quarry opens and runs queries with no network', async ({ page, context }) => {
+test('after one visit, Sheetah opens and runs queries with no network', async ({ page, context }) => {
   await openApp(page)
   // Wait until the service worker has precached the app, engine included.
   await expect(page.locator('.engine-pill')).toContainText('works offline', { timeout: 90_000 })
