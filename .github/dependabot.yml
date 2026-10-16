@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      codemirror:
+        patterns: ['@codemirror/*', '@lezer/*']
+    # The engine is security-sensitive: review its upgrades on their own.
+    ignore:
+      - dependency-name: '@duckdb/duckdb-wasm'
+        update-types: ['version-update:semver-patch']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

@@ -1,0 +1,11 @@
+{
+  "name": "Quarry",
+  "short_name": "Quarry",
+  "description": "A spreadsheet that opens millions of rows and speaks SQL. Runs entirely on your device.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#eceef2",
+  "theme_color": "#eceef2",
+  "icons": [{ "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

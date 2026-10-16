@@ -1,0 +1,179 @@
+import { getEngine, quoteIdent } from './db'
+import { splitStatements, type ColumnInfo, type ResultSet } from './result'
+
+/*
+ * Quick charts. Every number is computed by DuckDB over the full result (not a sample), so a chart of
+ * 10M rows costs one GROUP BY. The chart reads one measure on one axis; "Open as query" gives the
+ * table-view twin of any chart as plain SQL.
+ */
+export type Agg = 'count' | 'sum' | 'avg' | 'min' | 'max'
+export const AGGS: { id: Agg; label: string }[] = [
+  { id: 'count', label: 'Count of rows' },
+  { id: 'sum', label: 'Sum' },
+  { id: 'avg', label: 'Average' },
+  { id: 'min', label: 'Minimum' },
+  { id: 'max', label: 'Maximum' },
+]
+
+export interface ChartSpec {
+  x: string
+  y: string | null
+  agg: Agg
+}
+
+export interface Point {
+  label: string
+  value: number
+  /** Bin edges for histograms. */
+  lo?: number
+  hi?: number
+}
+
+export interface ChartData {
+  kind: 'bar' | 'line' | 'hist'
+  points: Point[]
+  /** Distinct groups before the top-N cut (bar charts). */
+  groups: number
+  bucket?: string
+  /** SQL that produces the same numbers, runnable on its own (the table view). */
+  sql: string
+  title: string
+}
+
+const TEMPORAL = /^(DATE|TIMESTAMP)/i
+export const isTemporal = (c: ColumnInfo) => TEMPORAL.test(c.type)
+export const TOP_N = 20
+const BINS = 20
+
+/** Columns that make a sensible x-axis: anything that isn't a plain number. */
+export const xCandidates = (cols: ColumnInfo[]) => cols.filter((c) => !c.numeric && !/\[\]$|^(STRUCT|MAP|BLOB|UNION)/i.test(c.type))
+
+/** A reasonable first chart for a result, or null if nothing is chartable. */
+export function defaultSpec(cols: ColumnInfo[]): ChartSpec | null {
+  const xs = xCandidates(cols)
+  const measures = cols.filter((c) => c.numeric && !/^(id|.*_id|year|month|day)$/i.test(c.name))
+  const y =
+    ['total', 'amount', 'revenue', 'sales', 'value', 'price', 'cost'].map((w) => measures.find((c) => c.name.toLowerCase().includes(w))).find(Boolean) ??
+    measures.find((c) => /^(DOUBLE|FLOAT|REAL|DECIMAL)/i.test(c.type)) ??
+    measures[0] ??
+    cols.find((c) => c.numeric)
+  const x = xs.find(isTemporal) ?? xs[0]
+  if (x) return { x: x.name, y: y?.name ?? null, agg: y ? 'sum' : 'count' }
+  if (y) return { x: y.name, y: null, agg: 'count' } // all numeric: show a distribution
+  return null
+}
+
+const measure = (spec: ChartSpec) => (spec.agg === 'count' || !spec.y ? 'count(*)' : `${spec.agg}(${quoteIdent(spec.y)}::DOUBLE)`)
+const measureLabel = (spec: ChartSpec) => (spec.agg === 'count' || !spec.y ? 'Rows' : `${AGGS.find((a) => a.id === spec.agg)!.label} of ${spec.y}`)
+
+/** The result's own SQL as a CTE, so table-view queries don't depend on the temp table. */
+export function sourceCte(result: Pick<ResultSet, 'sql'>) {
+  const last = splitStatements(result.sql).at(-1) ?? ''
+  return `WITH q AS (\n  ${last.replace(/\n/g, '\n  ')}\n)\n`
+}
+
+async function rows(sql: string) {
+  const { conn } = await getEngine()
+  return (await conn.query(sql)).toArray().map((r) => r.toJSON() as Record<string, unknown>)
+}
+
+const GRAINS = ['hour', 'day', 'week', 'month'] as const
+type Grain = (typeof GRAINS)[number]
+
+/**
+ * Bucket by the span, but never finer than the data already is: values that are all first-of-month
+ * (e.g. a query that already grouped by month) stay monthly instead of being shifted to the Monday
+ * of their week.
+ */
+function pickBucket(spanSeconds: number, isDate: boolean, dataGrain: Grain | null): Grain {
+  const day = 86_400
+  const bySpan: Grain = spanSeconds > 3 * 365 * day ? 'month' : spanSeconds > 120 * day ? 'week' : spanSeconds > 2 * day || isDate ? 'day' : 'hour'
+  return dataGrain && GRAINS.indexOf(dataGrain) > GRAINS.indexOf(bySpan) ? dataGrain : bySpan
+}
+
+export async function chartData(result: ResultSet, spec: ChartSpec): Promise<ChartData | null> {
+  if (!result.table) return null
+  const col = result.columns.find((c) => c.name === spec.x)
+  if (!col) return null
+  const x = quoteIdent(col.name)
+  const value = measure(spec)
+
+  if (col.numeric) {
+    const h = await histogram(result.table, col)
+    return {
+      kind: 'hist',
+      points: h,
+      groups: h.length,
+      title: `Distribution of ${col.name}`,
+      sql: `${sourceCte(result)}SELECT ${x}, count(*) AS rows FROM q GROUP BY 1 ORDER BY 1`,
+    }
+  }
+
+  if (isTemporal(col)) {
+    // One pass: the span, and the coarsest grain every value already sits on.
+    const [span] = await rows(
+      `SELECT (epoch(max(${x})) - epoch(min(${x})))::DOUBLE AS s,
+        bool_and(${x} = date_trunc('month', ${x})) AS m,
+        bool_and(${x} = date_trunc('week', ${x})) AS w,
+        bool_and(${x} = date_trunc('day', ${x})) AS d
+      FROM ${result.table} WHERE ${x} IS NOT NULL`,
+    )
+    const grain: Grain | null = span?.m ? 'month' : span?.w ? 'week' : span?.d ? 'day' : null
+    const bucket = pickBucket(Number(span?.s ?? 0), /^DATE$/i.test(col.type), grain)
+    const label = bucket === 'hour' ? `strftime(date_trunc('hour', ${x}), '%Y-%m-%d %H:00')` : `date_trunc('${bucket}', ${x})::DATE::VARCHAR`
+    const body = (from: string) =>
+      `SELECT ${label} AS ${quoteIdent(`${bucket}`)}, ${value}::DOUBLE AS value FROM ${from} WHERE ${x} IS NOT NULL GROUP BY 1 ORDER BY 1`
+    const data = await rows(`${body(result.table)} LIMIT 5000`)
+    return {
+      kind: 'line',
+      bucket,
+      points: data.map((r) => ({ label: String(r[bucket]), value: Number(r.value) })),
+      groups: data.length,
+      title: `${measureLabel(spec)} by ${bucket}`,
+      sql: `${sourceCte(result)}${body('q')}`,
+    }
+  }
+
+  const body = (from: string) =>
+    `SELECT ${x}::VARCHAR AS ${x}, ${value}::DOUBLE AS value FROM ${from} GROUP BY 1 ORDER BY 2 DESC NULLS LAST, 1`
+  const [data, [count]] = await Promise.all([
+    rows(`${body(result.table)} LIMIT ${TOP_N}`),
+    rows(`SELECT count(DISTINCT ${x})::DOUBLE + max(CASE WHEN ${x} IS NULL THEN 1 ELSE 0 END) AS n FROM ${result.table}`),
+  ])
+  return {
+    kind: 'bar',
+    points: data.map((r) => ({ label: r[col.name] === null ? '(empty)' : String(r[col.name]), value: Number(r.value ?? 0) })),
+    groups: Number(count?.n ?? data.length),
+    title: `${measureLabel(spec)} by ${col.name}`,
+    sql: `${sourceCte(result)}${body('q')}`,
+  }
+}
+
+const INTEGER = /^(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT|U)/i
+
+/** Equal-width histogram of a numeric column (computed in SQL, so it works on any row count). */
+export async function histogram(table: string, col: ColumnInfo): Promise<Point[]> {
+  const c = `${quoteIdent(col.name)}::DOUBLE`
+  const [range] = await rows(`SELECT min(${c}) AS lo, max(${c}) AS hi FROM ${table} WHERE isfinite(${c})`)
+  const lo = range?.lo as number | null
+  const hi = range?.hi as number | null
+  if (lo === null || hi === null || lo === undefined || hi === undefined) return []
+  // Small integer ranges get one bar per value; everything else gets equal-width bins.
+  const intRange = INTEGER.test(col.type) && hi - lo < BINS
+  const bins = intRange ? hi - lo + 1 : hi === lo ? 1 : BINS
+  const width = intRange ? 1 : hi === lo ? 1 : (hi - lo) / bins
+  const counts = await rows(
+    `SELECT least(greatest(floor((${c} - ${lo}) / ${width}), 0), ${bins - 1})::INTEGER AS b, count(*)::DOUBLE AS n
+     FROM ${table} WHERE isfinite(${c}) GROUP BY 1`,
+  )
+  const byBin = new Map(counts.map((r) => [Number(r.b), Number(r.n)]))
+  return Array.from({ length: bins }, (_, i) => {
+    const a = lo + i * width
+    const b = intRange ? a : i === bins - 1 ? hi : a + width
+    return { label: intRange ? fmt(a) : `${fmt(a)} – ${fmt(b)}`, value: byBin.get(i) ?? 0, lo: a, hi: b }
+  })
+}
+
+const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 })
+const plain = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
+export const fmt = (n: number) => (Math.abs(n) >= 10_000 ? compact.format(n) : plain.format(n))
