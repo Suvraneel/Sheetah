@@ -4,12 +4,17 @@
  * would start over from the top. It goes to the control now in that place in the group, else a fallback.
  */
 export function keepFocusIn(group: Element | null, index: number, fallback: () => HTMLElement | null = () => document.querySelector<HTMLElement>('.grid-scroll')) {
-  requestAnimationFrame(() => {
-    const active = document.activeElement
-    if (active && active !== document.body && active.isConnected) return
-    const items = group?.isConnected ? [...group.querySelectorAll<HTMLElement>('button:not([disabled])')] : []
-    ;(items[Math.min(index, items.length - 1)] ?? fallback())?.focus()
-  })
+  // A few frames at most: what takes focus may still be rendering (the grid, after the landing page).
+  const attempt = (left: number) =>
+    requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (active && active !== document.body && active.isConnected) return
+      const items = group?.isConnected ? [...group.querySelectorAll<HTMLElement>('button:not([disabled])')] : []
+      const target = items[Math.min(index, items.length - 1)] ?? fallback()
+      if (target) target.focus()
+      else if (left > 0) attempt(left - 1)
+    })
+  attempt(10)
 }
 
 /** Runs a click's action, then keeps focus in the clicked control's group (see keepFocusIn). */

@@ -5,6 +5,10 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 ## Unreleased
 
 ### Added
+- **Bank statements, signed and checked**: a statement with money in and money out in two columns (Deposit /
+  Withdrawal, Credit / Debit) is offered *Add signed amount*, one column that sums, charts and pivots. With a running
+  balance, each balance is checked against the one before (oldest or newest first): *Checked: every Closing Balance
+  follows from the row above*, or the row where a line is missing or doubled, and by how much.
 - **Undo and redo** for every header action (sort, filters, find, duplicates, clean-up, look-ups, hidden columns):
   ⌘/Ctrl + Z and ⌘/Ctrl + Shift + Z, or the Undo / Redo links. Quick successive clicks build on each other instead
   of the last one silently dropping the one before.
@@ -133,6 +137,8 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   (the crash screen, a part that failed) (`tests/fixtures.ts`), even when what it checked on screen looked right.
 
 ### Changed
+- Three or more columns converted (usually one click on *Convert*) show as one chip, *4 columns converted*, undone
+  together; *Show each* lists them one by one. Six chips on two rows had left a 720px laptop a handful of rows.
 - App.tsx split up: the library tabs (`Library.tsx`), applied steps and suggestions (`StepChips.tsx`,
   `HintChips.tsx`) and the notice stack (`Toasts.tsx`) are components of their own.
 - Usability pass:

@@ -1,8 +1,9 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getEngine, sqlName } from './engine/db'
+import { signedAmount, statementColumns } from './engine/statement'
 import { isNumericType, isTemporal, LOCALE, quoteIdent } from './engine/sql'
 import { ACCEPTED, FileKindError, cancelExcel, createDemo, dateOrders, ingestFile, listTables, type TableMeta } from './engine/ingest'
-import { CancelledError, ambiguousDates, cancelRunning, emptyTextColumns, exportResult, fillDownColumns, holdResult, junkRows, namesRow, rangeStats, rowOf, runSql, splitStatements, textFindings, type RangeStats, type ResultSet } from './engine/result'
+import { CancelledError, ambiguousDates, cancelRunning, colRef, emptyTextColumns, exportResult, fillDownColumns, holdResult, junkRows, namesRow, rangeStats, rowOf, runSql, splitStatements, textFindings, type RangeStats, type ResultSet } from './engine/result'
 import { addFilter, compose, describeFilter, emptyOps, hasOps, onTidiedRows, pickedValues, plainTable, removePick, removePickAll, stepMarks, tidySteps, type Filter, type Ops } from './engine/compose'
 import { addClean, isConversion, percentColumns, type Clean, type DropRows } from './engine/clean'
 import { isLoadFailure } from './engine/load-errors'
@@ -28,10 +29,9 @@ const ChartPanel = lazy(() => loadChartPanel().then((m) => ({ default: m.ChartPa
 const loadUnpivotDialog = () => import('./components/UnpivotDialog')
 const UnpivotDialog = lazy(() => loadUnpivotDialog().then((m) => ({ default: m.UnpivotDialog })))
 import type { Lookup } from './engine/lookup'
-import { stackCandidates } from './engine/stack'
 const loadAnonymizeDialog = () => import('./components/AnonymizeDialog')
 const AnonymizeDialog = lazy(() => loadAnonymizeDialog().then((m) => ({ default: m.AnonymizeDialog })))
-import { changeColumn, changeCounts, compareLayout, likelyPair, similarTable, type CompareSpec } from './engine/compare'
+import type { CompareLayout, CompareSpec } from './engine/compare'
 import type { PivotSpec } from './engine/pivot'
 import type { ColumnInfo } from './engine/result'
 const loadAddColumn = () => import('./components/AddColumn')
@@ -63,7 +63,7 @@ const RemapDialog = lazy(() => loadViewDialogs().then((m) => ({ default: m.Remap
 const SaveViewDialog = lazy(() => loadViewDialogs().then((m) => ({ default: m.SaveViewDialog })))
 const SharedQueryDialog = lazy(() => loadViewDialogs().then((m) => ({ default: m.SharedQueryDialog })))
 import { MAX_PERSIST_ROWS, clearSaved, persistSupported, removeTable, restoreAll, saveTable } from './engine/persist'
-import { exportViews, loadViews, mergeViews, newId, parseViews, referencedTables, remapSteps, remapTables, stepsMake, stepsOf, storeViews, tableBase, viewsThatFit, type SavedView } from './engine/views'
+import { loadViews, newId, referencedTables, remapSteps, remapTables, stepsMake, stepsOf, storeViews, tableBase, viewsThatFit, type SavedView } from './engine/views'
 
 const nf = new Intl.NumberFormat(LOCALE)
 
@@ -91,8 +91,7 @@ interface Step {
 const today = () => new Date().toISOString().slice(0, 10)
 
 /** Which columns of a compare result to colour (see Grid's DiffTones). */
-function tonesFor(columns: ColumnInfo[], spec: CompareSpec): DiffTones | null {
-  const layout = compareLayout(spec)
+function tonesFor(columns: ColumnInfo[], layout: CompareLayout): DiffTones | null {
   const at = (name: string | null) => (name === null ? -1 : columns.findIndex((c) => c.name === name))
   const change = at(layout.change)
   if (change < 0) return null
@@ -234,7 +233,7 @@ export default function App() {
   const [comparing, setComparing] = useState<{ before?: string; after?: string } | null>(null)
   const [stacking, setStacking] = useState<{ around?: string } | null>(null)
   // The compare behind the current result: "Edit compare", and the added/removed/changed counts.
-  const [compareOrigin, setCompareOrigin] = useState<{ spec: CompareSpec; sql: string; counts?: Record<string, number> } | null>(null)
+  const [compareOrigin, setCompareOrigin] = useState<{ spec: CompareSpec; layout: CompareLayout; sql: string; counts?: Record<string, number> } | null>(null)
   // A suggestion with an action ("sales_nov looks like a newer sales_oct · Compare").
   const [anonymizing, setAnonymizing] = useState(false)
   // What scanning a table found, by the query that reads it, offered as quiet chips: personal data (to
@@ -612,6 +611,8 @@ export default function App() {
           keepFocusIn(null, 0)
         }
         // Two versions of the same export side by side: offer to compare them (the newer file is "after").
+        // Loaded only when a file opens (they look the open tables over), not with the page.
+        const [{ similarTable }, { stackCandidates }] = await Promise.all([import('./engine/compare'), import('./engine/stack')])
         const twin = last ? similarTable(last, metas) : null
         const family = last ? stackCandidates(last, metas) : []
         // Next month's export: a saved view made on last month's, with the same columns, can run on it.
@@ -895,6 +896,40 @@ export default function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [undoOps, redoOps, canUndo, canRedo])
+
+  /**
+   * The signed amount (money in less money out) as a column; and, when there's a running balance and
+   * the rows are in their own order, a check that each balance follows from the one before.
+   */
+  const addSignedAmount = async () => {
+    if (!result || !statement || !amountExpr) return
+    const taken = new Set(result.columns.map((c) => c.name.toLowerCase()))
+    const name = ['amount', 'net_amount', 'signed_amount'].find((n) => !taken.has(n)) ?? `amount_${result.columns.length}`
+    const rows = result
+    const inOrder = !ops.sort && !ops.filters.length && !ops.search && !ops.dedupe
+    reveal.current = name
+    applyOps({ ...ops, computed: [...ops.computed.filter((c) => c.name !== name), { name, expr: amountExpr }] })
+    const added = `Added ${name}: ${statement.credit} less ${statement.debit}.`
+    if (!statement.balance || !inOrder || !rows.table) return say(added)
+    const release = holdResult(rows)
+    try {
+      const [{ conn }, { balanceCheckSql, readBalanceCheck }] = await Promise.all([getEngine(), import('./engine/statement-check')])
+      const ref = (n: string) => colRef(rows.columns.find((c) => c.name === n)!)
+      const check = readBalanceCheck((await conn.query(balanceCheckSql(rows.table, { ...statement, balance: statement.balance }, isNum, ref))).toArray()[0]?.toJSON() ?? {})
+      const nearby = check?.order === 'newest first' ? 'below' : 'above'
+      say(
+        !check
+          ? added
+          : check.firstBad
+            ? `${added} The ${statement.balance} on row ${nf.format(check.firstBad.row)} doesn’t follow from the row ${nearby} (off by ${nf.format(Math.abs(check.firstBad.off))}): a line missing or doubled?${check.bad > 1 ? ` ${nf.format(check.bad)} rows don’t follow.` : ''}`
+            : `${added} Checked: every ${statement.balance} follows from the row ${nearby} (${nf.format(check.pairs)} rows).`,
+      )
+    } catch {
+      say(added)
+    } finally {
+      release()
+    }
+  }
 
   /** Applies an error's one-click fix to the SQL on screen and runs it (the fix shows only when it changes something). */
   const fixFor = (fix: import('./engine/errors').Fix | undefined) => (fix && errorsModule && editor.trim() && errorsModule.applyFix(editor, fix) !== editor ? fix : null)
@@ -1422,8 +1457,8 @@ export default function App() {
   const editingPivot = !!pivotOrigin && base.trim() === pivotOrigin.pivotSql.trim()
   const editingCompare = !!compareOrigin && base.trim() === compareOrigin.sql.trim()
   const compareCounts = editingCompare ? compareOrigin!.counts : undefined
-  const diffTones = editingCompare && result ? tonesFor(result.columns, compareOrigin!.spec) : null
-  const changeCol = editingCompare ? changeColumn(compareOrigin!.spec) : 'change'
+  const diffTones = editingCompare && result ? tonesFor(result.columns, compareOrigin!.layout) : null
+  const changeCol = editingCompare ? compareOrigin!.layout.change : 'change'
   const isAnonymized = !!anonSql && base.trim() === anonSql.trim()
   const openName = plainTable(base)?.toLowerCase() ?? null
   // A hint counts while the table is still the one that was scanned (not replaced since, under the same name).
@@ -1453,6 +1488,11 @@ export default function App() {
   const spacesHere = hintFor(spaceHints)?.filter((c) => result?.columns.some((x) => x.name === c) && !ops.clean?.some((x) => x.kind === 'trim' && x.column === c)) ?? []
   // Columns with nothing in them, until they're hidden.
   const emptyHere = hintFor(emptyHints)?.filter((c) => result?.columns.some((x) => x.name === c)) ?? []
+  // A bank statement (money in and out in two columns): offered a signed amount, until it's added.
+  const statement = result && !result.message ? statementColumns(result.columns) : null
+  const isNum = (name: string) => !!result?.columns.find((c) => c.name === name)?.numeric
+  const amountExpr = statement ? signedAmount(statement, isNum) : null
+  const amountHere = statement && !ops.computed.some((c) => c.expr === amountExpr) ? statement : null
   const fillHere = hintFor(fillHints)?.filter((c) => result?.columns.some((x) => x.name === c) && !ops.clean?.some((x) => x.kind === 'filldown' && x.column === c)) ?? []
   const headerNotes = unconverted?.length ? Object.fromEntries(unconverted.map((c) => [c.column, c.kind === 'date' ? 'date as text' : 'number as text'])) : null
   const ofRows = baseRows?.base === base && (shownOps.filters.length || shownOps.search || shownOps.dedupe || shownOps.drop?.length) ? ` of ${nf.format(baseRows.rows)}` : ''
@@ -1580,7 +1620,7 @@ export default function App() {
               onCompare={() => {
                 if (sheet) closeSheet(false)
                 // Opens on the pair worth comparing (the open table's other version, or the most alike).
-                setComparing(likelyPair(tables, openName) ?? {})
+                void import('./engine/compare').then(({ likelyPair }) => setComparing(likelyPair(tables, openName) ?? {}))
               }}
               onStack={() => {
                 if (sheet) closeSheet(false)
@@ -1605,7 +1645,8 @@ export default function App() {
                 const open = tables.find((t) => t.name.toLowerCase() === openName)
                 return open && viewsThatFit([v], open).length ? open.name : null
               }}
-              onExport={() => {
+              onExport={async () => {
+                const { exportViews } = await import('./engine/views-file')
                 const a = document.createElement('a')
                 a.href = URL.createObjectURL(new Blob([exportViews(views)], { type: 'application/json' }))
                 a.download = `sheetah-views-${today()}.json`
@@ -1616,10 +1657,9 @@ export default function App() {
               onImport={(file) => {
                 // Checked before reading: a big file picked by mistake mustn't be loaded whole.
                 if (file.size > 1_000_000) return setError('That file is too big to be a Sheetah views file.')
-                void file
-                  .text()
-                  .then(parseViews)
-                  .then((incoming) => {
+                void Promise.all([file.text(), import('./engine/views-file')])
+                  .then(([text, { parseViews, mergeViews }]) => ({ incoming: parseViews(text), mergeViews }))
+                  .then(({ incoming, mergeViews }) => {
                     const { views: merged, added, skipped } = mergeViews(viewsRef.current, incoming)
                     updateViews(() => merged)
                     const n = (x: number) => `${x} ${x === 1 ? 'view' : 'views'}`
@@ -1839,6 +1879,8 @@ export default function App() {
                 onTrim={(cols) => applyOps(withCleans(cols.map((column): Clean => ({ column, kind: 'trim' })).reduce(addClean, ops.clean ?? [])))}
                 onHideEmpty={(cols) => applyOps({ ...ops, hidden: [...new Set([...(ops.hidden ?? []), ...cols])] })}
                 onFill={(cols) => applyOps(withCleans(cols.map((column): Clean => ({ column, kind: 'filldown' })).reduce(addClean, ops.clean ?? [])))}
+                amount={amountHere}
+                onAmount={() => void addSignedAmount()}
                 series={seriesHere}
                 text={textHere}
                 personal={piiHere}
@@ -1883,6 +1925,7 @@ export default function App() {
                 ops={ops}
                 onApply={applyOps}
                 withoutClean={(i) => withCleans((ops.clean ?? []).filter((_, j) => j !== i))}
+                withoutCleans={(is) => withCleans((ops.clean ?? []).filter((_, j) => !is.includes(j)))}
                 withoutLookup={withoutLookup}
                 canUndo={canUndo}
                 canRedo={canRedo}
@@ -2181,14 +2224,16 @@ export default function App() {
             after={comparing.after}
             initial={editingCompare ? compareOrigin!.spec : undefined}
             onClose={() => setComparing(null)}
-            onCompare={(sql, spec) => {
+            onCompare={async (sql, spec) => {
+              const { compareLayout, changeCounts } = await import('./engine/compare') // loaded with the dialog
+              const layout = compareLayout(spec)
               setComparing(null)
-              setCompareOrigin({ spec, sql })
+              setCompareOrigin({ spec, sql, layout })
               setView('grid')
               setEditor(sql)
               void execute(sql, { base: sql, ops: emptyOps() }).then(async (res) => {
                 if (!res?.table) return
-                const counts = await changeCounts(res.table, changeColumn(spec)).catch(() => ({}) as Record<string, number>)
+                const counts = await changeCounts(res.table, layout.change).catch(() => ({}) as Record<string, number>)
                 setCompareOrigin((o) => (o?.sql === sql ? { ...o, counts } : o))
               })
             }}

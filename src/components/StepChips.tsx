@@ -1,5 +1,6 @@
 import { describeFilter, emptyOps, filterSql, hasOps, type Ops } from '../engine/compose'
-import { cleanExpr, describeClean } from '../engine/clean'
+import { useState } from 'react'
+import { cleanExpr, describeClean, isConversion } from '../engine/clean'
 import { sqlName } from '../engine/sql'
 import { describeLookup } from '../engine/lookup'
 import { thenKeepFocus } from './focus'
@@ -12,6 +13,8 @@ interface Props {
   onApply: (next: Ops) => void
   /** The steps without clean-up step i (and without filters its removal makes meaningless). */
   withoutClean: (i: number) => Ops
+  /** The steps without several clean-up steps at once (a group of conversions). */
+  withoutCleans?: (indices: number[]) => Ops
   /** The steps without look-up i (and without everything that used its columns). */
   withoutLookup: (i: number) => Ops
   canUndo: boolean
@@ -23,7 +26,11 @@ interface Props {
 }
 
 /** The steps applied to the rows on screen, each a chip that removes it; Undo, Redo and Clear all. */
-export function StepChips({ ops, onApply, withoutClean, withoutLookup, canUndo, canRedo, onUndo, onRedo, origin }: Props) {
+export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLookup, canUndo, canRedo, onUndo, onRedo, origin }: Props) {
+  // Three or more columns converted (usually one click on "Convert"): one chip for them, opened on demand.
+  const [open, setOpen] = useState(false)
+  const conversions = (ops.clean ?? []).flatMap((c, i) => (isConversion(c) ? [i] : []))
+  const grouped = !!withoutCleans && conversions.length >= 3 && !open
   return (
     <span className="op-chips">
       {origin && (
@@ -55,12 +62,34 @@ export function StepChips({ ops, onApply, withoutClean, withoutLookup, canUndo, 
           <Icon name="close" size={12} />
         </button>
       )}
-      {ops.clean?.map((c, i) => (
-        <button key={`clean:${i}:${c.column}`} className="op-chip" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply(withoutClean(i)))} title={`Undo this cleaning · ${cleanExpr(c)}`}>
-          <Icon name="spark" size={14} /> {describeClean(c)}
-          <Icon name="close" size={12} />
+      {grouped && (
+        <span className="op-group">
+          <button
+            className="op-chip"
+            onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply(withoutCleans!(conversions)))}
+            title={`Undo these conversions · ${conversions.map((i) => describeClean(ops.clean![i])).join(' · ')}`}
+          >
+            <Icon name="spark" size={14} /> {conversions.length} columns converted
+            <Icon name="close" size={12} />
+          </button>
+          <button className="link-btn op-group-toggle" aria-expanded={false} onClick={() => setOpen(true)}>
+            Show each
+          </button>
+        </span>
+      )}
+      {ops.clean?.map((c, i) =>
+        grouped && conversions.includes(i) ? null : (
+          <button key={`clean:${i}:${c.column}`} className="op-chip" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply(withoutClean(i)))} title={`Undo this cleaning · ${cleanExpr(c)}`}>
+            <Icon name="spark" size={14} /> {describeClean(c)}
+            <Icon name="close" size={12} />
+          </button>
+        ),
+      )}
+      {open && conversions.length >= 3 && (
+        <button className="link-btn op-group-toggle" aria-expanded onClick={() => setOpen(false)}>
+          Group conversions
         </button>
-      ))}
+      )}
       {ops.drop?.map((d, i) => (
         <button
           key={`drop:${i}`}

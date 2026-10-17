@@ -947,6 +947,8 @@ kbd {
 .result-meta { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .result-meta strong { color: var(--text); font-weight: 700; }
 .op-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.op-group { display: inline-flex; align-items: center; gap: 6px; }
+.op-group-toggle { font-size: 12.5px; }
 .hint-chips { display: contents; }
 /* Where derived rows came from: a quiet link-like chip, not an applied step (those are filled). */
 .origin-chip {

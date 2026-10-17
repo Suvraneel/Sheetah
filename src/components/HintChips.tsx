@@ -8,6 +8,9 @@ interface Props {
   onNames?: (row: number) => void
   /** Total lines and empty rows to leave out. */
   junk: DropRows[] | null
+  /** A bank statement's money in and out: to add the signed amount. */
+  amount?: { credit: string; debit: string } | null
+  onAmount?: () => void
   /** Dates the reader read one way (day first, 'dmy') that could be the other: to read the other way. */
   dates?: { columns: string[]; read: 'dmy' | 'mdy' } | null
   onSwapDates?: (columns: string[]) => void
@@ -37,9 +40,9 @@ interface Props {
  * Suggestions from looking the table over, outlined so they never read as applied steps (filled chips),
  * in the order they're best taken: rows that aren't data first, then the layout, then the types.
  */
-export function HintChips({ namesRow, onNames, junk, empty, onHideEmpty, dates, onSwapDates, spaces, onTrim, fill, onFill, series, text, personal, compact, onDrop, onUnpivot, onConvert, onAnonymize }: Props) {
+export function HintChips({ namesRow, onNames, junk, empty, onHideEmpty, amount, onAmount, dates, onSwapDates, spaces, onTrim, fill, onFill, series, text, personal, compact, onDrop, onUnpivot, onConvert, onAnonymize }: Props) {
   const names = typeof namesRow === 'number'
-  if (!names && !junk && !empty && !fill && !series && !text && !dates && !spaces && !personal) return null
+  if (!names && !junk && !empty && !fill && !series && !text && !amount && !dates && !spaces && !personal) return null
   const into = (t: Clean[]) => (t.every((c) => c.kind === 'date') ? 'dates' : t.some((c) => c.kind === 'date') ? 'numbers and dates' : 'numbers')
   return (
     <span className="hint-chips">
@@ -83,6 +86,15 @@ export function HintChips({ namesRow, onNames, junk, empty, onHideEmpty, dates, 
           title={`Stored as text: ${text.map((c) => c.column).join(', ')}. Converting lets them sum, sort and chart as ${into(text)}.`}
         >
           <Icon name="spark" size={13} /> Convert {compact ? '' : `${text.length} text ${text.length === 1 ? 'column' : 'columns'} `}to {into(text)}
+        </button>
+      )}
+      {amount && (
+        <button
+          className="pii-chip"
+          onClick={(e) => thenKeepFocus(e, '.hint-chips', () => onAmount?.())}
+          title={`Money in less money out (${amount.credit} − ${amount.debit}), one number that sums, charts and pivots. A running balance is checked too.`}
+        >
+          <Icon name="plus" size={13} /> Add signed amount ({amount.credit} − {amount.debit})
         </button>
       )}
       {dates && (

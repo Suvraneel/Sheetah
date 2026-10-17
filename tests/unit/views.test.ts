@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
-import { exportViews, mergeViews, parseViews, referencedTables, remapTables, tablesIn, viewsThatFit, type SavedView } from '../../src/engine/views'
+import { referencedTables, remapTables, tablesIn, viewsThatFit, type SavedView } from '../../src/engine/views'
+import { exportViews, mergeViews, parseViews } from '../../src/engine/views-file'
 
 const view = (over: Partial<SavedView>): SavedView => ({ id: 'v', name: 'Tidy', sql: 'SELECT * FROM april', tables: ['april'], savedAt: 1, ...over })
 const cols = (...names: string[]) => names.map((name) => ({ name }))
@@ -79,7 +80,7 @@ test('a views file can’t reach inherited properties or claim tables its SQL do
 })
 
 test('a view keeps the steps it was made of, only while they are exactly its SQL', async () => {
-  const { stepsOf, remapSteps, tableBase, exportViews, parseViews } = await import('../../src/engine/views')
+  const { stepsOf, remapSteps, tableBase } = await import('../../src/engine/views')
   const { compose, emptyOps } = await import('../../src/engine/compose')
   const ops = { ...emptyOps(), drop: [{ label: '1 total line', keep: 'NOT is_total_label(region)' }], clean: [{ column: 'amount', kind: 'number' as const }] }
   const sql = compose(tableBase('sales_april'), ops)

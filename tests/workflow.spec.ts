@@ -342,7 +342,12 @@ test.describe('the messy sample', () => {
     await expect(page.locator('.result-meta')).toContainText('16 of 23 rows')
     await idle(page)
     await page.getByRole('button', { name: /^Convert 4 text columns to numbers and dates/ }).click()
+    // Four columns converted in one click: one chip for them (undone together), each on request.
+    await expect(page.locator('.op-chip', { hasText: '4 columns converted' })).toBeVisible()
+    await page.getByRole('button', { name: 'Show each' }).click()
     await expect(page.locator('.op-chip', { hasText: 'Taxable Value as number' })).toBeVisible()
+    await page.getByRole('button', { name: 'Group conversions' }).click()
+    await expect(page.locator('.op-chip', { hasText: 'Taxable Value as number' })).toHaveCount(0)
     await expect(page.locator('.toast', { hasText: 'Save these steps as a view' })).toBeVisible()
     await idle(page)
     // Names typed with stray spaces (" asha rao ") are offered for tidying too.
@@ -420,5 +425,31 @@ test.describe('column names on a later row', () => {
     await page.mouse.click(box.x + 12, box.y + 44 + 30 + 15) // row 2's number
     await page.locator('.statusbar').getByRole('button', { name: 'Use row 2 as column names' }).click()
     await expect(page.locator('.result-meta')).toContainText('3 rows · 3 columns')
+  })
+})
+
+test.describe('bank statements', () => {
+  test('a statement gets a signed amount, and its balances are checked', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance',
+      '01/04/24,Opening balance,,,"10,000.00"',
+      '02/04/24,UPI to Ravi,500.00,,"9,500.00"',
+      '05/04/24,NEFT from Asha,,"2,000.00","11,500.00"',
+      '09/04/24,ATM,"1,500.00",,"10,000.00"',
+    ].join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('statement.csv', `${csv}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('4 rows')
+    await page.getByRole('button', { name: 'Add signed amount (Deposit Amt. − Withdrawal Amt.)' }).click()
+    await expect(page.locator('.toast', { hasText: 'Checked: every Closing Balance follows from the row above (3 rows).' })).toBeVisible()
+    await expect(page.locator('.sr-grid [role=columnheader]').last()).toContainText('amount')
+    await expect(page.getByRole('button', { name: /^Add signed amount/ })).toHaveCount(0)
+
+    // The same statement with a line missing: the row whose balance doesn't follow is named.
+    const gap = csv.split('\n').filter((l) => !l.includes('UPI to Ravi')).join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('statement_gap.csv', `${gap}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    await page.getByRole('button', { name: /^Add signed amount/ }).click()
+    await expect(page.locator('.toast', { hasText: 'The Closing Balance on row 2 doesn’t follow from the row above (off by 500)' })).toBeVisible()
   })
 })

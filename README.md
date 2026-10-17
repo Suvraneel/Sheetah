@@ -28,6 +28,7 @@ There is no backend; it deploys as a static site for free.
 ### Tidy a messy export
 
 - **Suggestions when a file opens**: total lines and empty rows to leave out (so sums aren't doubled, with a tie-out check that they add up), group names written once per group to fill down, numbers and dates stored as text to convert (their headers say so), names with stray spaces, empty columns, dates the reader may have read the wrong way round, months laid out as columns to turn into rows, the row the column names are really on, personal data to anonymize
+- **Bank statements**: a signed amount from Deposit and Withdrawal columns, and a check that every running balance follows from the row before
 - **Clean a column**: ₹1,200 · 1,00,000 · (250) · 12% · 50,000.00 Cr · 15/08/24 to real numbers and dates, extra spaces, case, fill down, replace a value; codes with leading zeros and phone numbers are never converted
 - **Point-and-click** sort, filter (type-aware: between, at least, doesn't contain, pick values), find in every column (⌘/Ctrl + F), duplicates, hide, formula columns, date parts and split, column profiles; each step is a chip, every one composes readable SQL (and never silently replaces SQL you edited but didn't run), and **undo / redo** (⌘/Ctrl + Z) covers them all
 - **Look up** values from another table (VLOOKUP without the formula), **stack** monthly exports into one, **unpivot** month columns, **compare** two versions of a file; each offered when the files you open call for it
