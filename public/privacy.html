@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Privacy – Sheetah</title>
+    <meta name="description" content="How Sheetah handles your data: files are read in your browser and never uploaded. No accounts, no analytics, no cookies." />
+    <link rel="canonical" href="https://sheetah.vercel.app/privacy.html" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="color-scheme" content="light dark" />
+    <style>
+      :root { --bg: #f6f7f9; --text: #0f1115; --muted: #545a66; --hair: rgb(15 17 21 / 0.1); --accent: #3346ff; color-scheme: light dark; }
+      @media (prefers-color-scheme: dark) { :root { --bg: #0c0d10; --text: #eef0f4; --muted: #a7adb9; --hair: rgb(255 255 255 / 0.12); --accent: #8f9cff; } }
+      body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 system-ui, -apple-system, 'Segoe UI', sans-serif; }
+      main { max-width: 680px; margin: 0 auto; padding: 56px 20px 80px; }
+      h1 { font-size: 2.1rem; letter-spacing: -0.03em; margin: 0 0 8px; }
+      h2 { font-size: 1.15rem; margin: 32px 0 6px; }
+      p, li { color: var(--muted); }
+      strong { color: var(--text); }
+      a { color: var(--accent); }
+      .lede { font-size: 1.1rem; color: var(--text); }
+      footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--hair); font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p><a href="/">← Back to Sheetah</a></p>
+      <h1>Privacy</h1>
+      <p class="lede"><strong>Your files never leave your computer.</strong> Sheetah is a static website: the database engine (DuckDB) is downloaded with the page and runs inside your browser tab.</p>
+
+      <h2>Your files and queries</h2>
+      <p>When you open a file, your browser reads it from your disk and hands it to the engine in the same tab. Nothing is uploaded, and there is no server that could receive it. The engine is sealed so SQL can't reach the internet either, and the page's security policy blocks connections to any other site. You can check this yourself in your browser's developer tools (Network tab).</p>
+
+      <h2>What is stored in your browser</h2>
+      <ul>
+        <li><strong>Query history</strong> (optional, on by default; switch it off under History).</li>
+        <li><strong>Saved views</strong>: the SQL of queries you save.</li>
+        <li><strong>Kept tables</strong>, only if you turn on "Keep my tables in this browser". They are stored unencrypted in this site's private browser storage.</li>
+        <li>Settings such as the colour theme and editor height.</li>
+      </ul>
+      <p>"Clear all local data" (under History) deletes all of it. Clearing this site's data in your browser settings does too.</p>
+
+      <h2>Share links</h2>
+      <p>A share link contains only SQL, compressed into the part of the address after <code>#</code>. Browsers never send that part to a server, so even the host doesn't see shared queries. Links never run on their own: Sheetah shows the query for review first.</p>
+
+      <h2>No accounts, analytics or cookies</h2>
+      <p>Sheetah has no sign-in, no tracking or analytics scripts, no advertising and no cookies. It doesn't report errors anywhere.</p>
+
+      <h2>The host</h2>
+      <p>The site is served by Vercel, which, like any web host, keeps standard access logs (such as IP address, time and the page requested) for operating and protecting its service. Those logs never include your files or queries. See <a href="https://vercel.com/legal/privacy-policy" rel="noreferrer">Vercel's privacy policy</a>.</p>
+
+      <footer>Questions? <a href="https://github.com/Suvraneel/Sheetah/issues" rel="noreferrer">Open an issue on GitHub</a>.</footer>
+    </main>
+  </body>
+</html>

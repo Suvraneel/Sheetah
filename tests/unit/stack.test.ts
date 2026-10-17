@@ -1,0 +1,53 @@
+import { expect, test } from '@playwright/test'
+import type { TableColumns } from '../../src/engine/compare-sql'
+import { sourceName, stackCandidates, stackReport, stackSql } from '../../src/engine/stack'
+import { q } from './duck'
+
+async function table(name: string, sql: string): Promise<TableColumns> {
+  await q(`CREATE OR REPLACE TABLE "${name}" AS ${sql}`)
+  const cols = await q(`SELECT column_name AS name, data_type AS type FROM information_schema.columns WHERE table_name = '${name}' ORDER BY ordinal_position`)
+  return { name, columns: cols.map((c) => ({ name: String(c.name), type: String(c.type) })) }
+}
+
+test.describe('stack tables (run on DuckDB)', () => {
+  test('rows from every table, matched by column name, with where each came from', async () => {
+    const jan = await table('sales jan', `SELECT * FROM (VALUES (1, 'Pune', 10.5::DOUBLE)) t(id, city, amount)`)
+    const feb = await table('sales feb', `SELECT * FROM (VALUES ('Goa', 2, 7)) t(city, id, amount)`) // other order, int amount
+    const mar = await table('sales mar', `SELECT * FROM (VALUES (3, 'Agra', 1::DOUBLE, 'web')) t(id, city, amount, channel)`) // extra column
+    const all = [jan, feb, mar]
+    const sql = stackSql({ tables: ['sales jan', 'sales feb', 'sales mar'], source: sourceName(all) }, all)
+    expect(sql).toContain('UNION ALL BY NAME')
+    const rows = await q(`${sql}\nORDER BY id`)
+    expect(rows).toEqual([
+      { source: 'sales jan', id: 1, city: 'Pune', amount: 10.5, channel: null },
+      { source: 'sales feb', id: 2, city: 'Goa', amount: 7, channel: null },
+      { source: 'sales mar', id: 3, city: 'Agra', amount: 1, channel: 'web' },
+    ])
+    expect(stackReport(all)).toEqual({ partial: ['channel'], asText: [], columns: 4 })
+  })
+
+  test('a column that is a date in one file and text in another is stacked as text', async () => {
+    const a = await table('a1', `SELECT DATE '2024-01-05' AS day, 1 AS n`)
+    const b = await table('b1', `SELECT '05/02/2024' AS day, 2 AS n`)
+    const rows = await q(stackSql({ tables: ['a1', 'b1'], source: null }, [a, b]))
+    expect(rows.map((r) => r.day)).toEqual(['2024-01-05', '05/02/2024'])
+    expect(stackReport([a, b]).asText).toEqual(['day'])
+  })
+
+  test('the source column never takes a name the data uses; similar tables are found', async () => {
+    const t1 = await table('t1', `SELECT 1 AS source, 2 AS x`)
+    const t2 = await table('t2', `SELECT 1 AS source_table, 2 AS x`)
+    expect(sourceName([t1, t2])).toBe('source_file')
+    const other = await table('t3', `SELECT 1 AS y, 2 AS z`)
+    expect(stackCandidates('t1', [t1, t2, other])).toEqual(['t1'])
+    expect(stackCandidates('t1', [t1, { name: 't4', columns: [{ name: 'X', type: 'INTEGER' }, { name: 'source', type: 'INTEGER' }] }, other])).toEqual(['t1', 't4'])
+  })
+})
+
+test('dates and timestamps stack as timestamps, not text', async () => {
+  const a = await table('d1', `SELECT DATE '2024-01-05' AS day`)
+  const b = await table('d2', `SELECT TIMESTAMP '2024-02-01 10:30:00' AS day`)
+  expect(stackReport([a, b]).asText).toEqual([])
+  const rows = await q(`SELECT typeof(day) AS t FROM (${stackSql({ tables: ['d1', 'd2'], source: null }, [a, b])}) LIMIT 1`)
+  expect(rows[0].t).toBe('TIMESTAMP')
+})

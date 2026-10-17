@@ -1,4 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
+import { LOCALE } from '../engine/sql'
+import { friendlyType, makeFormatter, type Formatter } from './format'
 import type { ColumnInfo, Row } from '../engine/result'
 
 /* ------------------------------------------------------------------------------------------
@@ -31,26 +33,46 @@ export interface SelectionInfo {
   c1: number
   active: CellPos
   value: string | null | undefined
+  /** The value as the cell shows it (12,500.00 for 12500.0). */
+  shown?: string | null
 }
 
 export interface GridHandle {
   focus(): void
   scrollToTop(): void
+  /** Brings a column into view (e.g. one just added at the far right). */
+  scrollToColumn(name: string): void
 }
+
+/** Widths are remembered per column name and type: converting a column to a date gets a fresh fit. */
+const widthKey = (col: ColumnInfo | undefined) => (col ? `${col.name}\u0000${col.type}` : '')
 
 interface Props {
   source: GridSource
   sort?: { column: string; dir: 'asc' | 'desc' }
   onHeaderClick?: (col: number, anchor: DOMRect) => void
   onSelection?: (info: SelectionInfo | null) => void
-  onCopy?: (rows: number, cells: number) => void
+  /** After a copy: rows and cells copied, and whether the selection was cut to the copy limit. */
+  onCopy?: (rows: number, cells: number, truncated: boolean) => void
+  /** The clipboard refused the copy (no permission, or the browser lost the user gesture). */
+  onCopyFailed?: () => void
+  tones?: DiffTones | null
+  /** A short note in place of a column's type, in the accent colour ("numbers as text"). */
+  notes?: Record<string, string> | null
 }
+
+/** The columns the screen-reader mirror holds: those on screen, and the pinned first one. */
+const mirrorCols = (m: { c0: number; c1: number; pin: boolean }, count: number) =>
+  // A new result can have fewer columns than the mirror last saw, for one render.
+  [...(m.pin ? [0] : []), ...Array.from({ length: Math.max(0, m.c1 - m.c0 + 1) }, (_, j) => m.c0 + j)].filter((c) => c < count)
 
 const ROW_H = 30
 const HEAD_H = 44
 const PAD = 12
 const CHUNK = 200
 const MAX_CHUNKS = 300
+/** Copying stops here: the clipboard (and the apps you paste into) can't take millions of rows. Use Export. */
+export const COPY_LIMIT = 50_000
 const MAX_SCROLL = 8_000_000
 const MIN_W = 64
 const MAX_W = 420
@@ -70,6 +92,20 @@ interface Theme {
   selectLine: string
   skeleton: string
   accent: string
+  diffAdd: string
+  diffDel: string
+  diffChg: string
+}
+
+/**
+ * Colouring for compare results: rows tinted by their `change` value, and the before/after cells of
+ * the columns listed in `changed_columns` highlighted.
+ */
+export interface DiffTones {
+  change: number
+  changed: number
+  /** Column index → the compared column it belongs to (for x_before / x_after). */
+  pairOf: Map<number, string>
 }
 
 function readTheme(el: HTMLElement): Theme {
@@ -88,10 +124,13 @@ function readTheme(el: HTMLElement): Theme {
     selectLine: v('--accent'),
     skeleton: v('--grid-skeleton'),
     accent: v('--accent'),
+    diffAdd: v('--diff-add'),
+    diffDel: v('--diff-del'),
+    diffChg: v('--diff-chg'),
   }
 }
 
-export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, onHeaderClick, onSelection, onCopy }, ref) {
+export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, onHeaderClick, onSelection, onCopy, onCopyFailed, tones, notes }, ref) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const spacerRef = useRef<HTMLDivElement>(null)
@@ -103,7 +142,13 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     fitted: false,
     cache: new Map<number, Row[]>(),
     pending: new Set<number>(),
+    /** Chunks whose fetch failed: when to try again, and how many times it has failed. */
+    failed: new Map<number, { until: number; tries: number }>(),
     lru: [] as number[],
+    /** Display formatting per column (thousands separators, decimals), decided from the first rows. */
+    formats: [] as Formatter[],
+    /** Column widths by name, so sorting or filtering a result doesn't reset the widths you set. */
+    widthByName: new Map<string, number>(),
     sel: null as Selection | null,
     hoverRow: -1,
     hoverCol: -1,
@@ -118,7 +163,7 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
   })
   // Accessibility: a visually hidden ARIA mirror of the cells currently on screen, so screen readers
   // can read the grid and follow the active cell via aria-activedescendant.
-  const [mirror, setMirror] = useState({ first: 0, last: -1, c0: 0, c1: -1, tick: 0 })
+  const [mirror, setMirror] = useState({ first: 0, last: -1, c0: 0, c1: -1, pin: false, tick: 0 })
   const mirrorRef = useRef(mirror)
   const [aria, setAria] = useState<{ active: CellPos | null; r0: number; r1: number; c0: number; c1: number }>({
     active: null,
@@ -127,12 +172,14 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     c0: -1,
     c1: -1,
   })
-  const props = useRef({ source, sort, onHeaderClick, onSelection, onCopy })
-  props.current = { source, sort, onHeaderClick, onSelection, onCopy }
+  const props = useRef({ source, sort, onHeaderClick, onSelection, onCopy, onCopyFailed, tones, notes })
+  props.current = { source, sort, onHeaderClick, onSelection, onCopy, onCopyFailed, tones, notes }
 
   /* ----------------------------------- geometry ----------------------------------- */
 
-  const gutterW = useCallback(() => Math.ceil(String(Math.max(1, props.current.source.rowCount)).length * st.current.charW + PAD * 2), [])
+  // Row numbers: room for the longest as shown (with its separators), and less padding on a phone.
+  const gutterPad = () => (st.current.viewW > 0 && st.current.viewW < 520 ? 7 : PAD)
+  const gutterW = useCallback(() => Math.ceil(Math.max(1, props.current.source.rowCount).toLocaleString(LOCALE).length * st.current.charW + gutterPad() * 2), [])
 
   const colX = useCallback((c: number) => {
     let x = 0
@@ -142,6 +189,26 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
   }, [])
 
   const totalW = useCallback(() => st.current.widths.reduce((a, b) => a + b, 0), [])
+
+  /**
+   * The first column stays in view while the others scroll under it (what a report's rows are: Branch,
+   * Customer), like a spreadsheet's frozen column: its width, or 0 when it isn't pinned (one column, not
+   * scrolled sideways, or so wide it would crowd out the rest).
+   */
+  const pinnable = useCallback(() => {
+    const s = st.current
+    const w0 = s.widths[0] ?? 120
+    // While its edge is being dragged it stays pinned, however wide it gets (it mustn't jump away mid-drag).
+    if (s.resizing?.col === 0 && props.current.source.columns.length > 1) return w0
+    return props.current.source.columns.length > 1 && w0 <= (s.viewW - gutterW()) * 0.4 ? w0 : 0
+  }, [gutterW])
+  const pinW = useCallback(() => ((scrollRef.current?.scrollLeft ?? 0) > 0 ? pinnable() : 0), [pinnable])
+
+  /** Where column c starts on screen, from the grid's left edge (the pinned first column stays put). */
+  const screenX = useCallback(
+    (c: number) => gutterW() + (c === 0 && pinW() ? 0 : colX(c) - (scrollRef.current?.scrollLeft ?? 0)),
+    [gutterW, colX, pinW],
+  )
 
   /** Maps scrollTop to a virtual Y in row space (handles > MAX_SCROLL). */
   const virtualY = useCallback((scrollTop: number) => {
@@ -177,6 +244,8 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
       const src = props.current.source
       if (s.cache.has(chunk) || s.pending.has(chunk)) return
       if (chunk < 0 || chunk * CHUNK >= src.rowCount) return
+      const failed = s.failed.get(chunk)
+      if (failed && Date.now() < failed.until) return // backing off after an error
       if (s.pending.size >= 4) return // backpressure; the next frame will ask again
       s.pending.add(chunk)
       const key = src.key
@@ -184,10 +253,13 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
         .fetch(chunk * CHUNK, Math.min(src.rowCount, (chunk + 1) * CHUNK))
         .then((rows) => {
           if (st.current.sourceKey !== key) return
+          s.failed.delete(chunk)
           s.cache.set(chunk, rows)
+          s.lru = s.lru.filter((c) => c !== chunk)
           s.lru.push(chunk)
           while (s.lru.length > MAX_CHUNKS) s.cache.delete(s.lru.shift()!)
-          if (chunk === 0 && !s.fitted) autoFit(rows)
+          if (!s.formats.length) s.formats = src.columns.map((col, c) => makeFormatter(col, rows.slice(0, 200).map((r) => r[c])))
+          if (!s.fitted) autoFit(rows)
           const m = mirrorRef.current
           if (chunk * CHUNK <= m.last && (chunk + 1) * CHUNK > m.first) {
             mirrorRef.current = { ...m, tick: m.tick + 1 }
@@ -196,8 +268,16 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
           // The active cell's value may have just arrived.
           if (s.sel && Math.floor(s.sel.focus.r / CHUNK) === chunk) emitSelection()
         })
-        .catch(() => {})
+        .catch(() => {
+          if (st.current.sourceKey !== key) return
+          // Retry later (0.5 s, 1 s, 2 s … up to 30 s) instead of on every frame.
+          const tries = (s.failed.get(chunk)?.tries ?? 0) + 1
+          s.failed.set(chunk, { tries, until: Date.now() + Math.min(30_000, 500 * 2 ** (tries - 1)) })
+          window.setTimeout(requestDraw, Math.min(30_000, 500 * 2 ** (tries - 1)) + 20)
+        })
         .finally(() => {
+          // A fetch from a previous result must not clear the new result's bookkeeping.
+          if (st.current.sourceKey !== key) return
           s.pending.delete(chunk)
           requestDraw()
         })
@@ -211,13 +291,27 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     return rows ? rows[r % CHUNK]?.[c] : undefined
   }
 
+  /** Text as drawn in a cell (numbers formatted for reading; the data itself is untouched). */
+  const display = (c: number, v: string) => {
+    const f = st.current.formats[c]
+    return f ? f(v) : v
+  }
+
   const autoFit = (rows: Row[]) => {
     const s = st.current
     const cols = props.current.source.columns
     s.widths = cols.map((col, c) => {
+      // Columns seen in the previous result keep their width (sorting or filtering doesn't reset it).
+      const known = s.widthByName.get(widthKey(col))
+      if (known) return known
       let len = Math.max(col.name.length + 2, col.type.length * 0.8)
-      for (let i = 0; i < Math.min(rows.length, 120); i++) len = Math.max(len, (rows[i][c] ?? 'NULL').length)
-      return Math.round(Math.min(MAX_W, Math.max(MIN_W + 16, len * s.charW + PAD * 2 + 8)))
+      for (let i = 0; i < Math.min(rows.length, 120); i++) {
+        const v = rows[i][c]
+        len = Math.max(len, v === null ? 4 : display(c, v).length)
+      }
+      const w = Math.round(Math.min(MAX_W, Math.max(MIN_W + 16, len * s.charW + PAD * 2 + 8)))
+      s.widthByName.set(widthKey(col), w)
+      return w
     })
     s.fitted = true
     updateSpacer()
@@ -287,9 +381,11 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
 
     const mc0 = xs[0]?.c ?? 0
     const mc1 = xs.length ? xs[xs.length - 1].c : -1
+    // The pinned first column is on screen too, wherever the others have scrolled.
+    const pinned = scrollLeft > 0 && pinnable() > 0 && mc0 > 0
     const m = mirrorRef.current
-    if (m.first !== first || m.last !== last || m.c0 !== mc0 || m.c1 !== mc1) {
-      mirrorRef.current = { first, last, c0: mc0, c1: mc1, tick: m.tick }
+    if (m.first !== first || m.last !== last || m.c0 !== mc0 || m.c1 !== mc1 || m.pin !== pinned) {
+      mirrorRef.current = { first, last, c0: mc0, c1: mc1, pin: pinned, tick: m.tick }
       setMirror(mirrorRef.current)
     }
 
@@ -299,14 +395,33 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     const sc0 = sel ? Math.min(sel.anchor.c, sel.focus.c) : -1
     const sc1 = sel ? Math.max(sel.anchor.c, sel.focus.c) : -1
 
-    // Row backgrounds (hover, selection band)
-    for (let r = first; r <= last; r++) {
-      const y = HEAD_H + (r - first) * ROW_H - offset
-      if (r === s.hoverRow) {
-        ctx.fillStyle = t.hover
-        ctx.fillRect(gw, y, gridRight - gw, ROW_H)
+    // Row backgrounds (diff tints, hover, selection band)
+    const tones = props.current.tones
+    const tintRows = (span: { c: number; x: number; w: number }[], left: number, right: number) => {
+      for (let r = first; r <= last; r++) {
+        const y = HEAD_H + (r - first) * ROW_H - offset
+        if (tones) {
+          const change = cell(r, tones.change)
+          const tint = change === 'added' ? t.diffAdd : change === 'removed' ? t.diffDel : null
+          if (tint) {
+            ctx.fillStyle = tint
+            ctx.fillRect(left, y, right - left, ROW_H)
+          } else if (change === 'changed') {
+            const list = (cell(r, tones.changed) ?? '').split(', ')
+            ctx.fillStyle = t.diffChg
+            for (const { c, x: cx, w } of span) {
+              const pair = tones.pairOf.get(c)
+              if (pair && list.includes(pair)) ctx.fillRect(Math.max(cx, left), y, w - (cx < left ? left - cx : 0), ROW_H)
+            }
+          }
+        }
+        if (r === s.hoverRow) {
+          ctx.fillStyle = t.hover
+          ctx.fillRect(left, y, right - left, ROW_H)
+        }
       }
     }
+    tintRows(xs, gw, gridRight)
     if (sel) {
       const ya = HEAD_H + (r0 - first) * ROW_H - offset
       const yb = HEAD_H + (r1 + 1 - first) * ROW_H - offset
@@ -319,7 +434,7 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     // Cells, one clip per column
     ctx.textBaseline = 'middle'
     ctx.font = `13px ${MONO}`
-    for (const { c, x: cx, w } of xs) {
+    const drawCells = (c: number, cx: number, w: number) => {
       const numeric = cols[c].numeric
       ctx.save()
       ctx.beginPath()
@@ -335,19 +450,19 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
           continue
         }
         if (v === null) {
+          // Empty (NULL): a faint dash, like a blank cell in a spreadsheet, but distinguishable from ''.
           ctx.fillStyle = t.faint
-          ctx.font = `italic 12px ${MONO}`
           ctx.textAlign = numeric ? 'right' : 'left'
-          ctx.fillText('NULL', numeric ? cx + w - PAD : cx + PAD, y + ROW_H / 2 + 0.5)
-          ctx.font = `13px ${MONO}`
+          ctx.fillText('–', numeric ? cx + w - PAD : cx + PAD, y + ROW_H / 2 + 0.5)
           continue
         }
         ctx.fillStyle = t.text
         ctx.textAlign = numeric ? 'right' : 'left'
-        ctx.fillText(truncate(v, w), numeric ? cx + w - PAD : cx + PAD, y + ROW_H / 2 + 0.5)
+        ctx.fillText(truncate(display(c, v), w), numeric ? cx + w - PAD : cx + PAD, y + ROW_H / 2 + 0.5)
       }
       ctx.restore()
     }
+    for (const { c, x: cx, w } of xs) drawCells(c, cx, w)
 
     // Grid lines
     ctx.fillStyle = t.line
@@ -380,11 +495,56 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
       ctx.restore()
     }
 
+    // The pinned first column, over the columns scrolling under it
+    const pw = scrollLeft > 0 ? pinnable() : 0
+    if (pw) {
+      ctx.fillStyle = t.bg
+      ctx.fillRect(gw, HEAD_H, pw, H - HEAD_H)
+      tintRows([{ c: 0, x: gw, w: pw }], gw, gw + pw)
+      if (sel && sc0 === 0) {
+        ctx.fillStyle = t.select
+        const ya = Math.max(HEAD_H, HEAD_H + (r0 - first) * ROW_H - offset)
+        const yb = Math.min(H, HEAD_H + (r1 + 1 - first) * ROW_H - offset)
+        if (yb > ya) ctx.fillRect(gw, ya, pw, yb - ya)
+      }
+      drawCells(0, gw, pw)
+      ctx.fillStyle = t.line
+      for (let r = first; r <= last + 1; r++) {
+        const y = Math.round(HEAD_H + (r - first) * ROW_H - offset) - 0.5
+        if (y > HEAD_H) ctx.fillRect(gw, y, pw, 1)
+      }
+      if (sel && sc0 === 0) {
+        ctx.save()
+        ctx.beginPath()
+        ctx.rect(gw, HEAD_H, pw, H - HEAD_H)
+        ctx.clip()
+        ctx.strokeStyle = t.selectLine
+        // The range's outline, open on the right when it goes on into the scrolled columns.
+        ctx.lineWidth = 1.5
+        const ya = HEAD_H + (r0 - first) * ROW_H - offset
+        const yb = HEAD_H + (r1 + 1 - first) * ROW_H - offset
+        ctx.strokeRect(gw + 0.75, ya + 0.75, (sc1 > 0 ? pw + 4 : pw) - 1.5, yb - ya - 1.5)
+        if (sel.focus.c === 0) {
+          ctx.lineWidth = 2
+          ctx.strokeRect(gw + 1, HEAD_H + (sel.focus.r - first) * ROW_H - offset + 1, pw - 2, ROW_H - 2)
+        }
+        ctx.restore()
+      }
+      // Its edge: a line and a soft shadow over what scrolls under it.
+      const shade = ctx.createLinearGradient(gw + pw, 0, gw + pw + 8, 0)
+      shade.addColorStop(0, t.line)
+      shade.addColorStop(1, 'rgba(0,0,0,0)')
+      ctx.fillStyle = shade
+      ctx.fillRect(gw + pw, 0, 8, H)
+      ctx.fillStyle = t.line
+      ctx.fillRect(gw + pw - 1, 0, 1, H)
+    }
+
     // Header
     ctx.fillStyle = t.head
     ctx.fillRect(0, 0, W, HEAD_H)
     const curSort = props.current.sort
-    for (const { c, x: cx, w } of xs) {
+    const drawHead = (c: number, cx: number, w: number) => {
       ctx.save()
       ctx.beginPath()
       ctx.rect(Math.max(cx, gw), 0, w, HEAD_H)
@@ -402,15 +562,34 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
       let label = col.name
       const sorted = curSort?.column === col.name
       const arrow = sorted ? (curSort!.dir === 'asc' ? ' ↑' : ' ↓') : ''
-      const maxW = w - PAD * 2
+      // Hovered: a ▾ says the header opens a menu (room is made for it, so text never runs under it).
+      const hovered = c === s.hoverCol
+      const room = hovered ? 16 : 0
+      const maxW = w - PAD * 2 - room
       while (label.length > 1 && ctx.measureText(label + arrow).width > maxW) label = label.slice(0, -2) + '…'
-      ctx.fillText(label + arrow, tx, 17)
-      ctx.fillStyle = t.faint
-      ctx.font = `10.5px ${MONO}`
-      ctx.fillText(truncate(col.type.toLowerCase(), w + 4), tx, 32)
+      ctx.fillText(label + arrow, col.numeric ? tx - room : tx, 17)
+      const note = props.current.notes?.[col.name]
+      ctx.fillStyle = note ? t.accent : t.faint
+      ctx.font = `${note ? '600 ' : ''}10.5px ${SANS}`
+      // A note that doesn't fit says the short form ("as text"), never a cut-off "number…".
+      const roomForNote = w - PAD * 2 - room
+      const typeLine = note ? (ctx.measureText(note).width <= roomForNote ? note : 'as text') : friendlyType(col.type)
+      ctx.fillText(truncate(typeLine, w + 4 - room * 2), col.numeric ? tx - room : tx, 32)
+      if (hovered) {
+        ctx.fillStyle = t.muted
+        ctx.font = `600 12px ${SANS}`
+        ctx.textAlign = 'right'
+        ctx.fillText('▾', cx + w - PAD + 2, 18)
+      }
       ctx.restore()
       ctx.fillStyle = t.line
       ctx.fillRect(Math.round(cx + w) - 1, 10, 1, HEAD_H - 20)
+    }
+    for (const { c, x: cx, w } of xs) drawHead(c, cx, w)
+    if (pw) {
+      ctx.fillStyle = t.head
+      ctx.fillRect(gw, 0, pw, HEAD_H)
+      drawHead(0, gw, pw)
     }
     ctx.fillStyle = t.line
     ctx.fillRect(0, HEAD_H - 1, W, 1)
@@ -425,7 +604,7 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
       if (y + ROW_H < HEAD_H) continue
       const inSel = sel && r >= r0 && r <= r1
       ctx.fillStyle = inSel ? t.accent : t.faint
-      ctx.fillText((r + 1).toLocaleString('en-US'), gw - PAD, y + ROW_H / 2 + 0.5)
+      ctx.fillText((r + 1).toLocaleString(LOCALE), gw - gutterPad(), y + ROW_H / 2 + 0.5)
     }
     ctx.fillStyle = t.head
     ctx.fillRect(0, 0, gw, HEAD_H)
@@ -449,6 +628,10 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
       c1: Math.max(anchor.c, focus.c),
       active: focus,
       value: cell(focus.r, focus.c),
+      shown: (() => {
+        const v = cell(focus.r, focus.c)
+        return typeof v === 'string' ? display(focus.c, v) : v
+      })(),
     })
   }
 
@@ -478,7 +661,11 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     const src = props.current.source
     let c = -1
     let border = -1
-    if (x >= gw) {
+    const pw = pinW()
+    if (pw && x >= gw && x < gw + pw) {
+      // Over the pinned first column.
+      c = 0
+    } else if (x >= gw) {
       const gx = x - gw + scroller.scrollLeft
       let acc = 0
       for (let i = 0; i < src.columns.length; i++) {
@@ -488,6 +675,9 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
         acc += w
       }
     }
+    // The pinned column's right edge resizes it (whatever has scrolled under it).
+    if (pw && Math.abs(x - (gw + pw)) <= 5) border = 0
+    else if (pw && border >= 0 && x < gw + pw) border = -1
     let r = -1
     if (y >= HEAD_H) {
       const vy = virtualY(scroller.scrollTop) + (y - HEAD_H)
@@ -496,7 +686,8 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     return { x, y, c, r, border, inHeader: y < HEAD_H, inGutter: x < gw }
   }
 
-  const ensureVisible = (pos: CellPos) => {
+  /** Scrolls the cell into view. keepX: moving up or down the pinned first column never scrolls sideways. */
+  const ensureVisible = (pos: CellPos, keepX = false) => {
     const scroller = scrollRef.current!
     const s = st.current
     const body = s.viewH - HEAD_H
@@ -507,24 +698,39 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     const gw = gutterW()
     const left = colX(pos.c)
     const w = s.widths[pos.c] ?? 120
-    if (left < scroller.scrollLeft) scroller.scrollLeft = left
+    if (keepX && pos.c === 0 && pinnable()) return
+    // Columns after the first scroll under it while it's pinned.
+    const pin = pos.c > 0 ? pinnable() : 0
+    if (left < scroller.scrollLeft + pin) scroller.scrollLeft = Math.max(0, left - pin)
     else if (left + w > scroller.scrollLeft + s.viewW - gw) scroller.scrollLeft = left + w - (s.viewW - gw)
   }
 
-  const copySelection = async () => {
+  const copySelection = () => {
     const s = st.current
     const src = props.current.source
     if (!s.sel) return
     const r0 = Math.min(s.sel.anchor.r, s.sel.focus.r)
-    const r1 = Math.min(Math.max(s.sel.anchor.r, s.sel.focus.r), r0 + 49_999)
+    const rEnd = Math.max(s.sel.anchor.r, s.sel.focus.r)
+    const r1 = Math.min(rEnd, r0 + COPY_LIMIT - 1)
     const c0 = Math.min(s.sel.anchor.c, s.sel.focus.c)
     const c1 = Math.max(s.sel.anchor.c, s.sel.focus.c)
-    const rows = await src.fetch(r0, r1 + 1)
     const multi = r1 > r0 || c1 > c0
-    const header = multi ? src.columns.slice(c0, c1 + 1).map((c) => c.name).join('\t') + '\n' : ''
-    const body = rows.map((row) => row.slice(c0, c1 + 1).map((v) => (v ?? '').replace(/[\t\n]/g, ' ')).join('\t')).join('\n')
-    await navigator.clipboard.writeText(header + body)
-    props.current.onCopy?.(rows.length, rows.length * (c1 - c0 + 1))
+    let count = 0
+    const text = src.fetch(r0, r1 + 1).then((rows) => {
+      count = rows.length
+      const header = multi ? src.columns.slice(c0, c1 + 1).map((c) => c.name).join('\t') + '\n' : ''
+      return header + rows.map((row) => row.slice(c0, c1 + 1).map((v) => (v ?? '').replace(/[\t\r\n]+/g, ' ')).join('\t')).join('\n')
+    })
+    // The clipboard write starts now, inside the key press, with the text to follow: Safari refuses
+    // a write that only starts after an await.
+    const write =
+      typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write
+        ? navigator.clipboard.write([new ClipboardItem({ 'text/plain': text.then((t) => new Blob([t], { type: 'text/plain' })) })])
+        : text.then((t) => navigator.clipboard.writeText(t))
+    write
+      .then(() => props.current.onCopy?.(count, count * (c1 - c0 + 1), rEnd > r1))
+      .catch(() => text.then((t) => navigator.clipboard.writeText(t)).then(() => props.current.onCopy?.(count, count * (c1 - c0 + 1), rEnd > r1)))
+      .catch(() => props.current.onCopyFailed?.())
   }
 
   /* ------------------------------------ events ------------------------------------ */
@@ -568,8 +774,7 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
         }
         if (h.c >= 0 && props.current.onHeaderClick) {
           const rect = scroller.getBoundingClientRect()
-          const x = rect.left + gutterW() + colX(h.c) - scroller.scrollLeft
-          props.current.onHeaderClick(h.c, new DOMRect(x, rect.top, s.widths[h.c] ?? 120, HEAD_H))
+          props.current.onHeaderClick(h.c, new DOMRect(rect.left + screenX(h.c), rect.top, s.widths[h.c] ?? 120, HEAD_H))
         }
         return
       }
@@ -595,6 +800,7 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
       if (!s.resizing) return
       const w = Math.max(MIN_W, Math.min(1200, s.resizing.startW + e.clientX - s.resizing.startX))
       s.widths[s.resizing.col] = w
+      s.widthByName.set(widthKey(props.current.source.columns[s.resizing.col]), w)
       updateSpacer()
       requestDraw()
     }
@@ -604,8 +810,9 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
       if (h.inHeader && h.border >= 0) {
         // Fit column to the cached values on screen
         let len = props.current.source.columns[h.border].name.length + 2
-        for (const rows of s.cache.values()) for (const row of rows.slice(0, 200)) len = Math.max(len, (row[h.border] ?? 'NULL').length)
+        for (const rows of s.cache.values()) for (const row of rows.slice(0, 200)) len = Math.max(len, row[h.border] == null ? 4 : display(h.border, row[h.border]!).length)
         s.widths[h.border] = Math.round(Math.min(800, Math.max(MIN_W, len * s.charW + PAD * 2 + 8)))
+        s.widthByName.set(widthKey(props.current.source.columns[h.border]), s.widths[h.border])
         updateSpacer()
         requestDraw()
       }
@@ -616,7 +823,7 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
       const mod = e.metaKey || e.ctrlKey
       if (mod && e.key.toLowerCase() === 'c') {
         e.preventDefault()
-        void copySelection()
+        copySelection()
         return
       }
       if (mod && e.key.toLowerCase() === 'a') {
@@ -624,13 +831,23 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
         setSel({ anchor: { r: 0, c: 0 }, focus: { r: src.rowCount - 1, c: src.columns.length - 1 } })
         return
       }
-      // Alt+↓, Shift+F10 or the context-menu key opens the active column's menu.
-      if (s.sel && ((e.altKey && e.key === 'ArrowDown') || (e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu')) {
+      // Shift+Space selects the active cell's row, Ctrl+Space its column (as in Excel). The view stays put.
+      if (s.sel && e.key === ' ' && (e.shiftKey || e.ctrlKey) && !e.altKey && !e.metaKey) {
         e.preventDefault()
-        const c = s.sel.focus.c
+        const { r, c } = s.sel.focus
+        if (e.shiftKey) setSel({ anchor: { r, c: 0 }, focus: { r, c: src.columns.length - 1 } })
+        // The active cell goes to the column's top (not a million rows down, where the next key would start).
+        else setSel({ anchor: { r: src.rowCount - 1, c }, focus: { r: 0, c } })
+        return
+      }
+      // Alt+↓, Shift+F10 or the context-menu key opens the active column's menu (the first column's when
+      // nothing is selected, as after Escape).
+      if ((e.altKey && e.key === 'ArrowDown') || (e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
+        e.preventDefault()
+        if (!s.sel) setSel({ anchor: { r: 0, c: 0 }, focus: { r: 0, c: 0 } }) // sets st.current.sel at once
+        const c = s.sel?.focus.c ?? 0
         const rect = scroller.getBoundingClientRect()
-        const x = rect.left + gutterW() + colX(c) - scroller.scrollLeft
-        props.current.onHeaderClick?.(c, new DOMRect(x, rect.top, s.widths[c] ?? 120, HEAD_H))
+        props.current.onHeaderClick?.(c, new DOMRect(rect.left + screenX(c), rect.top, s.widths[c] ?? 120, HEAD_H))
         return
       }
       if (!s.sel) {
@@ -655,8 +872,9 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
       r = Math.max(0, Math.min(src.rowCount - 1, r))
       c = Math.max(0, Math.min(src.columns.length - 1, c))
       const focus = { r, c }
+      const before = s.sel.focus.c
       setSel({ anchor: e.shiftKey ? s.sel.anchor : focus, focus })
-      ensureVisible(focus)
+      ensureVisible(focus, before === 0 && c === 0)
     }
 
     scroller.addEventListener('scroll', onScroll, { passive: true })
@@ -722,15 +940,19 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // New source: reset cache, widths and scroll
-  useEffect(() => {
+  // New source: reset cache, widths and scroll (before paint, so old rows never draw under new headers)
+  useLayoutEffect(() => {
     const s = st.current
     s.sourceKey = source.key
     s.cache.clear()
     s.pending.clear()
+    s.failed.clear()
+    s.formats = []
     s.lru = []
     s.fitted = false
-    s.widths = source.columns.map((c) => Math.round(Math.min(MAX_W, Math.max(MIN_W + 16, (c.name.length + 4) * s.charW + PAD * 2))))
+    s.widths = source.columns.map(
+      (c) => s.widthByName.get(widthKey(c)) ?? Math.round(Math.min(MAX_W, Math.max(MIN_W + 16, (c.name.length + 4) * s.charW + PAD * 2))),
+    )
     s.sel = null
     emitSelection()
     const scroller = scrollRef.current!
@@ -741,14 +963,38 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source.key])
 
-  useEffect(() => requestDraw(), [sort, requestDraw])
+  // Notes come as a new object on every render of the page: redraw when what they say changes.
+  const notesKey = notes ? Object.entries(notes).join('|') : ''
+  useEffect(() => requestDraw(), [sort, tones, notesKey, requestDraw])
 
   useImperativeHandle(ref, () => ({
     focus: () => scrollRef.current?.focus({ preventScroll: true }),
     scrollToTop: () => {
       if (scrollRef.current) scrollRef.current.scrollTop = 0
     },
+    scrollToColumn: (name: string) => {
+      const s = st.current
+      const el = scrollRef.current
+      const c = props.current.source.columns.findIndex((col) => col.name === name)
+      if (!el || c < 0) return
+      const left = colX(c)
+      const w = s.widths[c] ?? 120
+      const room = s.viewW - gutterW()
+      const pin = c > 0 ? pinnable() : 0
+      if (left < el.scrollLeft + pin || left + w > el.scrollLeft + room) el.scrollLeft = Math.max(0, left + w - room + 24)
+    },
   }))
+
+  // The screen-reader mirror: the rows and columns on screen, plus the active cell's, so
+  // aria-activedescendant never points at a cell that isn't there (a whole row or column selected
+  // from the keyboard puts it off screen).
+  const active = aria.active && aria.active.r < source.rowCount && aria.active.c < source.columns.length ? aria.active : null
+  const srRows = Array.from({ length: Math.max(0, mirror.last - mirror.first + 1) }, (_, i) => mirror.first + i)
+  if (active && (active.r < mirror.first || active.r > mirror.last)) srRows.push(active.r)
+  srRows.sort((a, b) => a - b)
+  const srCols = mirrorCols(mirror, source.columns.length)
+  if (active && !srCols.includes(active.c)) srCols.push(active.c)
+  srCols.sort((a, b) => a - b)
 
   return (
     <div className="grid-wrap" ref={wrapRef}>
@@ -762,7 +1008,7 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
         aria-multiselectable="true"
         aria-rowcount={source.rowCount + 1}
         aria-colcount={source.columns.length}
-        aria-label={`Results: ${source.rowCount.toLocaleString('en-US')} rows, ${source.columns.length} columns`}
+        aria-label={`Results: ${source.rowCount.toLocaleString(LOCALE)} rows, ${source.columns.length} columns`}
         aria-describedby="grid-help"
         aria-activedescendant={aria.active ? cellId(source.key, aria.active.r, aria.active.c) : undefined}
       >
@@ -774,30 +1020,28 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
         <div className="sr-grid" role="rowgroup">
           <div role="row" aria-rowindex={1}>
             {mirror.c1 >= mirror.c0 &&
-              source.columns.slice(mirror.c0, mirror.c1 + 1).map((col, i) => {
-                const c = mirror.c0 + i
+              srCols.map((c) => {
+                const col = source.columns[c]
                 const sorted = sort?.column === col.name ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined
                 return (
                   <span key={c} role="columnheader" aria-colindex={c + 1} aria-sort={sorted}>
-                    {col.name}, {col.type.toLowerCase()}
+                    {col.name}, {notes?.[col.name] ?? friendlyType(col.type)}
                   </span>
                 )
               })}
           </div>
         </div>
         <div className="sr-grid" role="rowgroup">
-          {mirror.last >= mirror.first &&
-            Array.from({ length: mirror.last - mirror.first + 1 }, (_, i) => {
-              const r = mirror.first + i
+          {srRows.map((r) => {
               return (
                 <div key={r} role="row" aria-rowindex={r + 2}>
-                  {Array.from({ length: Math.max(0, mirror.c1 - mirror.c0 + 1) }, (_, j) => {
-                    const c = mirror.c0 + j
+                  {srCols.map((c) => {
                     const v = cell(r, c)
                     const selected = r >= aria.r0 && r <= aria.r1 && c >= aria.c0 && c <= aria.c1
                     return (
                       <span key={c} id={cellId(source.key, r, c)} role="gridcell" aria-colindex={c + 1} aria-selected={selected}>
-                        {v === undefined ? 'Loading' : v === null ? 'empty' : v}
+                        {/* Read out as drawn: 1,234.50 and 18%, not 1234.5 and 0.18. */}
+                        {v === undefined ? 'Loading' : v === null ? 'empty' : display(c, v)}
                       </span>
                     )
                   })}

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { gridTop, openDemo, recordEgress, runSql } from './helpers'
 
 test('quick charts: time trend, grouped bars, distribution, and a runnable table view', async ({ page }) => {

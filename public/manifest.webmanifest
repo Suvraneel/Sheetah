@@ -1,11 +1,37 @@
 {
+  "id": "/",
   "name": "Sheetah",
   "short_name": "Sheetah",
   "description": "A spreadsheet that opens millions of rows and speaks SQL. Runs entirely on your device.",
+  "lang": "en",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "background_color": "#eceef2",
   "theme_color": "#eceef2",
-  "icons": [{ "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+  "categories": ["business", "productivity", "utilities"],
+  "icons": [
+    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "screenshots": [
+    { "src": "icons/screenshot-wide.png", "sizes": "1440x900", "type": "image/png", "form_factor": "wide", "label": "A million-row table with the SQL editor" },
+    { "src": "icons/screenshot-narrow.png", "sizes": "390x844", "type": "image/png", "form_factor": "narrow", "label": "The phone layout" }
+  ],
+  "shortcuts": [{ "name": "Try the sample data", "short_name": "Sample", "url": "./?demo=1" }],
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": {
+        "text/csv": [".csv"],
+        "text/tab-separated-values": [".tsv"],
+        "application/json": [".json", ".ndjson", ".jsonl"],
+        "application/vnd.apache.parquet": [".parquet"],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"]
+      }
+    }
+  ],
+  "launch_handler": { "client_mode": "focus-existing" }
 }

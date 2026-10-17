@@ -1,5 +1,7 @@
-import { expect, test } from '@playwright/test'
-import { openDemo, recordEgress, runSql } from './helpers'
+import { readFileSync } from 'node:fs'
+import readXlsxFile from 'read-excel-file/node'
+import { expect, test } from './fixtures'
+import { exportAs, openDemo, recordEgress, runSql } from './helpers'
 
 test('pivot: sensible defaults, correct totals, editable, and a clear limit', async ({ page }) => {
   const egress = recordEgress(page)
@@ -21,7 +23,7 @@ test('pivot: sensible defaults, correct totals, editable, and a clear limit', as
     page,
     `WITH p AS (\n${pivot}\n)
      SELECT CASE
-       WHEN (SELECT "Total" FROM p WHERE category = 'Total') <> (SELECT round(sum(total), 2) FROM orders) THEN error('grand total mismatch')
+       WHEN abs((SELECT "Total" FROM p WHERE category = 'Total') - (SELECT sum(total) FROM orders)) > 0.01 THEN error('grand total mismatch')
        WHEN (SELECT max(abs(cancelled + delivered + processing + returned + shipped - "Total")) FROM p) > 0.1 THEN error('row total mismatch')
        WHEN (SELECT count(*) FROM p) <> 9 THEN error('row count')
        ELSE 'ok' END AS check`,
@@ -78,4 +80,17 @@ test('pivot: columns only, several values, and date rows', async ({ page }) => {
   await expect(page.locator('.result-meta')).toContainText(/\d+ rows · 2 columns/)
   await expect(page.locator('.cm-content')).toContainText('count(*) AS "Rows"')
   await expect(page.locator('.error-banner')).toHaveCount(0)
+})
+
+test('a pivot exports to Excel with the rows behind it on a second sheet', async ({ page }) => {
+  await openDemo(page)
+  await runSql(page, "SELECT * FROM (VALUES ('Pune', 'card', 10), ('Pune', 'cash', 5), ('Goa', 'card', 7)) t(city, paid_by, amount)")
+  await expect(page.locator('.result-meta')).toContainText('3 rows')
+  await page.getByRole('button', { name: 'Pivot', exact: true }).click()
+  await page.getByRole('dialog', { name: 'Summarize this result' }).getByRole('button', { name: 'Create pivot' }).click()
+  await expect(page.locator('.cm-content')).toContainText('-- Pivot')
+  const dl = await exportAs(page, 'Excel, with the rows behind it')
+  const sheets = (await readXlsxFile(readFileSync((await dl.path())!))) as unknown as { sheet: string; data: unknown[][] }[]
+  expect(sheets.map((s) => s.sheet)).toEqual(['pivot', 'rows'])
+  expect(sheets[1].data).toEqual([['city', 'paid_by', 'amount'], ['Pune', 'card', 10], ['Pune', 'cash', 5], ['Goa', 'card', 7]])
 })

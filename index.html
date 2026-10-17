@@ -2,17 +2,80 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Sheetah – open million-row CSV, Excel &amp; Parquet files in your browser</title>
+    <meta
+      name="description"
+      content="A spreadsheet that opens millions of rows and speaks SQL. Filter, pivot and chart huge CSV, Excel and Parquet files in your browser. Nothing is uploaded: DuckDB runs on your device."
+    />
+    <link rel="canonical" href="%VITE_SITE_URL%/" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#eceef2" />
     <meta name="color-scheme" content="light dark" />
+
+    <!-- Social previews. A shared-query link (#q=…) previews as this generic card: the query stays private. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Sheetah" />
+    <meta property="og:title" content="Sheetah – open the whole file" />
+    <meta property="og:description" content="Scroll, filter, pivot and chart millions of rows like a spreadsheet, with SQL when you want it. Runs in your browser; nothing is uploaded." />
+    <meta property="og:url" content="%VITE_SITE_URL%/" />
+    <meta property="og:image" content="%VITE_SITE_URL%/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Sheetah: a spreadsheet with a SQL editor, showing a million-row table" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Sheetah – open the whole file" />
+    <meta name="twitter:description" content="A spreadsheet that opens millions of rows and speaks SQL. Runs in your browser; nothing is uploaded." />
+    <meta name="twitter:image" content="%VITE_SITE_URL%/og.png" />
+
+    <!-- Structured data is a data block (not executed), so the CSP's no-inline-script rule doesn't apply. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Sheetah",
+        "applicationCategory": "BusinessApplication",
+        "operatingSystem": "Any (web browser)",
+        "description": "A browser spreadsheet that opens millions of rows of CSV, Excel and Parquet and queries them with SQL. Files never leave the device.",
+        "url": "%VITE_SITE_URL%/",
+        "image": "%VITE_SITE_URL%/og.png",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "featureList": "Million-row grid, SQL editor, pivot tables, charts, compare tables, anonymize personal data, works offline"
+      }
+    </script>
+
+    <!-- Theme before first paint, then a browser check (both classic, same-origin scripts). -->
     <script src="/theme.js"></script>
-    <title>Sheetah – open the whole file</title>
-    <meta name="description" content="A spreadsheet that opens millions of rows and speaks SQL. Runs DuckDB in your browser; your data never leaves your computer." />
+    <script src="/compat.js"></script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- What crawlers and no-JS visitors see; the app replaces it as soon as it starts. -->
+      <main class="prerender">
+        <h1>Sheetah: open the whole file</h1>
+        <p>
+          A spreadsheet that scrolls millions of rows and speaks SQL, running entirely in your browser. Open CSV, Excel
+          (.xlsx), JSON and Parquet files of any size your computer can hold; filter, sort, pivot and chart them; and
+          write SQL when you want to. Sheetah runs the DuckDB database inside the page, so your files are read from
+          your disk and never uploaded.
+        </p>
+        <ul>
+          <li>Smooth scrolling from one to ten million rows (Excel stops at 1,048,576)</li>
+          <li>Point-and-click filters, sorting, formula columns and column profiles that write readable SQL</li>
+          <li>Pivot tables and quick charts computed over every row</li>
+          <li>Clean numbers and dates stored as text, look up values from another table, stack monthly exports</li>
+          <li>Compare two tables, and anonymize personal data before you share a file</li>
+          <li>Export to Excel (.xlsx), CSV or Parquet</li>
+          <li>Works offline, installs as an app, no account and no upload</li>
+        </ul>
+      </main>
+      <noscript>
+        <p class="noscript"><strong>Sheetah needs JavaScript and WebAssembly.</strong> Turn JavaScript on, or use a current version of Chrome, Edge, Firefox or Safari.</p>
+      </noscript>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -1,5 +1,5 @@
-import { expect, test } from '@playwright/test'
-import { openDemo } from './helpers'
+import { expect, test } from './fixtures'
+import { openApp, openDemo } from './helpers'
 
 test.describe('workspace conveniences', () => {
   test('starter queries run on the sample; monthly revenue charts by month', async ({ page }) => {
@@ -15,6 +15,20 @@ test.describe('workspace conveniences', () => {
 
     await starters.getByRole('button', { name: 'Hide example queries' }).click()
     await expect(starters).toHaveCount(0)
+  })
+
+  test('your own table gets example queries built from its columns', async ({ page }) => {
+    await openApp(page)
+    const rows = Array.from({ length: 60 }, (_, i) => `${i},${['North', 'South', 'East'][i % 3]},2024-0${1 + (i % 3)}-1${i % 9},${(i * 12.5).toFixed(2)}`)
+    await page.locator('input[type=file]').setInputFiles([{ name: 'sales.csv', mimeType: 'text/csv', buffer: Buffer.from(`id,region,sold_on,amount\n${rows.join('\n')}\n`) }])
+    const starters = page.getByRole('navigation', { name: 'Example queries' })
+    await expect(starters.getByRole('button')).toHaveText(['amount by region', 'amount per month', 'Top 10 by amount', 'Summary of every column', ''])
+    await starters.getByRole('button', { name: 'amount by region' }).click()
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    await expect(page.locator('.cm-content')).toContainText('round(sum(amount), 2) AS total_amount')
+    // Still offered after running one, so they can be tried in turn.
+    await starters.getByRole('button', { name: 'Summary of every column' }).click()
+    await expect(page.locator('.result-meta')).toContainText('4 rows')
   })
 
   test('theme toggle overrides the system and persists; the canvas grid follows', async ({ page }) => {
@@ -37,6 +51,8 @@ test.describe('workspace conveniences', () => {
     await page.locator('.grid-scroll').focus()
     await page.keyboard.press('Shift+Slash')
     await expect(page.getByRole('dialog', { name: 'Shortcuts' })).toBeVisible()
+    // It's a list to read: focus starts on its heading, in view (Done is below the fold on short screens).
+    await expect(page.getByRole('heading', { name: 'Shortcuts' })).toBeFocused()
     await page.keyboard.press('Escape')
     await expect(page.getByRole('dialog')).toHaveCount(0)
 

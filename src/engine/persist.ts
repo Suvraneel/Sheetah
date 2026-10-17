@@ -1,5 +1,5 @@
 import { tableToIPC } from 'apache-arrow'
-import { getEngine, quoteIdent } from './db'
+import { getEngine, quoteIdent, quoteLiteral, withRunLock } from './db'
 
 /*
  * Optional "keep my tables": snapshots tables as Arrow IPC files in the Origin Private File System
@@ -9,7 +9,12 @@ import { getEngine, quoteIdent } from './db'
 const DIR = 'sheetah-tables'
 export const MAX_PERSIST_ROWS = 5_000_000
 
-export const persistSupported = () => typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory
+/** OPFS with writable file handles (Safari before 26 has the folder API but can't write files from the page). */
+export const persistSupported = () =>
+  typeof navigator !== 'undefined' &&
+  !!navigator.storage?.getDirectory &&
+  typeof FileSystemFileHandle !== 'undefined' &&
+  'createWritable' in FileSystemFileHandle.prototype
 
 const LEGACY_DIR = 'quarry-tables' // before the rebrand to Sheetah
 let migrated: Promise<void> | null = null
@@ -79,8 +84,12 @@ export async function listSaved(): Promise<string[]> {
   }
 }
 
-/** Loads every saved table back into the engine. Returns the names restored. */
-export async function restoreAll(): Promise<string[]> {
+/** Loads every saved table back into the engine (before any file the user drops in meanwhile). Returns the names restored. */
+export function restoreAll(): Promise<string[]> {
+  return withRunLock(restoreLocked)
+}
+
+async function restoreLocked(): Promise<string[]> {
   const { conn } = await getEngine()
   const restored: string[] = []
   let dir: FileSystemDirectoryHandle
@@ -94,7 +103,9 @@ export async function restoreAll(): Promise<string[]> {
     const name = tableName(file)
     try {
       const bytes = new Uint8Array(await (await handle.getFile()).arrayBuffer())
-      await conn.query(`DROP TABLE IF EXISTS ${quoteIdent(name)}`)
+      // Never replace a table that already exists (the user may have opened a file with that name).
+      const exists = (await conn.query(`SELECT 1 FROM information_schema.tables WHERE table_schema = 'main' AND lower(table_name) = lower(${quoteLiteral(name)})`)).numRows > 0
+      if (exists) continue
       await conn.insertArrowFromIPCStream(bytes, { name, create: true })
       restored.push(name)
     } catch {

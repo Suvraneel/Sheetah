@@ -35,6 +35,8 @@ const SEL = { col: 7, from: 2, to: 7 }
 const TABLE_COLUMNS = [...COLUMNS.map((c) => [c.name, c.type]), ['unit_price', 'double'], ['discount_pct', 'integer'], ['status', 'varchar']]
 
 const nf = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
+/** The total column as the real grid shows it: grouped, with the decimals the data uses. */
+const money = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const picked = ROWS.slice(SEL.from, SEL.to + 1).map((r) => Number(r[SEL.col]))
 const sum = picked.reduce((a, b) => a + b, 0)
 const isSel = (r: number, c: number) => c === SEL.col && r >= SEL.from && r <= SEL.to
@@ -149,7 +151,7 @@ export function ProductShot() {
                         className={`${COLUMNS[c].num ? 'num' : ''}${isSel(r, c) ? ' is-sel' : ''}${isSel(r, c) && r === SEL.to ? ' is-active' : ''}`}
                         style={isSel(r, c) ? nth(r - SEL.from) : undefined}
                       >
-                        {v}
+                        {c === SEL.col ? money.format(Number(v)) : v}
                       </span>
                     ))}
                   </div>
@@ -157,7 +159,7 @@ export function ProductShot() {
               </div>
               <div className="pv-status">
                 <span className="mono">Row {SEL.to + 1} · total</span>
-                <span className="mono pv-value">{ROWS[SEL.to][SEL.col]}</span>
+                <span className="mono pv-value">{money.format(Number(ROWS[SEL.to][SEL.col]))}</span>
                 <span className="spacer" />
                 <span className="pv-stats">
                   <span>

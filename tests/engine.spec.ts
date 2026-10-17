@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from './fixtures'
 import { openDemo, runSql } from './helpers'
 
 /** Switches to the chart view and returns its caption once it has finished computing. */

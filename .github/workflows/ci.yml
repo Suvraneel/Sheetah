@@ -7,27 +7,38 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch makes an older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run lint
+      # Pure functions first: seconds, no browser.
+      - run: npm run test:unit
       # Fails if a DuckDB extension is missing or its SHA-256 doesn't match the lock file.
       - run: npm run build
       - name: Lock file must be committed
         run: git diff --exit-code scripts/duckdb-extensions.lock.json
+      - name: Bundle budget
+        run: node scripts/check-bundle-size.mjs
       - run: npx playwright install --with-deps chromium
       # End-to-end suite against the production build, under the real security headers:
-      # grid, files, saved views, accessibility (axe) and the exfiltration attack queries.
-      - run: npx playwright test --grep-invert @perf
-      - run: npx playwright test --grep @perf --workers=1
+      # grid, files, saved views, compare, anonymize, accessibility (axe), offline and updates,
+      # and the exfiltration attack queries.
+      - run: npm run test:e2e
+      - run: npm run test:perf
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

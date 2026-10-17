@@ -22,7 +22,8 @@ const highlight = HighlightStyle.define([
 
 const theme = EditorView.theme({
   '&': { fontSize: '13.5px', backgroundColor: 'transparent', color: 'var(--text)' },
-  '.cm-scroller': { fontFamily: '"JetBrains Mono Variable", ui-monospace, monospace', lineHeight: '1.7' },
+  // No ligatures: >= stays two characters (drawn as ≥ it reads as a symbol SQL doesn't take).
+  '.cm-scroller': { fontFamily: '"JetBrains Mono Variable", ui-monospace, monospace', lineHeight: '1.7', fontVariantLigatures: 'none' },
   '.cm-content': { padding: '14px 0', caretColor: 'var(--accent)' },
   '.cm-line': { padding: '0 18px' },
   '&.cm-focused': { outline: 'none' },
@@ -103,7 +104,9 @@ export function SqlEditor({ value, onChange, onRun, tables, id }: Props) {
           theme,
           cmPlaceholder('SELECT * FROM orders WHERE total > 5000 ORDER BY ordered_at DESC'),
           EditorView.lineWrapping,
-          EditorView.contentAttributes.of({ 'aria-label': 'SQL editor. Press Cmd or Ctrl+Enter to run.' }),
+          // An explicit tabindex, so a long query's scrolling area counts as reachable by keyboard (it is:
+          // the content takes focus) for checkers that don't treat contenteditable as focusable.
+          EditorView.contentAttributes.of({ 'aria-label': 'SQL editor. Press Cmd or Ctrl+Enter to run.', tabindex: '0' }),
           EditorView.updateListener.of((u) => {
             if (u.docChanged) cb.current.onChange(u.state.doc.toString())
             if (u.focusChanged) setFrozen(u.view, !u.view.hasFocus)

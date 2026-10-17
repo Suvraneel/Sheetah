@@ -22,7 +22,8 @@ export function useDialog<T extends HTMLElement>(onClose: () => void) {
       Array.from(
         el?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea, a[href], [tabindex]:not([tabindex="-1"])') ?? [],
       )
-    if (el && !el.contains(document.activeElement)) focusables()[0]?.focus({ preventScroll: true })
+    // A dialog that is mostly reading (shortcuts) starts on its heading ([data-autofocus]), not a button below the fold.
+    if (el && !el.contains(document.activeElement)) (el.querySelector<HTMLElement>('[data-autofocus]') ?? focusables()[0])?.focus({ preventScroll: true })
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()
@@ -34,7 +35,11 @@ export function useDialog<T extends HTMLElement>(onClose: () => void) {
       if (!items.length) return
       const first = items[0]
       const last = items[items.length - 1]
-      if (e.shiftKey && document.activeElement === first) {
+      // Focus on something outside the list (a heading the dialog started on): Tab stays inside.
+      if (!items.includes(document.activeElement as HTMLElement)) {
+        e.preventDefault()
+        ;(e.shiftKey ? last : first).focus()
+      } else if (e.shiftKey && document.activeElement === first) {
         e.preventDefault()
         last.focus()
       } else if (!e.shiftKey && document.activeElement === last) {

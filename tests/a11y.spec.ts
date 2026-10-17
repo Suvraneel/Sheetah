@@ -1,5 +1,5 @@
 import AxeBuilder from '@axe-core/playwright'
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { openApp, openDemo } from './helpers'
 
 const TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice']
@@ -56,6 +56,65 @@ for (const colorScheme of ['light', 'dark'] as const) {
       expect(violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(' ')}`)).toEqual([])
     })
 
+    test('compare, anonymize, look-up and stack dialogs have no violations', async ({ page }) => {
+      await openApp(page)
+      const csv = (name: string, text: string) => ({ name, mimeType: 'text/csv', buffer: Buffer.from(text) })
+      await page.locator('input[type=file]').setInputFiles([
+        csv('people_a.csv', 'id,email,city\n1,a@x.com,Pune\n2,b@x.com,Delhi\n'),
+        csv('people_b.csv', 'id,email,city\n1,a@x.com,Pune\n3,c@x.com,Oslo\n'),
+      ])
+      await page.getByRole('button', { name: 'Compare two tables' }).click()
+      await expect(page.getByText('unique and never empty')).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Compare', exact: true })).toBeEnabled()
+      let { violations } = await new AxeBuilder({ page }).withTags(TAGS).analyze()
+      expect(violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(' ')}`)).toEqual([])
+      await page.keyboard.press('Escape')
+      await page.getByRole('button', { name: 'Anonymize', exact: true }).click()
+      await expect(page.locator('.anon-row').first()).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Create anonymized result' })).toBeEnabled()
+      ;({ violations } = await new AxeBuilder({ page }).withTags(TAGS).analyze())
+      expect(violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(' ')}`)).toEqual([])
+      await page.keyboard.press('Escape')
+      await page.getByRole('button', { name: 'Look up', exact: true }).click()
+      await expect(page.locator('.lookup-stats')).toContainText('rows find a match')
+      ;({ violations } = await new AxeBuilder({ page }).withTags(TAGS).analyze())
+      expect(violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(' ')}`)).toEqual([])
+      await page.keyboard.press('Escape')
+      await page.getByRole('button', { name: 'Stack tables into one' }).click()
+      await expect(page.locator('.stack-report')).toContainText('rows')
+      ;({ violations } = await new AxeBuilder({ page }).withTags(TAGS).analyze())
+      expect(violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(' ')}`)).toEqual([])
+    })
+
+    test('suggestions, applied steps and the text column menu have no violations', async ({ page }) => {
+      await openApp(page)
+      await page.getByRole('button', { name: 'Or tidy up a messy sales export' }).click()
+      await page.getByRole('button', { name: /^Leave out/ }).click()
+      await expect(page.locator('.op-chip', { hasText: 'Without' }).first()).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Run query' })).toBeVisible({ timeout: 60_000 })
+      await expect(page.locator('.hint-chips')).toBeVisible()
+      let { violations } = await new AxeBuilder({ page }).withTags(TAGS).analyze()
+      expect(violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(' ')}`)).toEqual([])
+      // City: the clean-up group with Replace.
+      await page.locator('.grid-scroll').focus()
+      await page.keyboard.press('ArrowDown')
+      await page.keyboard.press('Home')
+      for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight')
+      await page.keyboard.press('Alt+ArrowDown')
+      await expect(page.getByLabel('Value to replace')).toBeVisible()
+      ;({ violations } = await new AxeBuilder({ page }).withTags(TAGS).analyze())
+      expect(violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(' ')}`)).toEqual([])
+    })
+
+    test('unpivot dialog has no violations', async ({ page }) => {
+      await openApp(page)
+      await page.locator('input[type=file]').setInputFiles([{ name: 'monthly.csv', mimeType: 'text/csv', buffer: Buffer.from('region,Jan,Feb,Mar\nNorth,1,2,3\n') }])
+      await page.getByRole('button', { name: 'Turn 3 month columns into rows' }).click()
+      await expect(page.locator('.stack-report')).toContainText('rows')
+      const { violations } = await new AxeBuilder({ page }).withTags(TAGS).analyze()
+      expect(violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(' ')}`)).toEqual([])
+    })
+
     test('chart view has no violations', async ({ page }) => {
       await openDemo(page)
       await page.getByRole('button', { name: 'Chart', exact: true }).click()
@@ -93,10 +152,23 @@ test.describe('keyboard and screen readers', () => {
     await expect(page.locator('.grid-scroll')).toBeFocused()
 
     await page.getByRole('button', { name: 'Add column' }).click()
+    await expect(page.getByRole('dialog', { name: 'Add a column' })).toBeVisible()
     for (let i = 0; i < 25; i++) await page.keyboard.press('Tab')
     expect(await page.evaluate(() => !!document.activeElement?.closest('[role=dialog]'))).toBe(true)
     await page.keyboard.press('Escape')
     await expect(page.getByRole('button', { name: 'Add column' })).toBeFocused()
+  })
+
+  test('focus follows the work: onto the rows after opening, onto the next suggestion after taking one', async ({ page }) => {
+    await openApp(page)
+    await page.getByRole('button', { name: 'Or tidy up a messy sales export' }).focus()
+    await page.keyboard.press('Enter')
+    await expect(page.locator('.result-meta')).toContainText('23 rows')
+    await expect(page.locator('.grid-scroll')).toBeFocused()
+    await page.getByRole('button', { name: /^Leave out/ }).focus()
+    await page.keyboard.press('Enter')
+    await expect(page.locator('.result-meta')).toContainText('16 of 23 rows')
+    await expect(page.locator('.hint-chips button:focus')).toHaveCount(1)
   })
 
   test('the SQL editor does not trap Tab', async ({ page }) => {

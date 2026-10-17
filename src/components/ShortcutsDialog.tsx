@@ -23,8 +23,13 @@ const GROUPS: { title: string; rows: [string[][], string][] }[] = [
       [[['Home'], ['End']], 'First or last column'],
       [[[MOD, '↑ ↓ ← →']], 'Jump to the edge'],
       [[['Shift', '↑ ↓ ← →'], ['Shift', 'click']], 'Extend the selection'],
+      [[['Shift', 'Space']], 'Select the row (its number does it too)'],
+      [[['Ctrl', 'Space']], 'Select the column: its count, sum and average in the status bar'],
       [[[MOD, 'A']], 'Select everything'],
       [[[MOD, 'C']], 'Copy the selection as tab-separated text'],
+      [[[MOD, 'V']], 'Paste cells copied from a spreadsheet as a new table'],
+      [[[MOD, 'F']], 'Find text in every column'],
+      [[[MOD, 'Z'], [MOD, 'Shift', 'Z']], 'Undo or redo a sort, filter, clean-up or look-up'],
       [[[ALT, '↓'], ['Shift', 'F10']], 'Open the column menu: sort, filter, profile'],
       [[['Esc']], 'Clear the selection'],
     ],
@@ -60,7 +65,9 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
         <div className="shell modal modal-wide">
           <div className="core">
             <span className="eyebrow">Keyboard</span>
-            <h2 id="keys-title">Shortcuts</h2>
+            <h2 id="keys-title" tabIndex={-1} data-autofocus>
+              Shortcuts
+            </h2>
             <div className="keys">
               {GROUPS.map((g) => (
                 <section key={g.title} className="keys-group" aria-labelledby={`keys-${g.title}`}>

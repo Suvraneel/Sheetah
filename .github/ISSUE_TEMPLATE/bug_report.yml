@@ -1,0 +1,39 @@
+name: Bug report
+description: Something in Sheetah doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please **don't attach your data**: describe its shape instead (columns, types, row count, file size).
+        Security problems go to a private advisory (Security tab → Report a vulnerability), not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The SQL you ran (with sensitive values replaced), the file type and size, the clicks.
+      placeholder: |
+        1. Open a 300 MB CSV with 12 columns
+        2. Filter city = Delhi
+        3. …
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and OS
+      placeholder: Chrome 128 on macOS 15
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Error details
+      description: If Sheetah showed "Something went wrong", paste what "Copy details" gave you (version, browser, error; never data).
+      render: text

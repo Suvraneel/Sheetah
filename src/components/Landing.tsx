@@ -1,28 +1,39 @@
-import type { CSSProperties, ReactNode } from 'react'
+import { Suspense, lazy, type CSSProperties, type ReactNode } from 'react'
 import { BtnIcon, Icon, Logo } from './Icon'
-import { ProductShot } from './ProductShot'
 import { ThemeToggle } from './ThemeToggle'
 import { Reveal } from './Reveal'
+
+const ProductShot = lazy(() => import('./ProductShot').then((m) => ({ default: m.ProductShot })))
 
 interface Props {
   sharedSql?: string | null
   ready: boolean
+  /** The engine couldn't start in this browser. */
+  failed?: boolean
   offlineReady?: boolean
   busy: string | null
   onPick: () => void
   onDemo: () => void
+  /** Open the small, messy sample export (totals, amounts as text, empty rows) to tidy up. */
+  onMessy?: () => void
 }
 
-export function Landing({ ready, offlineReady, busy, sharedSql, onPick, onDemo }: Props) {
+export function Landing({ ready, failed, offlineReady, busy, sharedSql, onPick, onDemo, onMessy }: Props) {
   return (
     <div className="landing">
       <header className="land-nav">
         <span className="brand">
           <Logo /> Sheetah
         </span>
-        <span className={`engine-pill${ready ? ' is-ready' : ''}`} role="status">
+        <span className={`engine-pill${ready ? ' is-ready' : ''}${failed ? ' is-failed' : ''}`} role="status">
           <span className="dot" aria-hidden />
-          {ready ? (offlineReady ? 'Engine ready · works offline' : 'Engine ready · runs on this device') : 'Loading the engine (about 8 MB, once)…'}
+          {failed
+            ? 'The engine couldn’t start'
+            : ready
+              ? offlineReady
+                ? 'Engine ready · works offline'
+                : 'Engine ready · runs on this device'
+              : 'Getting ready (8 MB, first visit only)…'}
         </span>
         <ThemeToggle className="icon-pill-sm" />
       </header>
@@ -47,13 +58,13 @@ export function Landing({ ready, offlineReady, busy, sharedSql, onPick, onDemo }
             Open the <span className="hl">whole</span> file.
           </h1>
           <p className="lede">
-            Scroll millions of rows like a spreadsheet, then ask anything in SQL. Sheetah runs DuckDB inside this tab,
-            so your data never leaves your computer.
+            Scroll millions of rows like a spreadsheet, tidy up messy exports in a click, then ask anything in SQL.
+            Sheetah runs DuckDB inside this tab, so your data never leaves your computer.
           </p>
         </Reveal>
 
         <Reveal className="hero-drop" delay={120}>
-          <button className="shell drop" onClick={onPick} disabled={!!busy}>
+          <button className="shell drop" onClick={onPick} disabled={!!busy || failed}>
             <span className="core drop-core">
               <span className="drop-icon">
                 <Icon name="upload" size={24} />
@@ -66,7 +77,9 @@ export function Landing({ ready, offlineReady, busy, sharedSql, onPick, onDemo }
                   </>
                 )}
               </span>
-              <span className="drop-sub">CSV, Excel, JSON or Parquet · compressed .gz works too</span>
+              <span className="drop-sub">
+                CSV, Excel, JSON or Parquet · compressed .gz works too<span className="on-pointer"> · or paste cells from a spreadsheet</span>
+              </span>
               <span className="drop-private">
                 <Icon name="lock" size={13} /> Read locally. Nothing is uploaded.
               </span>
@@ -77,17 +90,26 @@ export function Landing({ ready, offlineReady, busy, sharedSql, onPick, onDemo }
               <span className="stat-num">1,048,576</span>
               <span className="stat-cap">rows is where Excel stops. Sheetah keeps scrolling.</span>
             </p>
-            <button className="btn btn-primary" onClick={onDemo} disabled={!!busy}>
+            <button className="btn btn-primary" onClick={onDemo} disabled={!!busy || failed}>
               Try 1,000,000 sample rows
               <BtnIcon name="arrowRight" />
             </button>
-            <span className="cta-note">Generated right here in a second. No file needed.</span>
+            <span className="cta-note">Generated right here in a few seconds. No file needed.</span>
+            {onMessy && (
+              <button className="link-btn cta-messy" onClick={onMessy} disabled={!!busy || failed}>
+                Or tidy up a messy sales export
+                <Icon name="arrowRight" size={14} />
+              </button>
+            )}
           </div>
         </Reveal>
       </section>
 
       <Reveal className="showcase">
-        <ProductShot />
+        {/* Below the fold: it loads after the page is usable (a placeholder holds its place meanwhile). */}
+        <Suspense fallback={<div className="shot shot-placeholder" aria-hidden />}>
+          <ProductShot />
+        </Suspense>
       </Reveal>
 
       <section className="features" aria-labelledby="features-title">
@@ -110,23 +132,26 @@ export function Landing({ ready, offlineReady, busy, sharedSql, onPick, onDemo }
           </Reveal>
           <Reveal className="b-b" delay={80}>
             <Feature title="SQL when you want it" visual={<SqlSketch />}>
-              Sort and filter from the column header. Each click writes readable SQL you can keep editing.
+              Sort, filter, clean up and look up from the column header. Each click writes readable SQL you can keep
+              editing, or undo.
             </Feature>
           </Reveal>
           <Reveal className="b-c" delay={160}>
             <Feature title="Private by design" visual={<NetworkSketch />}>
-              The engine ships with the page. No uploads, no accounts, no analytics.
+              The engine ships with the page. No uploads, no accounts, no analytics. Anonymize personal data before you
+              share.
             </Feature>
           </Reveal>
           <Reveal className="b-d" delay={80}>
             <Feature title="Answers at a glance" visual={<StatsSketch />}>
-              Select a range for its count, sum and average. Flip any result to a chart or a pivot, computed over
-              every row.
+              Select a range for its count, sum and average. Flip any result to a chart or a pivot, or compare two
+              versions of a file, computed over every row.
             </Feature>
           </Reveal>
           <Reveal className="b-e" delay={160}>
             <Feature title="Take it with you" wide visual={<ExportSketch />}>
-              Export any result as CSV or Parquet, or share the query as a link. Only the SQL travels, never the data.
+              Export any result to Excel, CSV or Parquet, or share the query as a link. Only the SQL travels, never the
+              data.
             </Feature>
           </Reveal>
         </div>
@@ -139,6 +164,13 @@ export function Landing({ ready, offlineReady, busy, sharedSql, onPick, onDemo }
           <Logo size={16} /> Sheetah
         </span>
         <span>Built with DuckDB-WASM. A static site: no server ever sees your data.</span>
+        <nav className="land-links" aria-label="About Sheetah">
+          <a href="/privacy.html">Privacy</a>
+          <a href="https://github.com/Suvraneel/Sheetah" target="_blank" rel="noreferrer">
+            Source on GitHub
+          </a>
+          <span className="muted">v{__APP_VERSION__}</span>
+        </nav>
       </footer>
     </div>
   )
@@ -195,13 +227,13 @@ function SqlSketch() {
       </div>
       <pre className="viz-code">
         <span className="ln">
-          <i className="k">SELECT</i> * <i className="k">FROM</i> (<i className="k">SELECT</i> * <i className="k">FROM</i> <i className="s">"orders"</i>)
+          <i className="k">SELECT</i> * <i className="k">FROM</i> orders
         </span>
         <span className="ln is-new" style={nth(0)}>
-          <i className="k">WHERE</i> <i className="s">"city"</i>::<i className="t">VARCHAR</i> = <i className="s">'Delhi'</i>
+          <i className="k">WHERE</i> city = <i className="s">'Delhi'</i>
         </span>
         <span className="ln is-new" style={nth(1)}>
-          <i className="k">ORDER BY</i> <i className="s">"total"</i> <i className="k">DESC NULLS LAST</i>
+          <i className="k">ORDER BY</i> total <i className="k">DESC NULLS LAST</i>
         </span>
       </pre>
     </div>
@@ -269,7 +301,7 @@ function ExportSketch() {
           <i />
           <i />
           <i />
-          <b>.csv</b>
+          <b>.xlsx</b>
         </span>
         <span className="viz-file is-alt" style={nth(1)}>
           <i />

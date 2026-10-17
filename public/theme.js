@@ -18,7 +18,7 @@
       if (localStorage.getItem(next) === null) localStorage.setItem(next, localStorage.getItem(k))
       localStorage.removeItem(k)
     }
-  } catch {
+  } catch (e) { // eslint-disable-line no-unused-vars -- a binding: old browsers reject a bare catch
     /* storage blocked: nothing to carry over */
   }
   var root = document.documentElement
@@ -26,7 +26,7 @@
   function pref() {
     try {
       return localStorage.getItem('sheetah:theme')
-    } catch {
+    } catch (e) { // eslint-disable-line no-unused-vars -- a binding: old browsers reject a bare catch
       return root.dataset.themePref || null // storage blocked: the app keeps the choice here
     }
   }

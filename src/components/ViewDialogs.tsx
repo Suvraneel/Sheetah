@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { SavedView } from '../engine/views'
-import { suggestTable } from '../engine/views'
+import { shapeOf, suggestTable } from '../engine/views'
 import { BtnIcon } from './Icon'
 import { useDialog } from './useDialog'
 
@@ -62,17 +62,30 @@ export function RemapDialog({
   view,
   missing,
   available,
+  shapes,
+  prefer,
   onRun,
   onClose,
 }: {
   view: SavedView
   missing: string[]
   available: string[]
+  /** The open tables' column names: one that has a missing table's columns is the first guess. */
+  shapes?: Record<string, string[]>
+  /** The table on screen: the guess when it fits (it's what the library says the view fits). */
+  prefer?: string
   onRun: (mapping: Record<string, string>, remember: boolean) => void
   onClose: () => void
 }) {
   const [mapping, setMapping] = useState<Record<string, string>>(() =>
-    Object.fromEntries(missing.map((m) => [m, suggestTable(m, available) ?? ''])),
+    Object.fromEntries(
+      missing.map((m) => {
+        const want = shapeOf(view, m)?.map((c) => c.toLowerCase())
+        const has = (t: string) => (shapes && Object.hasOwn(shapes, t) ? shapes[t] : [])
+        const fits = want?.length ? available.filter((t) => want.every((c) => has(t).some((x) => x.toLowerCase() === c))) : []
+        return [m, (prefer && fits.includes(prefer) ? prefer : fits.length ? suggestTable(m, fits) : suggestTable(m, available)) ?? '']
+      }),
+    ),
   )
   const [remember, setRemember] = useState(true)
   const dialog = useDialog<HTMLDivElement>(onClose)

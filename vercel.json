@@ -1,5 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "installCommand": "npm ci --ignore-scripts",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
   "headers": [
     {
       "source": "/(.*)",
@@ -30,7 +34,7 @@
         },
         {
           "key": "Permissions-Policy",
-          "value": "camera=(), microphone=(), geolocation=(), usb=(), serial=(), hid=(), payment=(), midi=(), browsing-topics=(), interest-cohort=()"
+          "value": "camera=(), microphone=(), geolocation=(), usb=(), serial=(), hid=(), payment=(), midi=(), browsing-topics=()"
         },
         {
           "key": "Strict-Transport-Security",
@@ -58,6 +62,24 @@
     },
     {
       "source": "/(sw.js|precache-manifest.json)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    },
+    {
+      "source": "/(og.png|apple-touch-icon.png|favicon.svg|icons/.*)",
+      "headers": [
+        {
+          "key": "Cross-Origin-Resource-Policy",
+          "value": "cross-origin"
+        }
+      ]
+    },
+    {
+      "source": "/(|index.html|manifest.webmanifest|theme.js|compat.js)",
       "headers": [
         {
           "key": "Cache-Control",

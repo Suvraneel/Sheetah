@@ -1,4 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { LOCALE } from '../engine/sql'
 import { fmt, type Point } from '../engine/chart'
 
 /*
@@ -18,7 +19,7 @@ interface Props {
   compact?: boolean
 }
 
-const exact = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
+const exact = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 2 })
 
 function niceTicks(min: number, max: number, count: number): number[] {
   if (min === max) return [min]

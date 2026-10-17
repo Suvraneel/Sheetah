@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { openApp, runSql } from './helpers'
 
 test('after one visit, Sheetah opens and runs queries with no network', async ({ page, context }) => {

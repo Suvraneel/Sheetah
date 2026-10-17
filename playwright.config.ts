@@ -21,11 +21,18 @@ export default defineConfig({
     // Lets a pre-installed Chromium be used when Playwright's own download isn't available.
     launchOptions: process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {},
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } } }],
-  webServer: {
-    command: `npx vite preview --port ${PORT} --strictPort`,
-    url: `http://localhost:${PORT}`,
-    reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
-  },
+  projects: [
+    // Pure functions (SQL building, number parsing, formatting, share links): Node only, no browser, no build.
+    { name: 'unit', testMatch: /unit\/.*\.test\.ts$/ },
+    { name: 'chromium', testIgnore: /unit\//, use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } } },
+  ],
+  // Unit tests alone (`npm run test:unit`) need no build and no server.
+  webServer: process.argv.includes('--project=unit')
+    ? undefined
+    : {
+        command: `npx vite preview --port ${PORT} --strictPort`,
+        url: `http://localhost:${PORT}`,
+        reuseExistingServer: !process.env.CI,
+        timeout: 60_000,
+      },
 })

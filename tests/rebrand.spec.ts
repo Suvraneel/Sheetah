@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from './fixtures'
 import { openApp, openDemo, runSql } from './helpers'
 
 /*
@@ -53,7 +53,7 @@ test('saved views, history, theme and kept tables carry over from the Quarry nam
   await page.reload()
 
   // Kept table restored from the old folder, which is then removed.
-  await expect(page.locator('.toast')).toContainText('Restored 1 table', { timeout: 90_000 })
+  await expect(page.locator('.toast', { hasText: 'Restored 1 table' })).toBeVisible({ timeout: 90_000 })
   await expect(page.locator('.side-name', { hasText: 'kept' })).toBeVisible()
   expect(await folderExists(page, 'quarry-tables')).toBe(false)
   expect(await folderExists(page, 'sheetah-tables')).toBe(true)

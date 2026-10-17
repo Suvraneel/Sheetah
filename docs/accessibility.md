@@ -41,9 +41,11 @@
 |---|---|---|---|---|
 | Skip link | 1st stop | Focus the grid | — | — |
 | SQL editor | Moves in and out | New line; ⌘/Ctrl+Enter runs | Closes autocomplete | Autocomplete with ↑/↓ |
-| Grid | One stop | — | Clears the selection | Move; Shift extends; ⌘/Ctrl jumps to edges; ⌘/Ctrl+C copies; Alt+↓ opens the column menu |
+| Grid | One stop | Shift+Space selects the row, Ctrl+Space the column | Clears the selection | Move; Shift extends; ⌘/Ctrl jumps to edges; ⌘/Ctrl+C copies; Alt+↓ opens the column menu |
 | Column menu | Cycles controls | Applies | Closes, focus back to grid | — |
-| Dialogs | Trapped | Submits | Closes, focus restored | — |
+| Dialogs | Trapped (also from a heading the dialog starts on) | Submits | Closes, focus restored | — |
+| Suggestions and steps | One stop each | Applies or removes it; focus moves to the chip now in its place (or the grid), never to the page | — | — |
+| Opening a file or the sample | — | From the landing page, focus lands on the rows (the landing page is gone) | — | — |
 
 ### Screen Reader (accessibility-tree check)
 | Element | Exposed as | Notes |
@@ -51,13 +53,24 @@
 | Grid | grid "Results: 1,000,000 rows, 11 columns", with usage help via `aria-describedby` | Row count includes the header row |
 | Active cell | gridcell "Diya Smith", row 3, column 3, header "customer, varchar", selected | Tracked with `aria-activedescendant`; follows jumps to row 1,000,000 |
 | Range selection | Polite live region: "Selection: 5 values, sum 16,850.28, average 3,370.06…" | Same numbers as the status bar |
-| Column headers | columnheader "total, double", with `aria-sort` when sorted | — |
+| Column headers | columnheader "total, number", with `aria-sort` when sorted | A column behind the Convert suggestion reads "amount, number as text" |
+| Pinned first column | Always in the mirror while the others scroll under it | `aria-activedescendant` never points at a cell that isn't rendered |
+| Suggestions and steps | Buttons ("Leave out 4 total lines and 3 empty rows", "Without 4 total lines") | Suggestions are outlined, applied steps filled: shape and wording, not only colour |
+| Cell values | As drawn: "1,234.50", "18%" | The stored value is in copies, exports and SQL |
 
 ### Other checks
 - **200% zoom** (720×450 CSS px): no horizontal page scroll on the landing page or the workspace.
 - **Reduced motion**: every animation and transition is disabled under `prefers-reduced-motion`.
 - **Performance cost of the mirror**: scrolling stays at a 16.6 ms median frame (60 fps).
+- **axe** runs in light and dark over the landing page, the workspace, every dialog (compare, anonymize, look-up,
+  stack, unpivot, pivot, shortcuts), the column menu with its clean-up group, suggestions and applied steps, charts
+  and the phone sheet.
+
+- **Focus is visible on the SQL editor** (a ring on its panel), which had none; the shortcuts dialog opens on its
+  heading, in view, instead of a Done button below the fold on short screens.
+- **Notices never cover a dialog's buttons**: they wait under its backdrop.
 
 ### Next
 1. Test with VoiceOver (Safari) and NVDA (Firefox/Chrome). Automated checks and tree inspection can't confirm how announcements sound.
-2. Consider announcing new results ("1,000,000 rows loaded") after each query run.
+2. ~~Consider announcing new results after each query run.~~ Done: the row count ("16 of 23 rows, 8 columns") is a
+   polite status, always in the page so the first result is read too, and without the timing.

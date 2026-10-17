@@ -98,3 +98,80 @@ also caught `<aside role="dialog">` (not allowed by ARIA in HTML).
 - Fixed two older bugs found while reshooting: the column menu ran off the bottom of the screen (it was placed before
   its histogram rendered), and chart screen-reader tables put `sr-only` on the `<table>` itself; tables ignore height
   limits, so the "1px" table laid out every row and added ~200px of empty scroll to the column menu and chart panel.
+
+## The monthly export
+
+A hands-on pass with a realistic export (a sales register with ₹ amounts as text, sub-totals, a grand total, empty
+rows, a region named once per group, and month columns) set the next round of work around one recurring job: the same
+report arrives every month and needs the same tidying.
+
+- **Rows that aren't data** are counted on open and offered as one chip ("Leave out 4 total lines and 3 empty rows"),
+  applied before any clean-up so filling down can't bring them back. "Grand/Sub-total" count anywhere; a plain "Total"
+  only in the first text column, in a row with empty cells or whose numbers add up to the rows above it. A fuel brand
+  called Total stays data.
+- **Replace a value**, **percentages** shown as 18% (only for columns converted from "18%" text), **unpivot** for
+  month/quarter/year columns, **Excel title lines** above the column names left out.
+- **Save the steps, run them next month**: a saved view remembers its table's columns, and a file with the same columns
+  under a new name is offered the view in one click.
+- **A messy sample** on the landing page, whose tidied numbers add up to its own Grand Total (a unit test checks).
+- **Phones**: suggestions and applied steps are one swipeable row each; six steps stacked one per line had pushed the
+  grid off the screen.
+
+Two independent code reviews of these commits found 19 defects, all fixed: chiefly an empty month column turning
+unpivoted numbers into text, saved views re-pointing columns that shared the table's name, percent display guessed from
+column names (0.42% shown as 42%), a replace step silently disabled by a later case change, two toasts overlapping and
+blocking each other's buttons, and stale suggestions on a table replaced under the same name.
+
+## First contact: files, errors and where rows came from
+
+A UX audit (one reviewer working the production build as a spreadsheet user would) ranked what still made people stop
+and guess. The fixes, in its order:
+
+- **The file that isn't what it says**: a PDF or image renamed .csv, a zip, a Word file, an encrypted .xlsx (an OLE
+  container, so it read as "old .xls") now say what they are and what to do. The ".xls" that banks and ERPs export as a
+  web page or Excel 2003 XML opens like a workbook (in its declared encoding, leaf tables only, row and column spans
+  left empty as Excel does); Excel's UTF-16 "Unicode text" opens too. A CSV with only column names says so.
+- **SQL errors in a spreadsheet person's words**, with a one-click fix where one is safe: `city = "Pune"` → *Use
+  'Pune'*; a misspelt column or table → *Use total*. The fix rewrites names outside text and comments only.
+- **Fill down offered**, not just available: the first columns from the left, whose first row is named, with gaps that
+  sit under their value (a phone number given now and then has values next to each other and isn't offered).
+- **Where rows came from**: counted, unpivoted or renamed rows carry a quiet chip (*Rows counted by product, from
+  orders*) that goes back with every step the rows had.
+- **Paste** cells from a spreadsheet anywhere outside the editor to make a table.
+- Smaller: pivot charts without the Total row, a sort chip that says ascending or descending, date layouts named as
+  patterns, the Export menu bringing itself into view on phones, a narrower row-number gutter on phones, Alt+↓ with
+  nothing selected.
+
+A code review of the batch found 14 defects, all fixed before commit: chiefly plain-words load errors replaced by a
+generic "didn't read as any of them", windows-1252 web pages decoded as UTF-8 (£ and é lost), nested layout tables
+read as one cell, DuckDB's own `countif` mistaken for the spreadsheet one, a column named Order told "ORDER is in the
+wrong place", and lookups on a plain object answering `constructor`. The bundle check itself was found to under-count
+what the page loads first (13 KB of preloaded shared chunks); it now reads `index.html`, and five modules moved out of
+the first download to pay for the new features.
+
+## Second audit: clicks and SQL together, trust, bank statements
+
+A second audit drove the production build as someone with real monthly files (a bank statement with a summary
+footer, a Tally export with title lines, a 600,000-row register, an en-US reader with day-first dates) at 1440×900,
+1280×720 and on a phone. Its top finding: SQL typed against a tidied table silently read the raw file, so the totals
+the tidy-up had removed came back. What changed:
+
+- **Clicks and SQL work together**: typed SQL that reads a table with tidy-up steps is offered *Run on the tidied
+  rows* (a `WITH` of the same name, which shadows the table). Only for queries that read, never for one that is the
+  steps' own SQL edited, and never for INSERT or CREATE … AS (it would copy rows twice).
+- **Trust**: leaving out total lines is tied out against the rows left ("Invoice Total comes to 721,715, counted
+  once"); a result left on screen by a query that failed is dimmed.
+- **Next month**: saved views bring their steps back as chips, compared to the view's SQL token by token (comments
+  aside) so a views file can't run steps its SQL doesn't show; the day/month swap and the tie-out's sums stay out of
+  saved views.
+- **Files as they come**: Cr/Dr amounts (only when some are Dr: on its own, "₹12 Cr" is twelve crore), "Convert
+  anyway" with a footer in the column, empty leading columns set aside (they hid the Total in the next column, which
+  doubled the sum), stray spaces, ambiguous dates read the other way from the reader's habit, total lines in tables
+  of up to 5 million rows.
+- **Keyboard and layout**: focus lands on the rows or the next chip instead of the page; notices wait under dialogs;
+  the editor shows focus; generated SQL holds at four lines on short screens.
+
+A code review of the batch found 12 defects before commit, all fixed: chiefly the tidied-rows offer firing for
+INSERT … SELECT (rows copied twice) and for the steps' own decimal-comma SQL (1234,567 read as 1234567), Cr read as a
+sign in "₹12 Cr", the day/month swap saved into views (it would corrupt next month's correctly read dates), the
+empty-column check scanning five million rows three times, and a re-pointed view silently losing its chips.

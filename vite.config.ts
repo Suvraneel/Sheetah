@@ -34,11 +34,17 @@ function precacheManifest(): Plugin {
         }
       }
       walk(outDir)
-      const list = files.filter((f) => !/^(sw\.js|precache-manifest\.json)$/.test(f) && !f.endsWith('.map')).sort()
+      // Not needed offline: the worker itself, social/install images, and pages for crawlers.
+      const skip = /^(sw\.js|precache-manifest\.json|og\.png|robots\.txt|sitemap\.xml|404\.html|icons\/screenshot-.*)$/
+      const list = files.filter((f) => !skip.test(f) && !f.endsWith('.map')).sort()
       const hash = createHash('sha256')
       for (const f of list) hash.update(f).update(readFileSync(join(outDir, f)))
       const version = hash.digest('hex').slice(0, 16)
       writeFileSync(join(outDir, 'precache-manifest.json'), JSON.stringify({ version, files: list }, null, 1))
+      // Stamp the version into the worker itself: browsers only install a new service worker when its
+      // bytes change, so without this a deploy would never reach people who have visited before.
+      const sw = join(outDir, 'sw.js')
+      writeFileSync(sw, readFileSync(sw, 'utf8').replace('__SHEETAH_BUILD__', version))
     },
   }
 }
@@ -61,8 +67,15 @@ function duckdbWorkerWithoutSourcemap(): Plugin {
   }
 }
 
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }
+/** Commit the build came from (Vercel and GitHub Actions provide it), shown with the version in the app. */
+const commit = (process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GITHUB_SHA ?? '').slice(0, 7)
+
 export default defineConfig({
   plugins: [react(), precacheManifest(), duckdbWorkerWithoutSourcemap()],
+  define: {
+    __APP_VERSION__: JSON.stringify(commit ? `${pkg.version} (${commit})` : pkg.version),
+  },
   build: {
     rolldownOptions: {
       output: {

@@ -16,23 +16,49 @@ const fromBase64Url = (s: string) => {
   return Uint8Array.from(bin, (c) => c.charCodeAt(0))
 }
 
-async function pipe(bytes: Uint8Array, stream: CompressionStream | DecompressionStream): Promise<Uint8Array> {
-  const out = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(stream)
-  return new Uint8Array(await new Response(out).arrayBuffer())
+/** Runs bytes through a (de)compression stream, giving up as soon as the output passes `limit` bytes. */
+async function pipe(bytes: Uint8Array, stream: CompressionStream | DecompressionStream, limit = Infinity): Promise<Uint8Array | null> {
+  const reader = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(stream).getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    // A tiny link can inflate to gigabytes (a "zip bomb"): stop reading instead of filling memory.
+    if (size > limit) {
+      await reader.cancel().catch(() => {})
+      return null
+    }
+    chunks.push(value)
+  }
+  const out = new Uint8Array(size)
+  let at = 0
+  for (const c of chunks) {
+    out.set(c, at)
+    at += c.byteLength
+  }
+  return out
 }
+
+/** Longest token accepted from a URL: 100 KB of SQL never compresses to more than this. */
+const MAX_TOKEN = Math.ceil((MAX_SQL * 4) / 3) + 1024
 
 export async function encodeSql(sql: string): Promise<string> {
   const raw = new TextEncoder().encode(sql)
+  if (raw.length > MAX_SQL) throw new Error('That query is too long to share as a link (over 100 KB).')
   if (typeof CompressionStream !== 'undefined') {
-    return `z${toBase64Url(await pipe(raw, new CompressionStream('deflate-raw')))}`
+    const packed = await pipe(raw, new CompressionStream('deflate-raw'))
+    if (packed) return `z${toBase64Url(packed)}`
   }
   return `p${toBase64Url(raw)}`
 }
 
 export async function decodeSql(token: string): Promise<string | null> {
   try {
+    if (token.length > MAX_TOKEN) return null
     const body = fromBase64Url(token.slice(1))
-    const bytes = token[0] === 'z' ? await pipe(body, new DecompressionStream('deflate-raw')) : token[0] === 'p' ? body : null
+    const bytes = token[0] === 'z' ? await pipe(body, new DecompressionStream('deflate-raw'), MAX_SQL) : token[0] === 'p' ? body : null
     if (!bytes || bytes.length > MAX_SQL) return null
     const sql = new TextDecoder('utf-8', { fatal: true }).decode(bytes).trim()
     return sql || null

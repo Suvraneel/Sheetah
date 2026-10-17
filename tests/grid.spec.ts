@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { gridTop, metaText, openDemo, runSql } from './helpers'
 
 test.describe('grid and query engine', () => {
@@ -37,7 +37,7 @@ test.describe('grid and query engine', () => {
     await page.mouse.click(600, top + 80)
     await page.keyboard.press('ControlOrMeta+ArrowDown')
     await expect(page.locator('.statusbar')).toContainText('Row 10,000,000')
-    await expect(page.locator('.statusbar')).toContainText('19999998')
+    await expect(page.locator('.statusbar')).toContainText('19,999,998') // as the cell shows it
   })
 
   test('range selection shows SQL-computed stats and copies TSV', async ({ page, context }) => {
@@ -51,7 +51,7 @@ test.describe('grid and query engine', () => {
     await page.keyboard.up('Shift')
     await expect(page.locator('.status-stats')).toContainText('Count 10')
     await page.keyboard.press('ControlOrMeta+c')
-    await expect(page.locator('.toast')).toContainText('Copied 10 cells')
+    await expect(page.locator('.toast', { hasText: 'Copied 10 cells' })).toBeVisible()
     const clip = await page.evaluate(() => navigator.clipboard.readText())
     expect(clip.split('\n')).toHaveLength(11) // header + 10 rows
   })
@@ -64,11 +64,12 @@ test.describe('grid and query engine', () => {
     await expect(page.locator('.topvals li').first()).toBeVisible()
     await page.locator('.topvals li').first().click()
     await expect(page.locator('.op-chips')).toContainText('city =')
+    await expect(page.locator('.result-meta')).toContainText('of 1,000,000 rows') // the filtered result is in
     const filtered = Number((await metaText(page)).split(' ')[0].replace(/,/g, ''))
     expect(filtered).toBeGreaterThan(50_000)
     expect(filtered).toBeLessThan(100_000)
 
-    await page.mouse.click(860, top + 20)
+    await page.mouse.click(860, (await gridTop(page)) + 20) // the toolbar may have grown a line of chips
     await page.locator('.colmenu-actions .seg').nth(1).click()
     await expect(page.locator('.op-chips')).toContainText('city')
 
@@ -80,10 +81,78 @@ test.describe('grid and query engine', () => {
     await expect(page.locator('.cm-content')).toContainText('AS "revenue_k"')
   })
 
-  test('SQL errors are shown with DuckDB’s message', async ({ page }) => {
+  test('the first column stays in view while a wide table scrolls sideways', async ({ page }) => {
+    await openDemo(page)
+    const months = Array.from({ length: 24 }, (_, i) => `range * ${i + 1} AS m${String(i + 1).padStart(2, '0')}`).join(', ')
+    await runSql(page, `SELECT 'branch ' || range AS branch, ${months} FROM range(50)`)
+    await expect(page.locator('.result-meta')).toContainText('50 rows · 25 columns')
+    const grid = page.locator('.grid-scroll')
+    await grid.evaluate((el) => (el.scrollLeft = el.scrollWidth))
+    const box = (await grid.boundingBox())!
+    // Scrolled all the way right, the far-left strip is still the branch column: clicking it selects branch.
+    await page.mouse.click(box.x + 90, box.y + 44 + 30 * 2 + 15)
+    await expect(page.locator('.statusbar')).toContainText('branch 2')
+    // Moving down the pinned column keeps the view where it is, and screen readers have the cell too.
+    const scrolled = await grid.evaluate((el) => el.scrollLeft)
+    await page.keyboard.press('ArrowDown')
+    await expect(page.locator('.statusbar')).toContainText('branch 3')
+    expect(await grid.evaluate((el) => el.scrollLeft)).toBe(scrolled)
+    await expect(page.locator('.sr-grid [role=columnheader]').first()).toContainText('branch')
+    const active = await grid.getAttribute('aria-activedescendant')
+    await expect(page.locator(`[id="${active}"]`)).toHaveText('branch 3')
+    // Its header opens branch's menu.
+    await page.mouse.click(box.x + 90, box.y + 20)
+    await expect(page.locator('.colmenu-head')).toContainText('branch')
+    await page.keyboard.press('Escape')
+    // Keyboard: moving left from the last column brings columns out from under it, not behind it.
+    await grid.focus()
+    await page.keyboard.press('End')
+    await page.keyboard.press('ControlOrMeta+ArrowLeft')
+    await page.keyboard.press('ArrowRight')
+    await expect(page.locator('.statusbar')).toContainText('m01')
+    expect(await grid.evaluate((el) => el.scrollLeft)).toBe(0)
+  })
+
+  test('Shift+Space selects the row, Ctrl+Space the column, and the active cell is always in the mirror', async ({ page }) => {
+    await openDemo(page)
+    const grid = page.locator('.grid-scroll')
+    await grid.focus()
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Shift+Space')
+    await expect(page.locator('.status-stats')).toContainText('Count 11')
+    // Real column names: a selected row isn't offered as names (that's for files whose names were missed).
+    await expect(page.locator('.statusbar').getByRole('button', { name: 'Use row 3 as column names' })).toHaveCount(0)
+    let active = await grid.getAttribute('aria-activedescendant')
+    await expect(page.locator(`[id="${active}"]`)).toHaveCount(1)
+    await page.keyboard.press('Control+Space')
+    await expect(page.locator('.status-stats')).toContainText('Count 1,000,000')
+    active = await grid.getAttribute('aria-activedescendant')
+    await expect(page.locator(`[id="${active}"]`)).toHaveCount(1)
+  })
+
+  test('SQL errors are explained, with DuckDB’s message under Details', async ({ page }) => {
     await openDemo(page)
     await runSql(page, 'SELEC nope FROM orders')
-    await expect(page.locator('.error-banner')).toContainText('syntax error')
+    await expect(page.locator('.error-banner')).toContainText('SQL couldn’t be read at “SELEC”')
+    await page.locator('.error-banner summary').click()
+    await expect(page.locator('.error-detail code')).toContainText('syntax error at or near "SELEC"')
+    // Text in double quotes, and a table that isn't there: said in the user's terms, with their tables.
+    await runSql(page, 'SELECT * FROM orders WHERE city = "Pune"')
+    await expect(page.locator('.error-banner')).toContainText('Put text in single quotes: \'Pune\'')
+    // One click puts it right and runs it.
+    await page.locator('.error-banner').getByRole('button', { name: "Use 'Pune'" }).click()
+    await expect(page.locator('.cm-content')).toContainText("city = 'Pune'")
+    await expect(page.locator('.error-banner')).toHaveCount(0)
+    await expect(page.locator('.result-meta')).not.toContainText('1,000,000 rows') // only Pune's
+    await runSql(page, 'SELECT * FROM xyzzy')
+    await expect(page.locator('.error-banner')).toContainText('There’s no table called “xyzzy”. Your tables: orders')
+    // No error at all, but a slip: two column names with no comma between them.
+    await runSql(page, 'SELECT city customer FROM orders LIMIT 5')
+    const slip = page.locator('.toast', { hasText: 'customer here is city renamed' })
+    await slip.getByRole('button', { name: 'Add the comma' }).click()
+    await expect(page.locator('.cm-content')).toContainText('SELECT city, customer FROM orders')
+    await expect(page.locator('.result-meta')).toContainText('5 rows · 2 columns')
   })
 
   test('long queries can be cancelled', async ({ page }) => {

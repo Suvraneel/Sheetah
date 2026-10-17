@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { LOCALE } from '../engine/sql'
 import { AGGS, TOP_N, chartData, defaultSpec, xCandidates, type Agg, type ChartData, type ChartSpec } from '../engine/chart'
 import type { ResultSet } from '../engine/result'
 import { Chart } from './Chart'
@@ -9,7 +10,7 @@ interface Props {
   onOpenSql: (sql: string) => void
 }
 
-const nf = new Intl.NumberFormat('en-US')
+const nf = new Intl.NumberFormat(LOCALE)
 
 export function ChartPanel({ result, onOpenSql }: Props) {
   const xs = useMemo(() => xCandidates(result.columns), [result])
@@ -134,11 +135,11 @@ export function ChartPanel({ result, onOpenSql }: Props) {
           {data.points.length ? (
             <Chart kind={data.kind} points={data.points} label={data.title} valueName={data.kind === 'hist' ? 'rows' : 'value'} bucket={data.bucket} />
           ) : (
-            <p className="chart-note muted">No values to plot (every row is empty).</p>
+            <p className="chart-note muted">{result.rowCount ? 'No values to plot (every row is empty).' : 'No rows to chart.'}</p>
           )}
         </figure>
       ) : (
-        <p className="chart-note muted">Drawing…</p>
+        <p className="chart-note muted">{loading ? 'Drawing…' : 'This result can’t be charted. Try Grid view, or run it as a query first.'}</p>
       )}
     </div>
   )

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { openApp, openDemo, recordEgress, runSql } from './helpers'
 
 const SQL = "SELECT city, round(sum(total)) AS revenue FROM orders WHERE status = 'delivered' GROUP BY city ORDER BY revenue DESC"
@@ -9,7 +9,7 @@ test('a shared link carries only the SQL and never auto-runs', async ({ page, co
   await runSql(page, SQL)
   await expect(page.locator('.result-meta')).toContainText('14 rows')
   await page.getByRole('button', { name: 'Share' }).click()
-  await expect(page.locator('.toast')).toContainText('never your data')
+  await expect(page.locator('.toast', { hasText: 'never your data' })).toBeVisible()
   const link = await page.evaluate(() => navigator.clipboard.readText())
   expect(link).toMatch(/#q=z[A-Za-z0-9_-]+$/)
   expect(link).not.toContain('delivered') // compressed, and nothing readable lands in server logs (fragment)

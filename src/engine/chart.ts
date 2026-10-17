@@ -1,5 +1,6 @@
 import { getEngine, quoteIdent } from './db'
-import { splitStatements, type ColumnInfo, type ResultSet } from './result'
+import { LOCALE, isTemporal } from './sql'
+import { colRef, splitStatements, type ColumnInfo, type ResultSet } from './result'
 
 /*
  * Quick charts. Every number is computed by DuckDB over the full result (not a sample), so a chart of
@@ -40,8 +41,7 @@ export interface ChartData {
   title: string
 }
 
-const TEMPORAL = /^(DATE|TIMESTAMP)/i
-export const isTemporal = (c: ColumnInfo) => TEMPORAL.test(c.type)
+export { isTemporal } from './sql'
 /** TIMESTAMP WITH TIME ZONE. */
 export const isZoned = (c: ColumnInfo) => /WITH TIME ZONE|TIMESTAMPTZ/i.test(c.type)
 /**
@@ -49,7 +49,7 @@ export const isZoned = (c: ColumnInfo) => /WITH TIME ZONE|TIMESTAMPTZ/i.test(c.t
  * time: date_trunc, epoch and friends on TIMESTAMPTZ need DuckDB's ICU extension (6.4 MB), which
  * the sealed engine doesn't ship, while the cast to TIMESTAMP is core. The grid already shows UTC.
  */
-export const timeExpr = (c: ColumnInfo) => (isZoned(c) ? `${quoteIdent(c.name)}::TIMESTAMP` : quoteIdent(c.name))
+export const timeExpr = (c: ColumnInfo, ref = quoteIdent(c.name)) => (isZoned(c) ? `${ref}::TIMESTAMP` : ref)
 export const TOP_N = 20
 const BINS = 20
 
@@ -71,13 +71,18 @@ export function defaultSpec(cols: ColumnInfo[]): ChartSpec | null {
   return null
 }
 
-const measure = (spec: ChartSpec) => (spec.agg === 'count' || !spec.y ? 'count(*)' : `${spec.agg}(${quoteIdent(spec.y)}::DOUBLE)`)
+/** The measure as SQL; `ref` maps a column name to how it's referenced (the result table may rename one). */
+const measure = (spec: ChartSpec, ref: (name: string) => string = quoteIdent) =>
+  spec.agg === 'count' || !spec.y ? 'count(*)' : `${spec.agg}(${ref(spec.y)}::DOUBLE)`
 const measureLabel = (spec: ChartSpec) => (spec.agg === 'count' || !spec.y ? 'Rows' : `${AGGS.find((a) => a.id === spec.agg)!.label} of ${spec.y}`)
 
-/** The result's own SQL as a CTE, so table-view queries don't depend on the temp table. */
+/**
+ * The result's own SQL as a CTE, so table-view queries don't depend on the result table. Not
+ * re-indented: that would change string literals that span lines.
+ */
 export function sourceCte(result: Pick<ResultSet, 'sql'>) {
   const last = splitStatements(result.sql).at(-1) ?? ''
-  return `WITH q AS (\n  ${last.replace(/\n/g, '\n  ')}\n)\n`
+  return `WITH q AS (\n${last}\n)\n`
 }
 
 async function rows(sql: string) {
@@ -104,8 +109,15 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
   if (!result.table) return null
   const col = result.columns.find((c) => c.name === spec.x)
   if (!col) return null
+  if (spec.y && !result.columns.some((c) => c.name === spec.y && c.numeric)) spec = { ...spec, y: null, agg: 'count' }
+  // `x`/`value` are for the standalone SQL (original names); `xr`/`vr` query the result table.
   const x = quoteIdent(col.name)
+  const xr = colRef(col)
   const value = measure(spec)
+  const vr = measure(spec, (name) => {
+    const c = result.columns.find((k) => k.name === name)
+    return c ? colRef(c) : quoteIdent(name)
+  })
 
   if (col.numeric) {
     const h = await histogram(result.table, col)
@@ -119,7 +131,7 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
   }
 
   if (isTemporal(col)) {
-    const t = timeExpr(col)
+    const t = timeExpr(col, xr)
     // One pass: the span, and the coarsest grain every value already sits on.
     const [span] = await rows(
       `SELECT (epoch(max(${t})) - epoch(min(${t})))::DOUBLE AS s,
@@ -128,36 +140,43 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
         bool_and(${t} = date_trunc('month', ${t})) AS m,
         bool_and(${t} = date_trunc('week', ${t})) AS w,
         bool_and(${t} = date_trunc('day', ${t})) AS d
-      FROM ${result.table} WHERE ${x} IS NOT NULL`,
+      FROM ${result.table} WHERE ${xr} IS NOT NULL`,
     )
     const grain: Grain | null = span?.y ? 'year' : span?.q ? 'quarter' : span?.m ? 'month' : span?.w ? 'week' : span?.d ? 'day' : null
     const bucket = pickBucket(Number(span?.s ?? 0), /^DATE$/i.test(col.type), grain)
-    const label = bucket === 'hour' ? `strftime(date_trunc('hour', ${t}), '%Y-%m-%d %H:00')` : `date_trunc('${bucket}', ${t})::DATE::VARCHAR`
-    const body = (from: string) =>
-      `SELECT ${label} AS ${quoteIdent(`${bucket}`)}, ${value}::DOUBLE AS value FROM ${from} WHERE ${x} IS NOT NULL GROUP BY 1 ORDER BY 1`
-    const data = await rows(`${body(result.table)} LIMIT 5000`)
+    const label = (e: string) => (bucket === 'hour' ? `strftime(date_trunc('hour', ${e}), '%Y-%m-%d %H:00')` : `date_trunc('${bucket}', ${e})::DATE::VARCHAR`)
+    const sql = `SELECT ${label(timeExpr(col))} AS ${quoteIdent(bucket)}, ${value}::DOUBLE AS value FROM q WHERE ${x} IS NOT NULL GROUP BY 1 ORDER BY 1`
+    // Internal aliases: a column called "value" must not collide with the measure.
+    const data = await rows(
+      `SELECT ${label(t)} AS __x, ${vr}::DOUBLE AS __v FROM ${result.table} WHERE ${xr} IS NOT NULL GROUP BY 1 ORDER BY 1 LIMIT 5000`,
+    )
     return {
       kind: 'line',
       bucket,
-      points: data.map((r) => ({ label: String(r[bucket]), value: Number(r.value) })),
+      points: data.map((r) => ({ label: String(r.__x), value: Number(r.__v) })),
       groups: data.length,
       title: `${measureLabel(spec)} by ${bucket}${isZoned(col) ? ' (UTC)' : ''}`,
-      sql: `${sourceCte(result)}${body('q')}`,
+      sql: `${sourceCte(result)}${sql}`,
     }
   }
 
-  const body = (from: string) =>
-    `SELECT ${x}::VARCHAR AS ${x}, ${value}::DOUBLE AS value FROM ${from} GROUP BY 1 ORDER BY 2 DESC NULLS LAST, 1`
+  const valueAlias = col.name.toLowerCase() === 'value' ? 'total_value' : 'value'
+  // A pivot's grand-total row is a sum of the others, not a category: charted, it dwarfs every bar. It's
+  // the row labelled Total in the first row field (the other fields are empty on it), whichever is charted.
+  const pivotTotal = /GROUPING\s+SETS/i.test(result.sql) && result.columns.length > 0
+  const first = result.columns[0]
+  const notTotal = (inTable: boolean) => (pivotTotal ? ` WHERE ${inTable ? colRef(first) : quoteIdent(first.name)}::VARCHAR IS DISTINCT FROM 'Total'` : '')
+  const sql = `SELECT ${x}::VARCHAR AS ${x}, ${value}::DOUBLE AS ${valueAlias} FROM q${notTotal(false)} GROUP BY 1 ORDER BY 2 DESC NULLS LAST, 1`
   const [data, [count]] = await Promise.all([
-    rows(`${body(result.table)} LIMIT ${TOP_N}`),
-    rows(`SELECT count(DISTINCT ${x})::DOUBLE + max(CASE WHEN ${x} IS NULL THEN 1 ELSE 0 END) AS n FROM ${result.table}`),
+    rows(`SELECT ${xr}::VARCHAR AS __x, ${vr}::DOUBLE AS __v FROM ${result.table}${notTotal(true)} GROUP BY 1 ORDER BY 2 DESC NULLS LAST, 1 LIMIT ${TOP_N}`),
+    rows(`SELECT count(DISTINCT ${xr})::DOUBLE + max(CASE WHEN ${xr} IS NULL THEN 1 ELSE 0 END) AS n FROM ${result.table}${notTotal(true)}`),
   ])
   return {
     kind: 'bar',
-    points: data.map((r) => ({ label: r[col.name] === null ? '(empty)' : String(r[col.name]), value: Number(r.value ?? 0) })),
+    points: data.map((r) => ({ label: r.__x === null ? '(empty)' : r.__x === '' ? '(blank)' : String(r.__x), value: Number(r.__v ?? 0) })),
     groups: Number(count?.n ?? data.length),
     title: `${measureLabel(spec)} by ${col.name}`,
-    sql: `${sourceCte(result)}${body('q')}`,
+    sql: `${sourceCte(result)}${sql}`,
   }
 }
 
@@ -165,7 +184,7 @@ const INTEGER = /^(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT|U)/i
 
 /** Equal-width histogram of a numeric column (computed in SQL, so it works on any row count). */
 export async function histogram(table: string, col: ColumnInfo): Promise<Point[]> {
-  const c = `${quoteIdent(col.name)}::DOUBLE`
+  const c = `${colRef(col)}::DOUBLE`
   const [range] = await rows(`SELECT min(${c}) AS lo, max(${c}) AS hi FROM ${table} WHERE isfinite(${c})`)
   const lo = range?.lo as number | null
   const hi = range?.hi as number | null
@@ -174,8 +193,9 @@ export async function histogram(table: string, col: ColumnInfo): Promise<Point[]
   const intRange = INTEGER.test(col.type) && hi - lo < BINS
   const bins = intRange ? hi - lo + 1 : hi === lo ? 1 : BINS
   const width = intRange ? 1 : hi === lo ? 1 : (hi - lo) / bins
+  if (!Number.isFinite(width) || !Number.isFinite(lo)) return [] // a range wider than doubles can hold
   const counts = await rows(
-    `SELECT least(greatest(floor((${c} - ${lo}) / ${width}), 0), ${bins - 1})::INTEGER AS b, count(*)::DOUBLE AS n
+    `SELECT least(greatest(floor((${c} - (${lo})::DOUBLE) / (${width})::DOUBLE), 0), ${bins - 1})::INTEGER AS b, count(*)::DOUBLE AS n
      FROM ${table} WHERE isfinite(${c}) GROUP BY 1`,
   )
   const byBin = new Map(counts.map((r) => [Number(r.b), Number(r.n)]))
@@ -186,6 +206,6 @@ export async function histogram(table: string, col: ColumnInfo): Promise<Point[]
   })
 }
 
-const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 })
-const plain = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
+const compact = new Intl.NumberFormat(LOCALE, { notation: 'compact', maximumFractionDigits: 2 })
+const plain = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 2 })
 export const fmt = (n: number) => (Math.abs(n) >= 10_000 ? compact.format(n) : plain.format(n))

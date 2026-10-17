@@ -1,5 +1,5 @@
-import { expect, test } from '@playwright/test'
-import type { Page } from '@playwright/test'
+import { expect, test } from './fixtures'
+import type { Page } from './fixtures'
 import { openDemo, runSql } from './helpers'
 
 /** Whether a snapshot file exists in OPFS (false while the folder doesn't exist yet). */
@@ -34,13 +34,13 @@ test('kept tables survive a reload with exact types; sample data and wiped data 
   expect(types).toEqual(['bigint', 'bigint', 'decimal(10,2)', 'date', 'timestamp', 'varchar', 'bigint[]'])
 
   await page.getByLabel('Keep my tables in this browser').check()
-  await expect(page.locator('.toast')).toContainText('kept in this browser')
+  await expect(page.locator('.toast', { hasText: 'kept in this browser' })).toBeVisible()
   await expect
     .poll(() => hasSnapshot(page, 'kept.arrow'))
     .toBe(true)
 
   await page.reload()
-  await expect(page.locator('.toast')).toContainText('Restored 1 table', { timeout: 90_000 })
+  await expect(page.locator('.toast', { hasText: 'Restored 1 table' })).toBeVisible({ timeout: 90_000 })
   await expect(page.locator('.result-meta')).toContainText('1,000 rows')
   await expect(page.locator('.side-name', { hasText: 'orders' })).toHaveCount(0) // sample data is never kept
   expect(await page.locator('.side-list > li', { hasText: 'kept' }).locator('.side-type').allInnerTexts()).toEqual(types)
@@ -61,7 +61,7 @@ test('kept tables survive a reload with exact types; sample data and wiped data 
   await page.getByRole('tab', { name: 'History' }).click()
   await page.getByRole('button', { name: 'Clear all local data' }).click()
   await page.getByRole('button', { name: 'Yes, clear' }).click()
-  await expect(page.locator('.toast')).toContainText('Cleared everything')
+  await expect(page.locator('.toast', { hasText: 'Cleared everything' })).toBeVisible()
   expect(await hasFolder(page)).toBe(false)
   await page.getByRole('tab', { name: 'Tables' }).click()
   await expect(page.getByLabel('Keep my tables in this browser')).not.toBeChecked()

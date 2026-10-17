@@ -1,4 +1,5 @@
 import { getEngine, quoteIdent, quoteLiteral } from './db'
+import { commentText, isIdLike, LOCALE } from './sql'
 import { AGGS, isTemporal, sourceCte, timeExpr, type Agg } from './chart'
 import type { ColumnInfo } from './result'
 
@@ -41,7 +42,7 @@ export class TooManyColumnsError extends Error {
   readonly column: string
   readonly count: number
   constructor(column: string, count: number) {
-    super(`${column} has ${count.toLocaleString('en-US')} different values, more than the ${MAX_PIVOT_COLUMNS} columns a pivot can show.`)
+    super(`${column} has ${count.toLocaleString(LOCALE)} different values, more than the ${MAX_PIVOT_COLUMNS} columns a pivot can show.`)
     this.column = column
     this.count = count
   }
@@ -66,8 +67,9 @@ export function valueLabel(v: ValueField) {
 function aggregate(v: ValueField, i: number, filter?: string) {
   const f = filter ? ` FILTER (WHERE ${filter})` : ''
   if (v.agg === 'count' || !v.column) return `count(*)${f}`
-  // Sums and averages of floating-point values pick up noise (…0.4400004); cents are enough for a summary.
-  if (v.agg === 'sum' || v.agg === 'avg') return `round(${v.agg}(__v${i}::DOUBLE)${f}, 2)`
+  // Exact (compensated) float sums: no rounding in SQL, so rates like 0.0012 survive; the grid formats for display.
+  if (v.agg === 'sum') return `fsum(__v${i}::DOUBLE)${f}`
+  if (v.agg === 'avg') return `favg(__v${i}::DOUBLE)${f}`
   return `${v.agg}(__v${i})${f}`
 }
 
@@ -118,7 +120,7 @@ export function pivotSql(sourceSql: string, spec: PivotSpec, cols: ColumnInfo[],
   if (spec.columns) {
     for (const cv of colValues) {
       const filter = cv === null ? '__pivot IS NULL' : `__pivot = ${quoteLiteral(cv)}`
-      const head = cv === null ? '(empty)' : cv
+      const head = cv === null ? '(empty)' : cv.trim() === '' ? '(blank)' : cv
       values.forEach((v, i) => select.push(`${aggregate(v, i, filter)} AS ${quoteIdent(unique(values.length > 1 ? `${head} · ${valueLabel(v)}` : head))}`))
     }
     values.forEach((v, i) => {
@@ -149,7 +151,7 @@ export function pivotSql(sourceSql: string, spec: PivotSpec, cols: ColumnInfo[],
     .join(' · ')
 
   return [
-    `-- Pivot: ${describe}`,
+    commentText(`-- Pivot: ${describe}`),
     `${sourceCte({ sql: sourceSql }).trimEnd()},`,
     `k AS (\n  SELECT ${kCols.join(', ')} FROM q\n)`,
     `SELECT\n  ${select.join(',\n  ')}`,
@@ -169,7 +171,7 @@ export async function cardinalities(sourceSql: string, cols: ColumnInfo[]): Prom
   if (!list.length) return {}
   const { conn } = await getEngine()
   const res = await conn.query(
-    `${sourceCte({ sql: sourceSql })}SELECT ${list.map((c, i) => `approx_count_distinct(${quoteIdent(c.name)})::DOUBLE AS c${i}`).join(', ')} FROM q`,
+    `${sourceCte({ sql: sourceSql })}SELECT ${list.map((c, i) => `least(approx_count_distinct(${quoteIdent(c.name)}), count(*))::DOUBLE AS c${i}`).join(', ')} FROM q`,
   )
   const row = (res.toArray()[0]?.toJSON() ?? {}) as Record<string, number>
   return Object.fromEntries(list.map((c, i) => [c.name, Number(row[`c${i}`] ?? 0)]))
@@ -181,7 +183,7 @@ export function defaultPivot(cols: ColumnInfo[], counts: Record<string, number>)
     .filter((c) => !c.numeric && !isTemporal(c) && (counts[c.name] ?? 0) >= 2)
     .sort((a, b) => (counts[a.name] ?? 0) - (counts[b.name] ?? 0))
   const time = cols.find(isTemporal)
-  const measures = cols.filter((c) => c.numeric && !/^(id|.*_id)$/i.test(c.name))
+  const measures = cols.filter((c) => c.numeric && !isIdLike(c.name))
   const money =
     ['total', 'amount', 'revenue', 'sales', 'value', 'price', 'cost'].map((w) => measures.find((c) => c.name.toLowerCase().includes(w))).find(Boolean) ??
     measures[0]

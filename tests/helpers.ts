@@ -34,12 +34,17 @@ export async function gridTop(page: Page) {
   return (await page.locator('.grid-scroll').boundingBox())!.y
 }
 
-/** Records every request that leaves this origin (blob:/data: are local). */
+/**
+ * Records every request to another origin that actually went out: ones that completed, and ones that
+ * failed on the network. Requests the browser refused before sending (CSP) don't count: nothing left.
+ */
 export function recordEgress(page: Page) {
   const out: string[] = []
-  page.on('requestfinished', (r) => {
-    const u = r.url()
-    if (!u.startsWith('http://localhost') && !u.startsWith('blob:') && !u.startsWith('data:')) out.push(u)
+  const external = (u: string) => !u.startsWith('http://localhost') && !u.startsWith('blob:') && !u.startsWith('data:')
+  page.on('requestfinished', (r) => external(r.url()) && out.push(r.url()))
+  page.on('requestfailed', (r) => {
+    const reason = r.failure()?.errorText ?? ''
+    if (external(r.url()) && !/CSP|blocked/i.test(reason)) out.push(`${r.url()} (${reason})`)
   })
   return out
 }
@@ -49,7 +54,7 @@ export async function metaText(page: Page) {
 }
 
 /** Picks a format from the result's Export menu and returns the download. */
-export async function exportAs(page: Page, format: 'CSV' | 'CSV, exact values' | 'Parquet') {
+export async function exportAs(page: Page, format: 'Excel (.xlsx)' | 'Excel, with the rows behind it' | 'CSV' | 'CSV, exact values' | 'Parquet') {
   await page.getByRole('button', { name: 'Export' }).click()
   const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('menuitem', { name: format, exact: true }).click()])
   return dl

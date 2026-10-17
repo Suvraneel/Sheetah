@@ -1,6 +1,7 @@
 /** Ultra-light line icons (1.25px stroke), inline so nothing is fetched. */
 const PATHS = {
   arrowRight: 'M4.5 12h15m-5.5-5.5L19.5 12 14 17.5',
+  arrowLeft: 'M19.5 12h-15m5.5-5.5L4.5 12l5.5 5.5',
   arrowUpRight: 'M7 17 17 7M8.5 7H17v8.5',
   play: 'M8 5.5v13l10.5-6.5L8 5.5Z',
   plus: 'M12 5v14M5 12h14',
@@ -28,8 +29,14 @@ const PATHS = {
   monitor: 'M4.5 5.5h15a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1ZM9 20h6M12 16.5V20',
   keyboard: 'M4 7h16a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Zm3 3.5h.01m3 0h.01m3 0h.01m3 0h.01M8 14h8',
   chevronDown: 'm6.5 9.5 5.5 5.5 5.5-5.5',
+  calendar: 'M5.5 6h13a1 1 0 0 1 1 1v11.5a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1ZM4.5 10h15M8.5 4v4M15.5 4v4',
+  fillDown: 'M5 4.5h14v4.5H5zM12 11.5v8m0 0-3.5-3.5m3.5 3.5 3.5-3.5',
   chevronUp: 'm6.5 14.5 5.5-5.5 5.5 5.5',
   panel: 'M4.5 5.5h15a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1ZM9.5 5.5v13M6 9h1.5M6 12h1.5',
+  search: 'M10.5 17.5a7 7 0 1 0 0-14 7 7 0 0 0 0 14Zm5-2 4.5 4.5',
+  compare: 'M7 4.5v15M17 4.5v15M4 8.5h6M14 15.5h6M10 8.5 8 6.5M10 8.5l-2 2M14 15.5l2-2M14 15.5l2 2',
+  shield: 'M12 3.5 5 6v5.5c0 4.2 2.9 7.6 7 9 4.1-1.4 7-4.8 7-9V6l-7-2.5ZM9 12l2 2 4-4',
+  link: 'M10 14a3.5 3.5 0 0 0 5 0l3-3a3.5 3.5 0 0 0-5-5l-1 1M14 10a3.5 3.5 0 0 0-5 0l-3 3a3.5 3.5 0 0 0 5 5l1-1',
 } as const
 
 export type IconName = keyof typeof PATHS

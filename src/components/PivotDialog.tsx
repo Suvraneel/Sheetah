@@ -14,6 +14,7 @@ import {
   type PivotSpec,
 } from '../engine/pivot'
 import type { ColumnInfo } from '../engine/result'
+import { isIdLike, LOCALE } from '../engine/sql'
 import { BtnIcon, Icon } from './Icon'
 import { useDialog } from './useDialog'
 
@@ -27,7 +28,7 @@ interface Props {
   onClose: () => void
 }
 
-const nf = new Intl.NumberFormat('en-US')
+const nf = new Intl.NumberFormat(LOCALE)
 const MAX_VALUES = 3
 
 export function PivotDialog({ sourceSql, columns, rowCount, initial, onCreate, onClose }: Props) {
@@ -50,7 +51,7 @@ export function PivotDialog({ sourceSql, columns, rowCount, initial, onCreate, o
   const spec = edited ?? (counts ? defaultPivot(columns, counts) : null)
   const fields = useMemo(() => groupable(columns), [columns])
   const numeric = columns.filter((c) => c.numeric)
-  const measures = numeric.filter((c) => !/^(id|.*_id)$/i.test(c.name))
+  const measures = numeric.filter((c) => !isIdLike(c.name)) // never "Sum of Voucher No."
   const nextMeasure = (used: (string | null)[]) => measures.find((c) => !used.includes(c.name)) ?? measures[0] ?? numeric[0]
   const update = (patch: Partial<PivotSpec>) => {
     if (!spec) return
