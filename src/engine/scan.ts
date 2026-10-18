@@ -229,16 +229,23 @@ export async function junkRows(result: ResultSet): Promise<DropRows[]> {
   }
   // A date column (dates not converted yet) holding something else on a few lines: a statement's summary
   // below its transactions ("STATEMENT SUMMARY :-", its figures), "Generated on…" notes. Not transactions.
-  const dateCol = columns.find((c) => isTextColumn(c.type) && /(^|_)(date|dt)(_|$)|^date/.test(nameKey(c.name)))
+  // (Not a date something may not have happened by yet: a Payment or Due Date's "Pending" is an open item.)
+  const dateCol = columns.find((c) => isTextColumn(c.type) && /(^|_)(date|dt)(_|$)|^date/.test(nameKey(c.name)) && !/(^|_)(paid|payment|due|delivery|delivered|ship|shipped|expiry|cleared|clearing|realised|realized|maturity|closing|close)(_|$)/.test(nameKey(c.name)))
   if (dateCol) {
     const looks = (ref: string) => `regexp_matches(trim(${ref}::VARCHAR), ${DATE_LIKE})`
+    const [has, dated] = [`has_value(${colRef(dateCol)})`, looks(colRef(dateCol))]
     const u = (await conn.query(
-      `SELECT count(*) FILTER (WHERE has_value(${colRef(dateCol)}))::DOUBLE AS filled, count(*) FILTER (WHERE has_value(${colRef(dateCol)}) AND NOT ${looks(colRef(dateCol))})::DOUBLE AS other FROM ${result.table}`,
-    )).toArray()[0]?.toJSON() as { filled: number; other: number } | undefined
+      `SELECT count(*) FILTER (WHERE ${has})::DOUBLE AS filled, count(*) FILTER (WHERE ${has} AND NOT ${dated})::DOUBLE AS other,
+        min(rowid) FILTER (WHERE ${has} AND ${dated})::DOUBLE AS first_dated, max(rowid) FILTER (WHERE ${has} AND ${dated})::DOUBLE AS last_dated,
+        min(rowid) FILTER (WHERE ${has} AND NOT ${dated})::DOUBLE AS first_other, max(rowid) FILTER (WHERE ${has} AND NOT ${dated})::DOUBLE AS last_other
+      FROM ${result.table}`,
+    )).toArray()[0]?.toJSON() as Record<string, number | null> | undefined
     const [filled, other] = [Number(u?.filled ?? 0), Number(u?.other ?? 0)]
-    // A few such lines among more dated ones (a date column that's mostly something else isn't one; a short
-    // statement's summary can be nearly as long as its transactions).
-    if (other >= 1 && other <= 20 && filled - other >= 3 && filled - other > other) {
+    // A statement's summary is one block, above its transactions or below them: then it may be nearly as long
+    // as they are (a short statement). Lines scattered among the dates ("Pending" in a Payment Date column)
+    // are left alone unless they're few.
+    const block = !!u && (Number(u.first_other) > Number(u.last_dated) || Number(u.last_other) < Number(u.first_dated))
+    if (other >= 1 && other <= 20 && filled - other >= 3 && (filled - other >= 2 * other || (block && filled - other > other))) {
       const q = quoteIdent(dateCol.name)
       out.push({ label: n(other, 'undated line'), keep: `(NOT has_value(${q}) OR ${looks(q)})`, kind: 'undated' })
     }
@@ -327,7 +334,7 @@ export async function cleaningFor(result: ResultSet, column: ColumnInfo, locale 
   const decimals = others.length
     ? ((await conn.query(decimalsSql(result.table, others.map(colRef)))).toArray()[0]?.toJSON() as Record<string, unknown> | undefined)
     : undefined
-  const fileComma = decimals ? fileDecimalComma(others.map((_, i) => readStats(decimals, i))) : undefined
+  const fileComma = decimals ? fileDecimalComma(others.map((c, i) => ({ name: c.name, s: readStats(decimals, i) }))) : undefined
   return suggestCleaning(column.name, readStats(row, 0), locale, result.rowCount <= 5000, fileComma)
 }
 
@@ -350,7 +357,7 @@ export async function textFindings(result: ResultSet, locale = LOCALE): Promise<
     part.forEach((c, j) => stats.push({ c, s: readStats(row, j) }))
   }
   // A column of 1,500 and 0,750 beside a price of 2,49: read the way the file writes decimals.
-  const fileComma = fileDecimalComma(stats.map(({ s }) => s))
+  const fileComma = fileDecimalComma(stats.map(({ c, s }) => ({ name: c.name, s })))
   const convert = stats.map(({ c, s }) => confidentConversion(suggestCleaning(c.name, s, locale, true, fileComma))).filter((c): c is Clean => !!c)
   const converted = new Set(convert.map((c) => c.column))
   const spaces = stats.filter(({ c, s }) => s.untrimmed > 0 && !converted.has(c.name)).map(({ c }) => c.name)

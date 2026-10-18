@@ -56,6 +56,11 @@ test('a zip says what it holds: a workbook named .csv opens, a Word file renamed
   expect(notATable('zip', 'budget export.csv', 'xlsx')).toBe(null)
   expect(notATable('zip', 'report.csv', 'docx')).toContain('is a Word document')
   expect(notATable('zip', 'archive.csv', null)).toContain('is a zip archive')
+  // An Excel binary workbook has xl/ too; a Word file renamed .xlsx is still a Word file.
+  expect(zipInside(zip('[Content_Types].xml', 'xl/workbook.bin', 'xl/worksheets/sheet1.bin'))).toBe('xlsb')
+  expect(notATable('zip', 'book.xlsb', 'xlsb')).toContain('Excel binary workbook')
+  expect(notATable('zip', 'report.xlsx', 'docx')).toContain('is a Word document')
+  expect(notATable('zip', 'report.xlsx', null)).toBe(null)
 })
 
 test('UTF-8 or not: a £ written by Excel on Windows is one byte, not two', async () => {

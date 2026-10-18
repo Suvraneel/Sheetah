@@ -51,4 +51,6 @@ test('a header in two rows (a group merged over its columns) is read as one: Sal
   // A first row of data that happens to be text is data, not names.
   expect(twoRowHeader([['Name', null, 'City'], ['Asha', 'x', 'Pune'], ['Ravi', 'y', 'Goa']], 0, 3)).toBe(null)
   expect(twoRowHeader([['id', 'name', 'amount'], [1, 'Asha', 10], [2, 'Ravi', 20]], 0, 3)).toBe(null)
+  // A first data row of notes ("TBD", "call back") under a header with an empty name: data, not names.
+  expect(twoRowHeader([['Customer', 'City', 'Amount', null], ['Acme Ltd', 'Pune', 'TBD', 'call back'], ['Beta LLP', 'Goa', 1200, null]], 0, 4)).toBe(null)
 })

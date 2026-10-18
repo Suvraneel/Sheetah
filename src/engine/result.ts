@@ -298,7 +298,8 @@ export async function exportResult(result: ResultSet, format: 'csv' | 'parquet',
       const out = quoteIdent(c.name)
       if (safe && /^(VARCHAR|ENUM|JSON)/i.test(c.type)) {
         const v = `${ref}::VARCHAR`
-        return `CASE WHEN regexp_matches(${v}, ${FORMULA_START}) AND NOT regexp_full_match(${v}, '[-+]?[0-9]{1,3}(,?[0-9]{3})*(\\.[0-9]+)?') THEN '''' || ${v} ELSE ${v} END AS ${out}`
+        // A plain negative (−12.50, −1,200): not a phone number written +91…, which Excel would turn into 9.19877E+11.
+        return `CASE WHEN regexp_matches(${v}, ${FORMULA_START}) AND NOT regexp_full_match(${v}, '-([0-9]{1,3}(,[0-9]{3})+|[0-9]{1,15})(\\.[0-9]+)?') THEN '''' || ${v} ELSE ${v} END AS ${out}`
       }
       if (safe && /^(DOUBLE|FLOAT|REAL)$/i.test(c.type)) {
         return `CASE WHEN ${ref} = 0 OR NOT isfinite(${ref}) THEN ${ref} ELSE round(${ref}, 14 - floor(log10(abs(${ref})))::INTEGER) END AS ${out}`

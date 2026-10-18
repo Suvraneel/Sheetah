@@ -280,25 +280,30 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 ### Fixed
 - **Decimal commas read 1000× too big**: a column of 1,500 and 0,750 (kilograms) beside a price of 2,49 was read as
   thousands. A value only a decimal comma explains (0,750; 1,2345) settles a column, and a column that can't tell
-  is read the way the file's other columns write decimals, before the reader's own habit.
+  is read the way the file's other columns of amounts write decimals (not codes: "1001,1002" in a cell), before
+  the reader's own habit.
 - **US dates in QuickBooks reports** (group lines with no commas) were read day first, 10/02/2026 as 10 February:
   the reader's habit applies to them as to any file, with *Read Date day first* a click away.
 - **Stacking months counted rows twice** when a month and its revision were both picked: rows in two of the tables
   are said before stacking (*2 rows are in both sales_dec and sales_dec_rev*). A month whose amounts were read as
-  text (one "N/A") stacks as numbers, saying what becomes empty, instead of turning every month's amounts to text.
+  text (one "N/A") stacks as numbers, saying what becomes empty, instead of turning every month's amounts to text;
+  an identifier (INV/24/1003 one month, a number the next), or a column of which more than one value in ten
+  isn't a number, stacks as text with nothing emptied.
 - A table of 300 columns ran the engine out of memory looking itself over, and the error was taken for a new
   version: *Reload* lost every table. The look-over runs in parts, and only a missing file counts as a new version.
 - A CSV saved by Excel on Windows (Windows-1252: £, é) didn't open; it's read as that, and said so.
-- A workbook saved as .csv or .xls by a portal opens as the workbook it is; a Word file renamed is named as one.
+- A workbook saved as .csv or .xls by a portal opens as the workbook it is; a Word file renamed (even .xlsx) is named
+  as one, and so is an Excel binary workbook (.xlsb).
 - Leaving the page with tables that aren't kept in this browser asks first.
 - *CSV* export: a UTF-8 mark so Excel shows £ and é as written; a plain negative number in a text column (−12.50)
-  isn't quoted as text; a sum's float noise (519314.16000000003) is written as Excel would keep it, in CSV and Excel.
+  isn't quoted as text (a phone number written +91… still is); a sum's float noise (519314.16000000003) is written
+  as Excel would keep it, in CSV and Excel.
 - QuickBooks' "Total for …" lines are offered however many customers there are, when they add up; a US bank's
-  *Beginning Balance* and *Ending Balance* are balance lines, and a short statement's summary is offered for
-  leaving out.
+  *Beginning Balance* and *Ending Balance* are balance lines, and a short statement's summary (one block above or
+  below its transactions) is offered for leaving out; never "Pending" in a Payment or Due Date column.
 - Dates that read both ways (01/04/24, no day past the 12th) are offered in the one-click conversion the reader's way.
 - Ageing is offered on an open items list with a plain Amount and a due date; whole-number amounts show two
-  decimals like other money.
+  decimals like other money (not rates or periods: GST %, Credit Period).
 - A header in two rows (a group merged over its columns) reads as one: *Sales Units*, *Sales Price*.
 - A view that looks a table up in another (this month's sales in the product list) is offered on next month's file.
 - Stacked months are exported as *sales_2024_01-12*, not after the first month.

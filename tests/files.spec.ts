@@ -98,10 +98,11 @@ test.describe('opening and exporting files', () => {
     expect(readFileSync((await dl.path())!, 'utf8').charCodeAt(0)).not.toBe(0xfeff)
 
     // A refund written in a text column stays a number; a sum's float noise is gone.
-    await runSql(page, "SELECT '-12.50' AS refund, '£12.50 René' AS note, 0.1::DOUBLE + 0.2::DOUBLE AS total")
+    await runSql(page, "SELECT '-12.50' AS refund, '£12.50 René' AS note, 0.1::DOUBLE + 0.2::DOUBLE AS total, '+919876543210' AS phone")
     await expect(page.locator('.result-meta')).toContainText('1 row')
     dl = await exportAs(page, 'CSV')
-    expect(readFileSync((await dl.path())!, 'utf8')).toBe('\ufeffrefund,note,total\n-12.50,£12.50 René,0.3\n')
+    // (A phone number written +91… stays text: Excel would make a number of it.)
+    expect(readFileSync((await dl.path())!, 'utf8')).toBe("\ufeffrefund,note,total,phone\n-12.50,£12.50 René,0.3,'+919876543210\n")
   })
 
   test('Excel export keeps numbers, dates and text apart, and never turns text into formulas', async ({ page }) => {

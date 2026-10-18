@@ -42,8 +42,9 @@ export function headerRow(data: unknown[][], width: number): number {
 /**
  * A header in two rows: a group name merged across its columns ("Sales" over Units and Price) and the
  * names under it. Excel keeps a merged cell's value in its first cell, so the group is carried right over
- * the empty ones. Taken as two rows only when the second is all names, there are numbers or dates under
- * them, and the first leaves cells empty (the merges); the names become "Sales Units", "Sales Price".
+ * the empty ones. Taken as two rows only when the second is all names, most of them with numbers or dates
+ * under them, and the first has fewer values, at least one spanning columns (a value, then empty cells over
+ * names): the names become "Sales Units", "Sales Price". A first row of data that happens to be text isn't.
  */
 export function twoRowHeader(data: unknown[][], top: number, width: number): string[] | null {
   const [first, second, below] = [data[top], data[top + 1], data[top + 2]]
@@ -52,7 +53,10 @@ export function twoRowHeader(data: unknown[][], top: number, width: number): str
   const [a, b, d] = [cells(first), cells(second), cells(below)]
   const names = b.filter((v) => !isEmpty(v))
   if (names.length < Math.max(2, Math.ceil(width * 0.5)) || !names.every((v) => typeof v === 'string')) return null
-  if (!a.some(isEmpty) || !b.some((v, c) => typeof v === 'string' && (typeof d[c] === 'number' || d[c] instanceof Date))) return null
+  const valued = (v: unknown) => typeof v === 'number' || v instanceof Date
+  if (a.filter((v) => !isEmpty(v)).length >= names.length) return null
+  if (!a.some((v, c) => !isEmpty(v) && c + 1 < width && isEmpty(a[c + 1]) && !isEmpty(b[c]) && !isEmpty(b[c + 1]))) return null
+  if (b.filter((v, c) => typeof v === 'string' && valued(d[c])).length * 2 < names.length) return null
   // Merged spans start where the first row has a value: carried right while its cells are empty and the
   // second row names the columns under it.
   let group = ''

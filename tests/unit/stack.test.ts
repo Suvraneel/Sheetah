@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import type { TableColumns } from '../../src/engine/compare-sql'
-import { sourceName, stackCandidates, stackLossSql, stackOverlapSql, stackReport, stackSql } from '../../src/engine/stack'
+import { sourceName, stackCandidates, stackLossSql, stackOverlapSql, stackReport, stackSql, textColumns } from '../../src/engine/stack'
 import { q } from './duck'
 
 async function table(name: string, sql: string): Promise<TableColumns> {
@@ -50,8 +50,19 @@ test('a month whose amounts were read as text (an "N/A" among them) stacks as nu
   expect(stackReport([jan, feb])).toMatchObject({ asText: [], asNumbers: [{ column: 'amount', tables: ['m2'] }] })
   const rows = await q(`${stackSql({ tables: ['m1', 'm2'], source: null }, [jan, feb])}\nORDER BY id`)
   expect(rows.map((r) => r.amount)).toEqual([10.5, 20, 1234.5, null, null])
-  expect(await q(stackLossSql([jan, feb])!)).toEqual([{ tbl: 'm2', col: 'amount', lost: 1, example: 'N/A' }])
+  expect(await q(stackLossSql([jan, feb])!)).toEqual([{ tbl: 'm2', col: 'amount', filled: 2, lost: 1, example: 'N/A' }])
   expect(stackLossSql([jan, jan])).toBe(null)
+})
+
+test('an identifier, or a column mostly of text, stacks as text: nothing is emptied', async () => {
+  const jan = await table('i1', `SELECT * FROM (VALUES (1001, 98765, 10.0::DOUBLE), (1002, 98766, 20.0::DOUBLE)) t("Invoice No", phone, amount)`)
+  const feb = await table('i2', `SELECT * FROM (VALUES ('INV/24/1003', '+91 98765 11111', 'N/A'), ('INV/24/1004', '+91 98765 22222', 'tbc')) t("Invoice No", phone, amount)`)
+  expect(stackReport([jan, feb])).toMatchObject({ asText: ['Invoice No', 'phone'], asNumbers: [{ column: 'amount', tables: ['i2'] }] })
+  const losses = (await q(stackLossSql([jan, feb])!)).map((r) => ({ table: String(r.tbl), column: String(r.col), filled: Number(r.filled), lost: Number(r.lost), example: String(r.example) }))
+  expect(textColumns(losses)).toEqual(['amount'])
+  expect(stackReport([jan, feb], ['amount']).asText).toEqual(['Invoice No', 'phone', 'amount'])
+  const rows = await q(`${stackSql({ tables: ['i1', 'i2'], source: null, text: ['amount'] }, [jan, feb])}\nORDER BY 1`)
+  expect(rows.map((r) => [r['Invoice No'], r.amount])).toEqual([['1001', '10.0'], ['1002', '20.0'], ['INV/24/1003', 'N/A'], ['INV/24/1004', 'tbc']])
 })
 
 test('rows in two of the tables (a month and its revision) are found before they count twice', async () => {
@@ -77,4 +88,5 @@ test('a stack of months is named for all of them', async () => {
   expect(stackLabel(['m_2024_12', 'm_2024_01'])).toBe('m_2024_01-12')
   expect(stackLabel(['branch_pune', 'branch_goa'])).toBe('branch_goa-pune')
   expect(stackLabel(['jan', 'feb', 'mar'])).toBe('feb-and-2-more')
+  expect(stackLabel(Array.from({ length: 12 }, (_, i) => `sales_${i + 1}`))).toBe('sales_1-12')
 })

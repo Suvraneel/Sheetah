@@ -215,7 +215,8 @@ test.describe('stack', () => {
   test('a month and its revision both picked are said to share rows; a month of amounts as text stacks as numbers', async ({ page }) => {
     await openApp(page)
     await page.locator('input[type=file]').setInputFiles([
-      file('sales_nov.csv', 'id,city,amount\n1,Pune,10\n2,Goa,N/A\n'),
+      // One "N/A" among November's amounts: read as numbers all the same (it's one in eleven).
+      file('sales_nov.csv', `id,city,amount\n${Array.from({ length: 10 }, (_, i) => `${i + 10},Pune,${i + 1}`).join('\n')}\n2,Goa,N/A\n`),
       file('sales_dec.csv', 'id,city,amount\n3,Pune,30\n4,Goa,40\n5,Agra,50\n'),
       file('sales_dec_rev.csv', 'id,city,amount\n3,Pune,30\n4,Goa,45\n5,Agra,50\n'),
     ])
@@ -228,7 +229,7 @@ test.describe('stack', () => {
     await dialog.getByRole('checkbox', { name: 'sales_dec_rev' }).uncheck()
     await expect(report).not.toContainText('count twice')
     await dialog.getByRole('button', { name: 'Stack 2 tables' }).click()
-    await expect(page.locator('.result-meta')).toContainText('5 rows')
+    await expect(page.locator('.result-meta')).toContainText('14 rows')
     // Numbers, so shown as money (text would read 30).
     await expect(page.locator('.sr-grid').last()).toContainText('30.00')
     await expect(page.locator('.error-banner')).toHaveCount(0)
@@ -562,6 +563,26 @@ test.describe('bank statements', () => {
     await expect(april).toContainText('2024-04-01')
     await expect(april).toContainText('50,000')
     await expect(april).toContainText('47,000')
+  })
+
+  test('a US bank’s summary above its transactions is offered for leaving out; a Pending payment date isn’t', async ({ page }) => {
+    await openApp(page)
+    const csv = ['Date,Description,Deposits,Withdrawals,Balance', 'Account Summary,,,,', 'Beginning Balance,,,,1000.00', 'Total Deposits,700.00,,,', 'Ending Balance,,,,1450.00']
+    for (const [d, what, dep, wd, bal] of [['01/03/2026', 'ACH deposit', '200.00', '', '1200.00'], ['01/05/2026', 'Card purchase', '', '50.00', '1150.00'], ['01/09/2026', 'Check 1001', '', '100.00', '1050.00'], ['01/15/2026', 'Payroll', '500.00', '', '1550.00'], ['01/20/2026', 'Card purchase', '', '60.00', '1490.00'], ['01/28/2026', 'Card purchase', '', '40.00', '1450.00']])
+      csv.push([d, what, dep, wd, bal].join(','))
+    await page.locator('input[type=file]').setInputFiles([file('us_stmt.csv', `${csv.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('10 rows')
+    await page.getByRole('button', { name: /^Leave out .*undated line/ }).click()
+    await expect(page.locator('.result-meta')).toContainText('6 of 10 rows')
+    // Its dates are dates now that the summary's gone: converted in the one click with the rest.
+    await expect(page.getByRole('button', { name: /^Convert .*dates/ })).toBeVisible()
+
+    // Open invoices: "Pending" in a Payment Date column is an open item, never a line to leave out.
+    const open = ['Invoice,Customer,Payment Date,Amount', 'A1,Acme,01/02/2026,100', 'A2,Beta,Pending,200', 'A3,Cyan,01/05/2026,300', 'A4,Dune,Pending,50', 'A5,Echo,01/09/2026,75', 'A6,Fern,01/12/2026,20']
+    await page.locator('input[type=file]').setInputFiles([file('open_items.csv', `${open.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('6 rows')
+    await idle(page)
+    await expect(page.getByRole('button', { name: /undated/ })).toHaveCount(0)
   })
 
   test('payments are matched bank against books: what’s left on either side is listed', async ({ page }) => {

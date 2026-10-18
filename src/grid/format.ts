@@ -59,6 +59,8 @@ function groupInt(v: string): string {
  */
 export function moneyName(name: string): boolean {
   const key = nameKey(name)
+  // Not a rate or a period either: "GST %", "Tax Rate", "Credit Period" (days), "Payment Terms".
+  if (/%/.test(name) || /(^|_)(rate|percent|percentage|pct|period|terms|tenure|months?|years?|weeks?)(_|$)/.test(key)) return false
   return (
     /(^|_)(amount|amt|balance|bal|debit|credit|dr|cr|withdrawals?|deposits?|price|tax|gst|igst|cgst|sgst|tds|net|paid|received|pending|outstanding|due|value|cost|revenue|fees?|charges|salary|income|expenses?|profit|spend)(_|$)/.test(key) &&
     !/(^|_)(units?|qty|quantity|count|pcs|nos|items|orders|rows|days|hours)(_|$)/.test(key)

@@ -174,14 +174,16 @@ export interface CleanStats {
 
 /**
  * Values only a decimal point (or only a decimal comma) explains: 12.5, 0.750 (no one writes 750 so),
- * 1.2345 (not a group of three), 1234.567, 1,234.5; and the same the other way round.
+ * 1.2345 (not a group of three), 1,234.5; and the same the other way round. (1234.567 too, a point only:
+ * "1234,567" is as often two codes in a cell as a decimal.)
  */
 function decimalItems(ref: string, p: string): string[] {
   // The value without currency signs and spaces.
   const bare = `regexp_replace(${textOf(ref)}, '[₹$€£¥\\s]', '', 'g')`
   const only = (dec: string, group: string) => {
     const [d, g] = [dec === '.' ? '\\.' : dec, group === '.' ? '\\.' : group]
-    return `'[-+(]?(([0-9]*${d}[0-9]{1,2})|(0?${d}[0-9]+)|([0-9]*${d}[0-9]{4,})|([0-9]{4,}${d}[0-9]+)|([0-9]{1,3}(${g}[0-9]${group === ',' ? '{2,3}' : '{3}'})+${d}[0-9]+))%?\\)?'`
+    const lead = dec === '.' ? `|([0-9]{4,}${d}[0-9]+)` : ''
+    return `'[-+(]?(([0-9]*${d}[0-9]{1,2})|(0?${d}[0-9]+)|([0-9]{1,3}${d}[0-9]{4,})${lead}|([0-9]{1,3}(${g}[0-9]${group === ',' ? '{2,3}' : '{3}'})+${d}[0-9]+))%?\\)?'`
   }
   return [
     `count(*) FILTER (WHERE regexp_full_match(${bare}, ${only('.', ',')}))::DOUBLE AS ${p}point_only`,
@@ -223,18 +225,30 @@ export function statsSql(table: string, refs: string[], sampleRows = 5000): stri
   return `SELECT\n  ${items.join(',\n  ')}\nFROM (SELECT * FROM ${table} USING SAMPLE ${sampleRows} ROWS)`
 }
 
-/** Just the decimal point / comma counts of each column (read with readStats: only pointOnly, commaOnly). */
+/** Just what says how decimals are written, for each column (read with readStats: values, numbers, commaNumbers, pointOnly, commaOnly). */
 export function decimalsSql(table: string, refs: string[], sampleRows = 5000): string {
-  return `SELECT\n  ${refs.flatMap((ref, i) => decimalItems(ref, `c${i}_`)).join(',\n  ')}\nFROM (SELECT * FROM ${table} USING SAMPLE ${sampleRows} ROWS)`
+  const items = refs.flatMap((ref, i) => {
+    const v = textOf(ref)
+    return [
+      `count(nullif(${v}, ''))::DOUBLE AS c${i}_values`,
+      `count(TRY_CAST(${numberText(v, false)} AS DOUBLE))::DOUBLE AS c${i}_numbers`,
+      `count(TRY_CAST(${numberText(v, true)} AS DOUBLE))::DOUBLE AS c${i}_comma_numbers`,
+      ...decimalItems(ref, `c${i}_`),
+    ]
+  })
+  return `SELECT\n  ${items.join(',\n  ')}\nFROM (SELECT * FROM ${table} USING SAMPLE ${sampleRows} ROWS)`
 }
 
 /**
  * How the file writes decimals, from the columns that say (12,5 or 3.25): a comma, a point, or undefined
  * when none says or they disagree. A column of 1,500 and 10,125 alone can't tell; the price beside it can.
+ * Only a column of amounts says: not one of codes ("1001,1002" in a cell, two phone numbers), and not one
+ * that is mostly something else.
  */
-export function fileDecimalComma(stats: Pick<CleanStats, 'pointOnly' | 'commaOnly'>[]): boolean | undefined {
-  const comma = stats.some((s) => s.commaOnly > 0 && s.pointOnly === 0)
-  const point = stats.some((s) => s.pointOnly > 0 && s.commaOnly === 0)
+export function fileDecimalComma(cols: { name: string; s: Pick<CleanStats, 'values' | 'numbers' | 'commaNumbers' | 'pointOnly' | 'commaOnly'> }[]): boolean | undefined {
+  const says = cols.filter(({ name }) => !CODE_NAME.test(nameKey(name)) && !isIdLike(name))
+  const comma = says.some(({ s }) => s.commaOnly > 0 && s.pointOnly === 0 && s.values > 0 && s.commaNumbers / s.values >= MOST)
+  const point = says.some(({ s }) => s.pointOnly > 0 && s.commaOnly === 0 && s.values > 0 && s.numbers / s.values >= MOST)
   return comma === point ? undefined : comma
 }
 

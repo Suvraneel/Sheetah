@@ -16,6 +16,7 @@ test('a list of open bills is known by its pending amount, its party and its dat
   // An open items list: a due date, a plain Amount, nothing saying some are paid.
   expect(ageingColumns([col('Party'), col('Bill Date', 'DATE'), col('Due Date', 'DATE'), col('Amount', 'DOUBLE')])).toEqual({ party: 'Party', amount: 'Amount', date: 'Due Date', by: 'due', bill: 'Bill Date' })
   expect(ageingColumns([col('Party'), col('Bill Date', 'DATE'), col('Due Date', 'DATE'), col('Amount', 'DOUBLE'), col('Status')])).toBe(null)
+  expect(ageingColumns([col('Party'), col('Due Date', 'DATE'), col('Amount', 'DOUBLE'), col('Payment Terms')])).toMatchObject({ amount: 'Amount' })
 })
 
 test('each party’s open bills by how long they’ve been due, biggest first, and a total', async () => {

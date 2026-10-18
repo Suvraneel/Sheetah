@@ -85,13 +85,19 @@ test.describe('clean a column (run on DuckDB)', () => {
   test('a column that can’t tell is read the way the file’s other columns write decimals', async () => {
     await q(`CREATE OR REPLACE TABLE eu AS SELECT * FROM (VALUES ('1,500', '2,49'), ('10,125', '1,99')) t(kg, preis)`)
     const [row] = await q(decimalsSql('eu', ['"kg"', '"preis"']))
-    const file = fileDecimalComma([readStats(row, 0), readStats(row, 1)])
+    const file = fileDecimalComma([{ name: 'kg', s: readStats(row, 0) }, { name: 'preis', s: readStats(row, 1) }])
     expect(file).toBe(true)
     const [kg] = await q(statsSql('eu', ['"kg"']))
     expect(suggestCleaning('kg', readStats(kg, 0), 'en-GB', true, file)[0].clean.comma).toBe(true)
     expect(suggestCleaning('kg', readStats(kg, 0), 'en-GB')[0].clean.comma).toBe(false)
-    expect(fileDecimalComma([{ pointOnly: 2, commaOnly: 0 }, { pointOnly: 0, commaOnly: 3 }])).toBe(undefined)
-    expect(fileDecimalComma([{ pointOnly: 0, commaOnly: 0 }])).toBe(undefined)
+    const n = (pointOnly: number, commaOnly: number) => ({ values: 4, numbers: 4, commaNumbers: 4, pointOnly, commaOnly })
+    expect(fileDecimalComma([{ name: 'a', s: n(2, 0) }, { name: 'b', s: n(0, 3) }])).toBe(undefined)
+    expect(fileDecimalComma([{ name: 'a', s: n(0, 0) }])).toBe(undefined)
+    // Codes in a cell (two phone numbers, a list of invoice numbers) say nothing about decimals.
+    await q(`CREATE OR REPLACE TABLE codes AS SELECT * FROM (VALUES ('9876543210,9123456780', '1001,1002', 'Acme'), ('9876500000', '1003', 'Beta')) t(phones, refs, customer)`)
+    const [c] = await q(decimalsSql('codes', ['"phones"', '"refs"', '"customer"']))
+    expect(fileDecimalComma(['phones', 'refs', 'customer'].map((name, i) => ({ name, s: readStats(c, i) })))).toBe(undefined)
+    expect(readStats(c, 0).commaOnly + readStats(c, 1).commaOnly).toBe(0)
   })
 
   test('cleaning composes first, so filters and sorting see the converted values', async () => {

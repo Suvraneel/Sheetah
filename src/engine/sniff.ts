@@ -34,10 +34,12 @@ export function sniff(head: Uint8Array): FileKind {
 }
 
 /** What a zip holds, by the names of the files in it (its first entry and its directory at the end). */
-export type ZipInside = 'xlsx' | 'docx' | 'pptx' | 'ods' | null
+export type ZipInside = 'xlsx' | 'xlsb' | 'docx' | 'pptx' | 'ods' | null
 export function zipInside(bytes: Uint8Array): ZipInside {
   const s = new TextDecoder('latin1').decode(bytes)
-  if (/xl\/workbook\.xml|xl\/worksheets\//.test(s)) return 'xlsx'
+  // An Excel binary workbook (.xlsb) has xl/ too, its parts .bin.
+  if (/xl\/workbook\.bin|xl\/worksheets\/[^/]*\.bin/.test(s)) return 'xlsb'
+  if (/xl\/workbook\.xml|xl\/worksheets\/[^/]*\.xml/.test(s)) return 'xlsx'
   if (/word\/document\.xml/.test(s)) return 'docx'
   if (/ppt\/presentation\.xml/.test(s)) return 'pptx'
   if (/application\/vnd\.oasis\.opendocument\.spreadsheet/.test(s)) return 'ods'
@@ -63,13 +65,15 @@ export function notATable(kind: FileKind, name: string, inside: ZipInside = null
     case 'image':
       return `${name} is an image. Sheetah opens tables (CSV, Excel, JSON, Parquet), not pictures of them.`
     case 'zip':
-      // What's inside counts for more than the name: a portal's "report.xls" or "export.csv" that is a workbook.
-      if (inside === 'xlsx' || ext === 'xlsx' || ext === 'xlsm') return null
-      if (inside === 'docx' || ext === 'docx') return `${name} is a Word document. Copy its table into a spreadsheet and save that as .xlsx or CSV.`
-      if (inside === 'pptx' || ext === 'pptx') return `${name} is a PowerPoint file. Copy its table into a spreadsheet and save that as .xlsx or CSV.`
-      if (inside === 'ods' || ext === 'ods') return `${name} is an OpenDocument spreadsheet. Save it as .xlsx or CSV and open that.`
+      // What's inside counts for more than the name: a portal's "report.xls" or "export.csv" that is a
+      // workbook, a Word file renamed .xlsx. The name decides only when the inside can't be told.
+      if (inside === 'xlsx') return null
+      if (inside === 'xlsb' || (!inside && ext === 'xlsb')) return `${name} is an Excel binary workbook (.xlsb). Save it as .xlsx or CSV in Excel and open that.`
+      if (!inside && (ext === 'xlsx' || ext === 'xlsm')) return null
+      if (inside === 'docx' || (!inside && ext === 'docx')) return `${name} is a Word document. Copy its table into a spreadsheet and save that as .xlsx or CSV.`
+      if (inside === 'pptx' || (!inside && ext === 'pptx')) return `${name} is a PowerPoint file. Copy its table into a spreadsheet and save that as .xlsx or CSV.`
+      if (inside === 'ods' || (!inside && ext === 'ods')) return `${name} is an OpenDocument spreadsheet. Save it as .xlsx or CSV and open that.`
       if (ext === 'numbers') return `${name} is a Numbers spreadsheet. Export it as CSV or Excel and open that.`
-      if (ext === 'xlsb') return `${name} is an Excel binary workbook (.xlsb). Save it as .xlsx or CSV in Excel and open that.`
       return `${name} is a zip archive. Unzip it and open the CSV or Excel file inside.`
     case 'ole':
       // A password (or a sensitivity label) wraps an .xlsx in this older container.

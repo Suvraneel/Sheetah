@@ -128,7 +128,8 @@ export function ageingColumns(columns: { name: string; type: string }[]): Ageing
   const party = columns.find((c) => /^VARCHAR/i.test(c.type) && PARTY.test(nameKey(c.name)))
   const dates = columns.filter(isTemporal)
   const due = dates.find((c) => /(^|_)due(_|$)/.test(nameKey(c.name)))
-  const settled = columns.some((c) => /(^|_)(status|paid|payment|received|cleared|settled)(_|$)/.test(nameKey(c.name)))
+  // (Payment Terms says when, not whether: it doesn't count.)
+  const settled = columns.some((c) => /(^|_)(status|paid|received|cleared|settled)(_|$)|(^|_)payment_(status|date|on|received|ref)(_|$)/.test(nameKey(c.name)))
   const amount =
     columns.find((c) => money(c) && OPEN.test(nameKey(c.name))) ??
     (due && !settled ? columns.find((c) => money(c) && /^(amount|amt|invoice_amount|bill_amount|total|value)$/.test(nameKey(c.name))) : undefined)
