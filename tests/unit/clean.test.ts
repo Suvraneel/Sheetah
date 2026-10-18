@@ -259,7 +259,7 @@ test('a column of amounts with a footer among them is still offered, saying how 
   await q(`CREATE OR REPLACE TABLE fo AS SELECT unnest([${values.map((v) => `'${v}'`).join(', ')}]) AS "Withdrawal"`)
   const [row] = await q(statsSql('fo', ['"Withdrawal"']))
   const s = suggestCleaning('Withdrawal', readStats(row, 0), 'en-IN')
-  expect(s[0]).toMatchObject({ label: 'Convert to number anyway', note: '2 of 8 sampled values aren’t numbers and become empty' })
+  expect(s[0]).toMatchObject({ label: 'Convert to number anyway', note: '2 of 8 values aren’t numbers and become empty' })
   // Never the one-click suggestion: that's for columns that are numbers through and through.
   expect(confidentConversion(s)).toBeNull()
 })

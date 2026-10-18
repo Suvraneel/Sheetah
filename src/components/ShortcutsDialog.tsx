@@ -9,37 +9,39 @@ const ALT = isMac ? '⌥' : 'Alt'
 /** Each entry: key combos (alternatives separated by "or"), then what they do. */
 const GROUPS: { title: string; rows: [string[][], string][] }[] = [
   {
-    title: 'Query',
+    title: 'Steps and queries',
     rows: [
-      [[[MOD, 'Enter'], ['Shift', 'Enter']], 'Run the query'],
+      [[[MOD, 'Enter']], 'Run the query (Shift+Enter too)'],
+      [[[MOD, 'Z']], `Undo a step: a sort, filter, clean-up… (redo: ${MOD}+Shift+Z)`],
+      [[[MOD, 'F']], 'Find text in every column'],
+      [[[MOD, 'V']], 'Paste cells from a spreadsheet as a new table'],
       [[['Tab']], 'Leave the editor (it never traps Tab)'],
+      [[['?']], 'Show this list'],
     ],
   },
   {
-    title: 'Grid',
+    title: 'Editor size',
+    rows: [[[['↑'], ['↓']], 'On the resize handle: shorter or taller (Enter fits the query)']],
+  },
+  {
+    title: 'Moving in the grid',
     rows: [
       [[['↑ ↓ ← →']], 'Move the active cell'],
-      [[['Page Up'], ['Page Down']], 'Move a screen at a time'],
+      [[['PgUp'], ['PgDn']], 'A screen at a time'],
       [[['Home'], ['End']], 'First or last column'],
       [[[MOD, '↑ ↓ ← →']], 'Jump to the edge'],
-      [[['Shift', '↑ ↓ ← →'], ['Shift', 'click']], 'Extend the selection'],
-      [[['Shift', 'Space']], 'Select the row (its number does it too)'],
-      [[['Ctrl', 'Space']], 'Select the column: its count, sum and average in the status bar'],
-      [[[MOD, 'A']], 'Select everything'],
-      [[[MOD, 'C']], 'Copy the selection as tab-separated text'],
-      [[[MOD, 'V']], 'Paste cells copied from a spreadsheet as a new table'],
-      [[[MOD, 'F']], 'Find text in every column'],
-      [[[MOD, 'Z'], [MOD, 'Shift', 'Z']], 'Undo or redo a sort, filter, clean-up or look-up'],
-      [[[ALT, '↓'], ['Shift', 'F10']], 'Open the column menu: sort, filter, profile'],
-      [[['Esc']], 'Clear the selection'],
+      [[[ALT, '↓']], 'Open the column menu (Shift+F10 too)'],
     ],
   },
   {
-    title: 'Layout',
+    title: 'Selecting',
     rows: [
-      [[['↑'], ['↓']], 'On the editor’s resize handle: shorter or taller (Shift for bigger steps)'],
-      [[['Enter']], 'On the resize handle: fit the editor to the query again'],
-      [[['?']], 'Show this list'],
+      [[['Shift', '↑ ↓ ← →']], 'Extend the selection (Shift+click too)'],
+      [[['Shift', 'Space']], 'Select the row'],
+      [[['Ctrl', 'Space']], 'Select the column: its sum shows below'],
+      [[[MOD, 'A']], 'Select everything'],
+      [[[MOD, 'C']], 'Copy as tab-separated text'],
+      [[['Esc']], 'Clear the selection'],
     ],
   },
 ]

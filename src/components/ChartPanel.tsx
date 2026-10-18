@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { LOCALE } from '../engine/sql'
-import { AGGS, TOP_N, chartData, defaultSpec, xCandidates, type Agg, type ChartData, type ChartSpec } from '../engine/chart'
+import { AGGS, TIME_GRAINS, TOP_N, chartData, defaultSpec, isTemporal, xCandidates, type Agg, type ChartData, type ChartSpec, type TimeGrain } from '../engine/chart'
 import type { ResultSet } from '../engine/result'
 import { Chart } from './Chart'
 import { Icon } from './Icon'
@@ -8,11 +8,14 @@ import { Icon } from './Icon'
 interface Props {
   result: ResultSet
   onOpenSql: (sql: string) => void
+  /** Number columns stored as text (they can't be measured until converted), and the one-click conversion. */
+  textNumbers?: string[]
+  onConvert?: () => void
 }
 
 const nf = new Intl.NumberFormat(LOCALE)
 
-export function ChartPanel({ result, onOpenSql }: Props) {
+export function ChartPanel({ result, onOpenSql, textNumbers, onConvert }: Props) {
   const xs = useMemo(() => xCandidates(result.columns), [result])
   const numeric = useMemo(() => result.columns.filter((c) => c.numeric), [result])
   const [chosen, setChosen] = useState<ChartSpec | null>(null)
@@ -50,6 +53,8 @@ export function ChartPanel({ result, onOpenSql }: Props) {
   const xCol = result.columns.find((c) => c.name === spec.x)
   const isDistribution = !!xCol?.numeric
   const set = (patch: Partial<ChartSpec>) => setChosen({ ...spec, ...patch })
+  const isTime = !!xCol && isTemporal(xCol)
+  const grains = TIME_GRAINS.filter((g) => g !== 'hour' || !/^DATE$/i.test(xCol?.type ?? ''))
 
   return (
     <div className={`chart-panel${loading ? ' is-loading' : ''}`} id="results-chart">
@@ -91,6 +96,19 @@ export function ChartPanel({ result, onOpenSql }: Props) {
                 ))}
               </select>
             </label>
+            {isTime && (
+              <label>
+                <span>By</span>
+                <select value={spec.grain ?? ''} onChange={(e) => set({ grain: (e.target.value || undefined) as TimeGrain | undefined })}>
+                  <option value="">{data?.bucket && !spec.grain ? `${data.bucket[0].toUpperCase()}${data.bucket.slice(1)} (picked)` : 'Picked from the dates'}</option>
+                  {grains.map((g) => (
+                    <option key={g} value={g}>
+                      {g[0].toUpperCase() + g.slice(1)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             {spec.agg !== 'count' && (
               <label>
                 <span>of</span>
@@ -106,6 +124,15 @@ export function ChartPanel({ result, onOpenSql }: Props) {
           </>
         )}
         <span className="spacer" />
+        {onConvert && !!textNumbers?.length && !isDistribution && (
+          <span className="chart-text-numbers">
+            {textNumbers.slice(0, 2).join(', ')}
+            {textNumbers.length > 2 ? ` and ${textNumbers.length - 2} more` : ''} {textNumbers.length === 1 ? 'is' : 'are'} stored as text, so {textNumbers.length === 1 ? 'it can’t' : 'they can’t'} be summed yet.{' '}
+            <button className="link-btn" onClick={onConvert}>
+              Convert to numbers
+            </button>
+          </span>
+        )}
         {data && (
           <button className="btn btn-ghost btn-sm" onClick={() => onOpenSql(data.sql)} title="Put the SQL behind this chart in the editor and run it">
             <Icon name="table" /> Open as query
@@ -123,7 +150,9 @@ export function ChartPanel({ result, onOpenSql }: Props) {
             <strong>{data.title}</strong>
             <span className="muted small">
               {data.kind === 'bar' && data.groups > data.points.length
-                ? `Top ${TOP_N} of ${nf.format(data.groups)} groups, by value`
+                ? data.inOrder
+                  ? `First ${TOP_N} of ${nf.format(data.groups)} groups`
+                  : `Top ${TOP_N} of ${nf.format(data.groups)} groups, by value`
                 : data.kind === 'line'
                   ? `${nf.format(data.points.length)} ${data.bucket}s`
                   : data.kind === 'hist'

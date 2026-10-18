@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { makeFormatter } from '../grid/format'
 import { parseNumber, type Filter, type FilterOp } from '../engine/compose'
-import { cleaningFor, distinctValues, profileColumn, splitParts, topValues, type ColumnInfo, type ColumnProfile, type ResultSet } from '../engine/result'
+import type { ColumnInfo, ResultSet } from '../engine/result'
+import { cleaningFor, distinctValues, profileColumn, splitParts, topValues, type ColumnProfile } from '../engine/scan'
 import { lookAlikes, type Alike } from '../engine/alike'
 import { isIdLike, LOCALE, quoteLiteral, sqlName } from '../engine/sql'
-import { describeClean, isConversion, isTextColumn, type Clean, type CleanSuggestion } from '../engine/clean'
+import { describeClean, isConversion, isTextColumn, visibleSpaces, type Clean, type CleanSuggestion } from '../engine/clean'
 import { Icon } from './Icon'
 import { Chart } from './Chart'
 import { histogram, isTemporal, type Point } from '../engine/chart'
@@ -25,6 +26,8 @@ interface Props {
   onDedupe?: (mode: 'show' | 'remove') => void
   /** Convert or tidy this column in place (number stored as text, dates, spaces, case). */
   onClean?: (c: Clean) => void
+  /** Several clean-ups as one step (merging every look-alike value at once). */
+  onCleans?: (cs: Clean[]) => void
   /** How this column is already cleaned, if it is (offered for undoing). */
   cleaned?: Clean[]
   onUnclean?: () => void
@@ -76,7 +79,7 @@ const OPS: Record<'number' | 'time' | 'text', { op: FilterOp; label: string }[]>
   ],
 }
 
-export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, picked = [], valuesSql, onUnpick, onDedupe, onClean, cleaned, onUnclean, onInsert, onLookup, onHide, onCountBy, onUnpivot, onAddColumns, onClose }: Props) {
+export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, picked = [], valuesSql, onUnpick, onDedupe, onClean, onCleans, cleaned, onUnclean, onInsert, onLookup, onHide, onCountBy, onUnpivot, onAddColumns, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [profile, setProfile] = useState<ColumnProfile | null>(null)
   const [hist, setHist] = useState<Point[] | null>(null)
@@ -446,11 +449,16 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
                         key={a.from}
                         className="link-btn"
                         onClick={() => onClean({ column: column.name, kind: 'replace', from: a.from, to: a.to })}
-                        title={`Replace “${a.from}” (${fmt.format(a.fromRows)} ${a.fromRows === 1 ? 'row' : 'rows'}) with “${a.to}” (${fmt.format(a.toRows)})`}
+                        title={`Replace “${visibleSpaces(a.from)}” (${fmt.format(a.fromRows)} ${a.fromRows === 1 ? 'row' : 'rows'}) with “${visibleSpaces(a.to)}” (${fmt.format(a.toRows)})`}
                       >
-                        {a.from} → {a.to}
+                        {visibleSpaces(a.from)} → {visibleSpaces(a.to)}
                       </button>
                     ))}
+                    {onCleans && alikes.length > 1 && (
+                      <button className="link-btn colmenu-alike-all" onClick={() => onCleans(alikes.map((a) => ({ column: column.name, kind: 'replace', from: a.from, to: a.to })))}>
+                        Merge all {alikes.length}
+                      </button>
+                    )}
                   </span>
                 )}
                 {onClean && text && (

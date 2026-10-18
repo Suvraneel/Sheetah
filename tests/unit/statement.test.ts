@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
-import { signedAmount, statementColumns } from '../../src/engine/statement'
-import { balanceCheckSql, readBalanceCheck } from '../../src/engine/statement-check'
+import { balanceLineSql, signedAmount, statementColumns } from '../../src/engine/statement'
+import { readTieOut } from '../../src/engine/clean'
+import { balanceCheckSql, balanceText, readBalanceCheck, readTieOutRow, tieOutSql, tieOutText } from '../../src/engine/checks'
 import { q } from './duck'
 
 const col = (name: string, type = 'VARCHAR') => ({ name, type })
@@ -36,4 +37,63 @@ test('the signed amount is money in less money out, and the balances are checked
     order: 'newest first',
     firstBad: { row: 2, off: -500 },
   })
+})
+
+test('the tie-out is exact to a hundredth, and names the column that is short', () => {
+  const t = readTieOut([
+    { column: 'Withdrawal', t: 218890.84, d: 218296.92 },
+    { column: 'Deposit', t: 599657.86, d: 599657.86 },
+    { column: 'Balance', t: 433107.52, d: 9e6 }, // a closing balance isn't a total of balances: left alone
+    { column: 'Ref', t: null, d: 12345 },
+  ])
+  expect(t).toEqual({ ok: [{ column: 'Deposit', sum: 599657.86 }], off: [{ column: 'Withdrawal', says: 218890.84, rows: 218296.92 }] })
+  expect(tieOutText(t, (n) => n.toFixed(2))).toEqual({ kind: 'totals', ok: false, text: 'The totals say Withdrawal is 218890.84; the rows come to 218296.92: 593.92 short' })
+  // Sub-totals and a grand total come to twice the rows; a total written as a whole number may be off by a half.
+  expect(readTieOut([{ column: 'Amount', t: 2000, d: 1000 }])?.ok).toHaveLength(1)
+  expect(readTieOut([{ column: 'Amount', t: 1000, d: 999.6 }])?.ok).toHaveLength(1)
+  expect(readTieOut([{ column: 'Amount', t: 1000.4, d: 999.6 }])?.off).toHaveLength(1)
+  expect(readTieOut([{ column: 'Amount', t: null, d: 5 }])).toBeNull()
+})
+
+test('the balance check in words: which row, which way, by how much', () => {
+  const nf = (n: number) => String(n)
+  expect(balanceText({ pairs: 3, bad: 0, order: 'oldest first' }, 'Balance', nf)?.text).toBe('Every Balance follows from the row above (3 rows checked)')
+  expect(balanceText({ pairs: 9, bad: 2, order: 'newest first', firstBad: { row: 4, off: -500 } }, 'Balance', nf)).toEqual({
+    kind: 'balance',
+    ok: false,
+    text: 'Balance on row 4 doesn’t follow from the row below: off by 500. A line missing or doubled? 2 rows don’t follow.',
+  })
+  expect(balanceText(null, 'Balance', nf)).toBeNull()
+})
+
+test('a statement’s opening and closing balance lines are known: no money in or out, and a label saying so', async () => {
+  await q(`CREATE OR REPLACE TABLE bl AS SELECT * FROM (VALUES
+    (NULL, 'Opening Balance', NULL, NULL, '10,000.00'), ('02/04/24', 'UPI to Ravi', '500.00', NULL, '9,500.00'),
+    (NULL, 'BALANCE B/F', '0.00', '', '9,500.00'), ('03/04/24', 'Opening balance top-up', NULL, '100.00', '9,600.00'),
+    (NULL, 'Closing Balance', NULL, NULL, '9,600.00'), (NULL, 'Carried forward', NULL, NULL, '9,600.00')
+  ) t(d, narration, withdrawal, deposit, balance)`)
+  const s = { credit: 'deposit', debit: 'withdrawal', balance: 'balance' }
+  const sql = balanceLineSql(s, ['d', 'narration', 'withdrawal', 'deposit', 'balance'], () => false)!
+  expect((await q(`SELECT narration FROM bl WHERE ${sql}`)).map((r) => r.narration)).toEqual(['Opening Balance', 'BALANCE B/F', 'Closing Balance', 'Carried forward'])
+  expect(balanceLineSql(s, ['withdrawal', 'deposit', 'balance'], () => false)).toBeNull()
+})
+
+test('next month’s tie-out adds up the total lines only: not the balance lines or empty rows a view also leaves out', async () => {
+  await q(`CREATE OR REPLACE TABLE nm AS SELECT * FROM (VALUES
+    (NULL, 'Opening Balance', NULL, NULL), ('03/05/24', 'Salary', NULL, '50,000.00'), ('06/05/24', 'UPI', '700.00', NULL),
+    (NULL, NULL, NULL, NULL), (NULL, 'Total', '700.00', '50,000.00'), (NULL, 'Closing Balance', NULL, NULL)
+  ) t("Date", "Narration", "Withdrawal", "Deposit")`)
+  const s = { credit: 'Deposit', debit: 'Withdrawal' }
+  const bal = balanceLineSql(s, ['Date', 'Narration'], () => false)!
+  const drop = [
+    { label: '1 total line', keep: `"Narration" IS DISTINCT FROM 'Total'`, kind: 'totals' as const },
+    { label: '2 balance lines', keep: `NOT ${bal}`, kind: 'balance' as const },
+    { label: '1 empty row', keep: `"Narration" IS NOT NULL`, kind: 'empty' as const },
+  ]
+  const cols = ['Withdrawal', 'Deposit'].map((name) => ({ name, numeric: false }))
+  const row = (await q(tieOutSql('nm', cols, drop)!))[0] as Record<string, unknown>
+  expect(readTieOutRow(cols, row)).toEqual({ ok: [{ column: 'Deposit', sum: 50000 }, { column: 'Withdrawal', sum: 700 }], off: [] })
+  // Steps without total lines have nothing to tie out; a view saved before steps had kinds goes by the label.
+  expect(tieOutSql('nm', cols, drop.slice(1))).toBeNull()
+  expect(tieOutSql('nm', cols, drop.map(({ label, keep }) => ({ label, keep })))).not.toBeNull()
 })

@@ -59,6 +59,33 @@ function fieldExpr(f: Field, cols: ColumnInfo[]) {
 }
 const fieldAlias = (f: Field) => (f.grain === 'none' ? f.column : `${f.column} (${f.grain})`)
 
+/**
+ * A field grouped into periods (a month, a quarter…): labelled as the period, written so that sorting the
+ * labels sorts the periods (2024-04 before 2024-11, 2024-Q4 before 2025-Q1), with the Total row after them.
+ */
+const isPeriod = (f: Field, cols: ColumnInfo[]) => {
+  const col = byName(cols, f.column)
+  return !!col && isTemporal(col) && f.grain !== 'none' && f.grain !== 'day'
+}
+
+/** A period's label in SQL, from its first day: 2024, 2024-Q2, 2024-04, and a week by its Monday (2024-04-08). */
+function periodSql(e: string, grain: Grain): string {
+  if (grain === 'year') return `strftime(${e}, '%Y')`
+  if (grain === 'quarter') return `year(${e}) || '-Q' || quarter(${e})`
+  if (grain === 'month') return `strftime(${e}, '%Y-%m')`
+  return `strftime(${e}, '%Y-%m-%d')`
+}
+
+/** The same label, for a column heading (from the period's first day, as YYYY-MM-DD). */
+export function periodLabel(iso: string, grain: Grain): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso)
+  if (!m) return iso
+  if (grain === 'year') return m[1]
+  if (grain === 'quarter') return `${m[1]}-Q${Math.floor((Number(m[2]) - 1) / 3) + 1}`
+  if (grain === 'month') return `${m[1]}-${m[2]}`
+  return m[0]
+}
+
 export function valueLabel(v: ValueField) {
   if (v.agg === 'count' || !v.column) return 'Rows'
   return `${AGGS.find((a) => a.id === v.agg)!.label} of ${v.column}`
@@ -100,7 +127,7 @@ export function pivotSql(sourceSql: string, spec: PivotSpec, cols: ColumnInfo[],
   }
 
   // k: just the fields the pivot needs, with date grains applied once.
-  const keys = spec.rows.map((f) => ({ expr: fieldExpr(f, cols), alias: unique(fieldAlias(f)) }))
+  const keys = spec.rows.map((f) => ({ expr: fieldExpr(f, cols), alias: unique(fieldAlias(f)), period: isPeriod(f, cols) ? f.grain : null }))
   const kCols = [
     ...keys.map((k) => (k.expr === quoteIdent(k.alias) ? k.expr : `${k.expr} AS ${quoteIdent(k.alias)}`)),
     ...(spec.columns ? [`(${fieldExpr(spec.columns, cols)})::VARCHAR AS __pivot`] : []),
@@ -110,17 +137,19 @@ export function pivotSql(sourceSql: string, spec: PivotSpec, cols: ColumnInfo[],
 
   const k = (alias: string) => `k.${quoteIdent(alias)}`
   const grand = spec.totals && keys.length > 0
+  // Months, quarters… read as the period (2024-04), sorted by date (the ORDER BY is on k's dates; the labels sort the same way).
+  const shown = (key: (typeof keys)[number]) => (key.period ? periodSql(k(key.alias), key.period) : k(key.alias))
   const select: string[] = keys.map((key, i) =>
     i === 0 && grand
-      ? `CASE WHEN grouping(${k(key.alias)}) = 1 THEN 'Total' ELSE ${k(key.alias)}::VARCHAR END AS ${quoteIdent(key.alias)}`
-      : `${k(key.alias)} AS ${quoteIdent(key.alias)}`,
+      ? `CASE WHEN grouping(${k(key.alias)}) = 1 THEN 'Total' ELSE (${shown(key)})::VARCHAR END AS ${quoteIdent(key.alias)}`
+      : `${shown(key)} AS ${quoteIdent(key.alias)}`,
   )
 
   let sortAlias = ''
   if (spec.columns) {
     for (const cv of colValues) {
       const filter = cv === null ? '__pivot IS NULL' : `__pivot = ${quoteLiteral(cv)}`
-      const head = cv === null ? '(empty)' : cv.trim() === '' ? '(blank)' : cv
+      const head = cv === null ? '(empty)' : cv.trim() === '' ? '(blank)' : spec.columns && isPeriod(spec.columns, cols) ? periodLabel(cv, spec.columns.grain) : cv
       values.forEach((v, i) => select.push(`${aggregate(v, i, filter)} AS ${quoteIdent(unique(values.length > 1 ? `${head} · ${valueLabel(v)}` : head))}`))
     }
     values.forEach((v, i) => {

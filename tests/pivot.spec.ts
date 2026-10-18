@@ -94,3 +94,28 @@ test('a pivot exports to Excel with the rows behind it on a second sheet', async
   expect(sheets.map((s) => s.sheet)).toEqual(['pivot', 'rows'])
   expect(sheets[1].data).toEqual([['city', 'paid_by', 'amount'], ['Pune', 'card', 10], ['Pune', 'cash', 5], ['Goa', 'card', 7]])
 })
+
+test('months in a pivot read as months that sort as dates; charted, they stay in order and read Apr 2024', async ({ page }) => {
+  await openDemo(page)
+  await runSql(
+    page,
+    "SELECT * FROM (VALUES (DATE '2024-06-03', 'Food', 10.0), (DATE '2024-04-01', 'Rent', 500.0), (DATE '2024-05-09', 'Food', 20.0), (DATE '2024-04-20', 'Food', 5.0)) t(paid_on, category, amount)",
+  )
+  await expect(page.locator('.result-meta')).toContainText('4 rows')
+  await page.getByRole('button', { name: 'Pivot', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Summarize this result' })
+  // By default: the months down the side (the only other field, category, goes across). Just the months here.
+  await expect(dialog.locator('.pivot-name')).toHaveText(['paid_on'])
+  await dialog.getByLabel('Column field').selectOption('')
+  await dialog.getByRole('button', { name: 'Create pivot' }).click()
+  await expect(page.locator('.result-meta')).toContainText('4 rows · 2 columns')
+  const rows = page.locator('.sr-grid [role=row]')
+  await expect(rows.nth(1)).toContainText('2024-04')
+  await expect(rows.nth(3)).toContainText('2024-06')
+  await expect(rows.nth(4)).toContainText('Total')
+  // The chart keeps the months in order (not by size), leaves the Total out, and says "Sum of amount" once.
+  await page.getByRole('button', { name: 'Chart', exact: true }).click()
+  await expect(page.locator('.chart-figure figcaption strong')).toHaveText('Sum of amount by paid_on (month)')
+  await expect(page.locator('.chart-figure')).toContainText('3 groups')
+  expect(await page.locator('.chart-figure .chart-cat').allTextContents()).toEqual(['Apr 2024', 'May 2024', 'Jun 2024'])
+})

@@ -29,8 +29,25 @@ export function statementColumns(columns: { name: string; type: string }[]): Sta
   return { credit: credit.name, debit: debit.name, ...(balance ? { balance: balance.name } : {}) }
 }
 
+/** A running balance, by its name ("Closing Balance", "bal"): never a column that total lines add up. */
+export const isBalanceName = (name: string) => BALANCE.test(nameKey(name))
+
 /** A column's values as numbers, whether they're numbers already or "1,200.00" text. */
-const num = (name: string, numeric: boolean) => (numeric ? `${sqlName(name)}::DOUBLE` : `number_from_text(${sqlName(name)})`)
+const num = (name: string, numeric: boolean, ref: (name: string) => string = sqlName) => (numeric ? `${ref(name)}::DOUBLE` : `number_from_text(${ref(name)})`)
+
+/** "Opening Balance", "Closing Balance", "Balance b/f", "Brought forward": a statement's lines about its balance. */
+const BALANCE_LINE = `'^\\s*((opening|closing)\\s+bal|bal(ance)?\\s+(b/?f|c/?f|brought|carried)|(brought|carried)\\s+(forward|fwd|over)\\b)'`
+
+/**
+ * A statement's balance lines, as SQL true for them: nothing in or out, and a label (in one of the text
+ * columns) saying it's the opening or closing balance. They aren't transactions: an empty month in a pivot.
+ */
+export function balanceLineSql(s: StatementColumns, text: string[], numeric: (name: string) => boolean, ref: (name: string) => string = sqlName): string | null {
+  const labels = text.filter((c) => c !== s.credit && c !== s.debit && c !== s.balance)
+  if (!labels.length) return null
+  const none = (c: string) => `coalesce(${num(c, numeric(c), ref)}, 0) = 0`
+  return `(${none(s.credit)} AND ${none(s.debit)} AND (${labels.map((c) => `regexp_matches(coalesce(${ref(c)}::VARCHAR, ''), ${BALANCE_LINE}, 'i')`).join(' OR ')}))`
+}
 
 /** The signed amount, as a formula column: money in less money out (an empty cell counts as nothing). */
 export function signedAmount(s: StatementColumns, numeric: (name: string) => boolean): string {

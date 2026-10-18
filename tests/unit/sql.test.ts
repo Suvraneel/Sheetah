@@ -97,7 +97,7 @@ test.describe('errors in plain words', () => {
   })
 
   test('the mistakes spreadsheet people make first are explained in their terms', async () => {
-    const { explainError } = await import('../../src/engine/errors')
+    const { explainError, sumExample } = await import('../../src/engine/errors')
     const at = (sql: string) => `\n\nLINE 1: ${sql}\n        ^`
     // Text in double quotes reads as a column.
     expect(explainError(`Binder Error: Referenced column "Pune" not found in FROM clause!\nCandidate bindings: "city"${at('SELECT * FROM orders WHERE city = "Pune"')}`).text).toBe(
@@ -121,6 +121,11 @@ test.describe('errors in plain words', () => {
     expect(explainError('Parser Error: syntax error at end of input').text).toContain('ends too soon')
     expect(explainError(`Parser Error: unterminated quoted string at or near "'Pune"`).text).toContain('isn’t closed')
     expect(explainError(`Parser Error: syntax error at or near "="${at('=SUM(A1:A3)')}`).text).toContain('spreadsheet formula')
+    // The example is on the reader's own table: a number column, the amount if there is one.
+    const sum = sumExample({ name: 'sales apr', columns: [{ name: 'City', type: 'VARCHAR' }, { name: 'Qty', type: 'BIGINT' }, { name: 'Net Amount', type: 'DOUBLE' }] })
+    expect(explainError(`Parser Error: syntax error at or near "="${at('=SUM(C2:C9)')}`, { sum }).text).toBe(
+      'That’s a spreadsheet formula. Sheetah speaks SQL: SELECT sum("Net Amount") FROM "sales apr" adds up a column.',
+    )
     expect(explainError(`Parser Error: syntax error at or near "ORDER"${at('SELECT * FROM orders LIMIT 5 ORDER BY id')}`).text).toContain('wrong place')
     // …unless it's a column of theirs called Order: that needs double quotes.
     expect(explainError(`Parser Error: syntax error at or near "Order"${at("SELECT * FROM t WHERE Order = 'a'")}`, { columns: ['Order', 'Qty'] }).text).toBe(

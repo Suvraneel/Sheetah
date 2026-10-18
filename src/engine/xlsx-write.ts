@@ -22,7 +22,7 @@ export const XLSX_MAX_ROWS = 1_048_575
 /** Beyond this many cells the file gets slow to make and to open: CSV or Parquet is the better choice. */
 export const XLSX_MAX_CELLS = 25_000_000
 
-type Kind = 'number' | 'bigint' | 'date' | 'datetime' | 'bool' | 'text'
+type Kind = 'number' | 'bigint' | 'date' | 'datetime' | 'bool' | 'text' | 'month'
 
 const kindOf = (type: string): Kind => {
   const t = type.trim().toUpperCase()
@@ -71,6 +71,16 @@ export function excelDate(v: string): number | null {
   return serial < 61 ? serial - 1 : serial
 }
 
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+/** A month written as text: a pivot's "2024-04", a report's "Apr 2024". */
+const MONTH_LABEL = /^(?:(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{4})|(\d{4})-(0[1-9]|1[0-2]))$/
+/** That month's first day, as an Excel date (null for anything else). */
+export function monthSerial(v: string): number | null {
+  const m = MONTH_LABEL.exec(v)
+  if (!m) return null
+  return m[1] ? excelDate(`${m[2]}-${String(MONTHS.indexOf(m[1].toLowerCase()) + 1).padStart(2, '0')}-01`) : excelDate(`${m[3]}-${m[4]}-01`)
+}
+
 /** Number styles (cellXfs below): 0 as typed (IDs, years), 4 grouped whole numbers, 5 grouped with two decimals, 6 percent. */
 type NumStyle = 0 | 4 | 5 | 6
 
@@ -96,6 +106,11 @@ function cell(ref: string, kind: Kind, v: string | null | undefined, num: NumSty
     case 'bool':
       if (v === 'true' || v === 'false') return `<c r="${ref}" t="b"><v>${v === 'true' ? 1 : 0}</v></c>`
       break
+    case 'month': {
+      const serial = monthSerial(v)
+      if (serial !== null) return `<c r="${ref}" s="7"><v>${serial}</v></c>`
+      break // "Total", or anything else: text
+    }
   }
   const text = v.length > 32_767 ? v.slice(0, 32_767) : v // Excel's per-cell limit
   return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${esc(text)}</t></is></c>`
@@ -209,9 +224,9 @@ const ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 // Sheets are rId1…rIdN; the styles come after them.
 const WORKBOOK_RELS = (sheets: number) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${Array.from({ length: sheets }, (_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`
-// Styles: 0 plain, 1 date, 2 date and time, 3 bold header.
+// Styles: 0 plain, 1 date, 2 date and time, 3 bold header, 4–6 numbers (see NumStyle), 7 a month (Apr 2024).
 const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="2"><numFmt numFmtId="164" formatCode="yyyy-mm-dd"/><numFmt numFmtId="165" formatCode="yyyy-mm-dd hh:mm:ss"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="7"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="4" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="10" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="3"><numFmt numFmtId="164" formatCode="yyyy-mm-dd"/><numFmt numFmtId="165" formatCode="yyyy-mm-dd hh:mm:ss"/><numFmt numFmtId="166" formatCode="mmm yyyy"/></numFmts><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="8"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="4" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="10" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`
 
 const workbook = (names: string[]) => {
   // Sheet names must differ (ignoring case) and be at most 31 characters.
@@ -281,6 +296,11 @@ function sheetXml(src: XlsxSource): AsyncIterable<string> {
   async function* sheet() {
     // Widths from the header and the first rows, in characters.
     const first = rows ? await src.fetch(0, Math.min(rows, 200)) : []
+    // Text that is months ("2024-04" a pivot's rows, a Total line among them; "Apr 2024"): real dates, shown as months.
+    for (let i = 0; i < kinds.length; i++) {
+      const vals = first.map((r) => r[i]).filter((v): v is string => typeof v === 'string')
+      if (kinds[i] === 'text' && vals.some((v) => MONTH_LABEL.test(v)) && vals.every((v) => MONTH_LABEL.test(v) || v === 'Total')) kinds[i] = 'month'
+    }
     const widths = src.columns.map((c, i) => {
       const longest = Math.max(c.name.length + 2, ...first.map((r) => (r[i] ?? '').length))
       return Math.min(60, Math.max(8, kinds[i] === 'datetime' ? 19 : kinds[i] === 'date' ? 11 : longest + 1))

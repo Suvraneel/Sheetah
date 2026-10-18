@@ -24,6 +24,9 @@ interface Props {
   columns: ColumnInfo[]
   rowCount: number
   initial?: PivotSpec
+  /** Number columns stored as text (not offered as values until converted), and the one-click conversion. */
+  textNumbers?: string[]
+  onConvert?: () => void
   onCreate: (sql: string, spec: PivotSpec) => void
   onClose: () => void
 }
@@ -31,7 +34,7 @@ interface Props {
 const nf = new Intl.NumberFormat(LOCALE)
 const MAX_VALUES = 3
 
-export function PivotDialog({ sourceSql, columns, rowCount, initial, onCreate, onClose }: Props) {
+export function PivotDialog({ sourceSql, columns, rowCount, initial, textNumbers, onConvert, onCreate, onClose }: Props) {
   const dialog = useDialog<HTMLDivElement>(onClose)
   const [counts, setCounts] = useState<Record<string, number> | null>(null)
   const [edited, setEdited] = useState<PivotSpec | null>(initial ?? null)
@@ -59,7 +62,8 @@ export function PivotDialog({ sourceSql, columns, rowCount, initial, onCreate, o
     setEdited({ ...spec, ...patch })
   }
   const colInfo = (name: string) => columns.find((c) => c.name === name)
-  const size = (name: string) => (counts?.[name] ? ` · ≈${nf.format(counts[name])}` : '')
+  // How many different values (an estimate past a thousand): a field with 3 goes across, one with 3,000 down.
+  const size = (name: string) => (counts?.[name] ? ` (${counts[name] > 1000 ? 'about ' : ''}${nf.format(counts[name])} ${counts[name] === 1 ? 'value' : 'values'})` : '')
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -109,7 +113,7 @@ export function PivotDialog({ sourceSql, columns, rowCount, initial, onCreate, o
             <span className="eyebrow">Pivot table</span>
             <h2 id="pivot-title">Summarize this result</h2>
             <p className="muted">
-              Builds a plain GROUP BY over all {nf.format(rowCount)} rows. It lands in the editor, so you can keep editing, chart or save it.
+              Totals over all {nf.format(rowCount)} rows. The pivot opens like any result: chart it, export it or save it as a view.
             </p>
 
             {!spec ? (
@@ -223,6 +227,15 @@ export function PivotDialog({ sourceSql, columns, rowCount, initial, onCreate, o
                     >
                       + Add a value
                     </button>
+                  )}
+                  {onConvert && !!textNumbers?.length && (
+                    <p className="fine">
+                      {textNumbers.slice(0, 2).join(', ')}
+                      {textNumbers.length > 2 ? ` and ${textNumbers.length - 2} more` : ''} {textNumbers.length === 1 ? 'is' : 'are'} stored as text, so not listed.{' '}
+                      <button type="button" className="link-btn" onClick={onConvert}>
+                        Convert to numbers
+                      </button>
+                    </p>
                   )}
                 </fieldset>
 

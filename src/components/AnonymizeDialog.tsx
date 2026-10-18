@@ -71,7 +71,7 @@ export function AnonymizeDialog({ result, label, onCreate, onClose }: Props) {
             {d ? (
               <>
                 <Icon name="shield" size={13} /> {ruleFor(d.kind).label}
-                {d.ratio != null ? ` · ${pct(d.ratio)} of values` : ' · by its name'}
+                {d.ratio != null ? ` · ${pct(d.ratio)} of values` : ' · from the column’s name'}
                 {d.verified != null ? `, ${pct(d.verified)} with valid checksums` : ''}
               </>
             ) : (
@@ -109,8 +109,10 @@ export function AnonymizeDialog({ result, label, onCreate, onClose }: Props) {
             <span className="eyebrow">Anonymize</span>
             <h2 id="anon-title">Remove personal data before you share</h2>
             <p className="muted">
-              Checked {Math.min(SAMPLE_ROWS, result.rowCount).toLocaleString(LOCALE)} sample rows in this tab. Detection helps, but check
-              free-text columns like notes or addresses yourself.
+              {result.rowCount <= SAMPLE_ROWS
+                ? `Checked all ${result.rowCount.toLocaleString(LOCALE)} rows in this tab.`
+                : `Checked ${SAMPLE_ROWS.toLocaleString(LOCALE)} of the ${result.rowCount.toLocaleString(LOCALE)} rows in this tab.`}{' '}
+              Detection helps, but check free-text columns like notes or addresses yourself.
             </p>
 
             {!found ? (

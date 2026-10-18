@@ -4,7 +4,7 @@
  * double quotes, Excel formulas, clauses in the wrong order.
  */
 
-import { quoteLiteral, sqlName } from './sql'
+import { isNumericType, quoteLiteral, sqlName } from './sql'
 
 /** A one-click repair: text in double quotes made text, or a misspelt name made the real one. */
 export type Fix =
@@ -118,7 +118,14 @@ export function applyFix(sql: string, fix: Fix): string {
 type Explained = { text: string; detail?: string; code?: boolean; fix?: Fix }
 
 /** text: what to tell the user; detail: DuckDB's own words; code: the text is DuckDB's own words (shown as code); fix: a repair to offer. */
-export function explainError(message: string, ctx: { tables?: string[]; columns?: string[]; monthFirst?: boolean } = {}): Explained {
+/** A sum written in SQL, on the reader's own table and a number column of it (else a made-up one). */
+export function sumExample(table?: { name: string; columns: { name: string; type: string }[] }): string {
+  const nums = table?.columns.filter((c) => isNumericType(c.type)) ?? []
+  const col = nums.find((c) => /amount|total|value|price|sales|revenue/i.test(c.name)) ?? nums.find((c) => /qty|quantity/i.test(c.name)) ?? nums[0]
+  return table && col ? `SELECT sum(${sqlName(col.name)}) FROM ${sqlName(table.name)}` : 'SELECT sum(total) FROM orders'
+}
+
+export function explainError(message: string, ctx: { tables?: string[]; columns?: string[]; monthFirst?: boolean; sum?: string } = {}): Explained {
   const raw = message.replace(/^.*?Error: /, '')
   const first = head(raw)
   const line = lineOf(raw)
@@ -208,7 +215,7 @@ export function explainError(message: string, ctx: { tables?: string[]; columns?
   const near = /^syntax error at or near "([^"]*)"/.exec(first)
   if (near && spaced) return quoteIt(spaced)
   if (near) {
-    if (/^\s*=/.test(line) && near[1] === '=') return plain('That’s a spreadsheet formula. Sheetah speaks SQL: SELECT sum(total) FROM orders adds up a column.')
+    if (/^\s*=/.test(line) && near[1] === '=') return plain(`That’s a spreadsheet formula. Sheetah speaks SQL: ${ctx.sum ?? 'SELECT sum(total) FROM orders'} adds up a column.`)
     // A column called Order or Group: a SQL word, so its name needs double quotes.
     const word = ctx.columns?.find((c) => c.toLowerCase() === near[1].toLowerCase())
     if (word && /^[A-Za-z]+$/.test(word)) return plain(`${word} is a SQL word, so as a column’s name it goes in double quotes: "${word}".`)

@@ -174,4 +174,27 @@ test.describe('dates that read both ways', () => {
     await expect(page.locator('.op-chip', { hasText: 'paid_on day and month swapped' })).toBeVisible()
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2024-01-02')
   })
+
+  test('two-digit years: 01/04/24 is 1 April 2024, not 24 April 2001', async ({ page }) => {
+    await openApp(page)
+    const lines = ['Date,Narration,Withdrawal Amt.,Closing Balance']
+    for (let d = 1; d <= 20; d++) lines.push(`${String(d).padStart(2, '0')}/04/24,UPI ${d},10.00,${1000 - 10 * d}`)
+    await page.locator('input[type=file]').setInputFiles([buf('hdfc.csv', lines.join('\n'))])
+    await expect(page.locator('.result-meta')).toContainText('20 rows')
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2024-04-01')
+    // A file that really is year first stays that way.
+    await page.locator('input[type=file]').setInputFiles([buf('jp.csv', 'd,x\n24/04/01,1\n24/04/30,2\n24/05/13,3\n')])
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    await expect(page.locator('.sr-grid [role=row]').nth(3)).toContainText('2024-05-13')
+    // Monthly, on the same day each month: still year first (read the other way, the dates would be years away).
+    await page.locator('input[type=file]').setInputFiles([buf('monthly.csv', 'd,x\n24/01/01,1\n24/02/01,2\n24/03/01,3\n')])
+    await expect(page.locator('.cm-content')).toContainText('FROM monthly')
+    await expect(page.locator('.sr-grid [role=row]').nth(3)).toContainText('2024-03-01')
+    // Times without seconds aren't recognised as times at first (the year 1): read from how they're written.
+    const times = ['at,amount', ...Array.from({ length: 15 }, (_, i) => `${String(i + 1).padStart(2, '0')}/04/24 10:30,${i}`)]
+    await page.locator('input[type=file]').setInputFiles([buf('upi.csv', times.join('\n'))])
+    await expect(page.locator('.cm-content')).toContainText('FROM upi')
+    await expect(page.locator('.result-meta')).toContainText('15 rows')
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2024-04-01 10:30')
+  })
 })

@@ -8,6 +8,8 @@ interface Props {
   onNames?: (row: number) => void
   /** Total lines and empty rows to leave out. */
   junk: DropRows[] | null
+  /** Total lines still being looked for (a big file): their chip's place, held. */
+  checkingTotals?: boolean
   /** A bank statement's money in and out: to add the signed amount. */
   amount?: { credit: string; debit: string } | null
   onAmount?: () => void
@@ -36,13 +38,16 @@ interface Props {
   onAnonymize: () => void
 }
 
+/** "a, b and c" */
+const listed = (xs: string[]) => (xs.length < 3 ? xs.join(' and ') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`)
+
 /**
  * Suggestions from looking the table over, outlined so they never read as applied steps (filled chips),
  * in the order they're best taken: rows that aren't data first, then the layout, then the types.
  */
-export function HintChips({ namesRow, onNames, junk, empty, onHideEmpty, amount, onAmount, dates, onSwapDates, spaces, onTrim, fill, onFill, series, text, personal, compact, onDrop, onUnpivot, onConvert, onAnonymize }: Props) {
+export function HintChips({ namesRow, onNames, junk, checkingTotals, empty, onHideEmpty, amount, onAmount, dates, onSwapDates, spaces, onTrim, fill, onFill, series, text, personal, compact, onDrop, onUnpivot, onConvert, onAnonymize }: Props) {
   const names = typeof namesRow === 'number'
-  if (!names && !junk && !empty && !fill && !series && !text && !amount && !dates && !spaces && !personal) return null
+  if (!names && !junk && !checkingTotals && !empty && !fill && !series && !text && !amount && !dates && !spaces && !personal) return null
   const into = (t: Clean[]) => (t.every((c) => c.kind === 'date') ? 'dates' : t.some((c) => c.kind === 'date') ? 'numbers and dates' : 'numbers')
   return (
     <span className="hint-chips">
@@ -51,13 +56,19 @@ export function HintChips({ namesRow, onNames, junk, empty, onHideEmpty, amount,
           <Icon name="column" size={13} /> Use row {namesRow + 1} as column names
         </button>
       )}
+      {!junk && checkingTotals && (
+        // Shown only if the look takes a while (a big file), so quick ones don't flash. Not announced: the chip it holds a place for is what matters.
+        <span className="pii-chip is-pending" aria-hidden>
+          <Icon name="filter" size={13} /> Checking for total lines…
+        </span>
+      )}
       {junk && (
         <button
           className="pii-chip"
           onClick={(e) => thenKeepFocus(e, '.hint-chips', () => onDrop(junk))}
-          title={`Rows that aren’t data: a report’s total lines, rows with nothing in them. Leaving them out keeps sums and counts right.${junk.some((d) => d.checked) ? ' Checked: the total lines add up to the other rows.' : ''}`}
+          title={`Rows that aren’t data: a report’s total lines, a statement’s opening and closing balance, rows with nothing in them. Leaving them out keeps sums and counts right.${junk.some((d) => d.checked && !d.checked.off.length) ? ' Checked: the total lines match the other rows exactly.' : ''}`}
         >
-          <Icon name="filter" size={13} /> Leave out {junk.map((d) => d.label).join(' and ')}
+          <Icon name="filter" size={13} /> Leave out {listed(junk.map((d) => d.label))}
         </button>
       )}
       {empty && (

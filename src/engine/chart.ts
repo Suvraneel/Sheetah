@@ -20,6 +20,8 @@ export interface ChartSpec {
   x: string
   y: string | null
   agg: Agg
+  /** For a time axis: the period each point covers (picked from the span when not given). */
+  grain?: TimeGrain
 }
 
 export interface Point {
@@ -36,6 +38,8 @@ export interface ChartData {
   /** Distinct groups before the top-N cut (bar charts). */
   groups: number
   bucket?: string
+  /** Bars in the rows' own order (a pivot's: months by date), not largest first. */
+  inOrder?: boolean
   /** SQL that produces the same numbers, runnable on its own (the table view). */
   sql: string
   title: string
@@ -74,7 +78,12 @@ export function defaultSpec(cols: ColumnInfo[]): ChartSpec | null {
 /** The measure as SQL; `ref` maps a column name to how it's referenced (the result table may rename one). */
 const measure = (spec: ChartSpec, ref: (name: string) => string = quoteIdent) =>
   spec.agg === 'count' || !spec.y ? 'count(*)' : `${spec.agg}(${ref(spec.y)}::DOUBLE)`
-const measureLabel = (spec: ChartSpec) => (spec.agg === 'count' || !spec.y ? 'Rows' : `${AGGS.find((a) => a.id === spec.agg)!.label} of ${spec.y}`)
+const measureLabel = (spec: ChartSpec) => {
+  if (spec.agg === 'count' || !spec.y) return 'Rows'
+  // A column that is a total already (a pivot's "Sum of amount"): summed, it's still that, said once.
+  if (spec.agg === 'sum' && /^(Sum of |Rows$|Total$)/.test(spec.y)) return spec.y
+  return `${AGGS.find((a) => a.id === spec.agg)!.label} of ${spec.y}`
+}
 
 /**
  * The result's own SQL as a CTE, so table-view queries don't depend on the result table. Not
@@ -90,8 +99,10 @@ async function rows(sql: string) {
   return (await conn.query(sql)).toArray().map((r) => r.toJSON() as Record<string, unknown>)
 }
 
-const GRAINS = ['hour', 'day', 'week', 'month', 'quarter', 'year'] as const
-type Grain = (typeof GRAINS)[number]
+export const TIME_GRAINS = ['hour', 'day', 'week', 'month', 'quarter', 'year'] as const
+export type TimeGrain = (typeof TIME_GRAINS)[number]
+const GRAINS = TIME_GRAINS
+type Grain = TimeGrain
 
 /**
  * Bucket by the span, but never finer than the data already is: values that are all first-of-month
@@ -101,7 +112,7 @@ type Grain = (typeof GRAINS)[number]
 function pickBucket(spanSeconds: number, isDate: boolean, dataGrain: Grain | null): Grain {
   const day = 86_400
   const bySpan: Grain =
-    spanSeconds > 20 * 365 * day ? 'year' : spanSeconds > 3 * 365 * day ? 'month' : spanSeconds > 120 * day ? 'week' : spanSeconds > 2 * day || isDate ? 'day' : 'hour'
+    spanSeconds > 20 * 365 * day ? 'year' : spanSeconds > 3 * 365 * day ? 'month' : spanSeconds > 60 * day ? 'week' : spanSeconds > 2 * day || isDate ? 'day' : 'hour'
   return dataGrain && GRAINS.indexOf(dataGrain) > GRAINS.indexOf(bySpan) ? dataGrain : bySpan
 }
 
@@ -143,7 +154,8 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
       FROM ${result.table} WHERE ${xr} IS NOT NULL`,
     )
     const grain: Grain | null = span?.y ? 'year' : span?.q ? 'quarter' : span?.m ? 'month' : span?.w ? 'week' : span?.d ? 'day' : null
-    const bucket = pickBucket(Number(span?.s ?? 0), /^DATE$/i.test(col.type), grain)
+    // Asked for, or picked from the span (an hour of a DATE is its day).
+    const bucket = spec.grain ? (spec.grain === 'hour' && /^DATE$/i.test(col.type) ? 'day' : spec.grain) : pickBucket(Number(span?.s ?? 0), /^DATE$/i.test(col.type), grain)
     const label = (e: string) => (bucket === 'hour' ? `strftime(date_trunc('hour', ${e}), '%Y-%m-%d %H:00')` : `date_trunc('${bucket}', ${e})::DATE::VARCHAR`)
     const sql = `SELECT ${label(timeExpr(col))} AS ${quoteIdent(bucket)}, ${value}::DOUBLE AS value FROM q WHERE ${x} IS NOT NULL GROUP BY 1 ORDER BY 1`
     // Internal aliases: a column called "value" must not collide with the measure.
@@ -166,18 +178,32 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
   const pivotTotal = /GROUPING\s+SETS/i.test(result.sql) && result.columns.length > 0
   const first = result.columns[0]
   const notTotal = (inTable: boolean) => (pivotTotal ? ` WHERE ${inTable ? colRef(first) : quoteIdent(first.name)}::VARCHAR IS DISTINCT FROM 'Total'` : '')
-  const sql = `SELECT ${x}::VARCHAR AS ${x}, ${value}::DOUBLE AS ${valueAlias} FROM q${notTotal(false)} GROUP BY 1 ORDER BY 2 DESC NULLS LAST, 1`
+  // A pivot's rows are in the order it was asked for (months by date, or largest first): the bars keep it.
+  const inOrder = /^-- Pivot: /m.test(result.sql)
+  const sql = inOrder
+    ? `SELECT ${x}::VARCHAR AS ${x}, ${value}::DOUBLE AS ${valueAlias} FROM (SELECT *, row_number() OVER () AS __row FROM q)${notTotal(false)} GROUP BY 1 ORDER BY min(__row)`
+    : `SELECT ${x}::VARCHAR AS ${x}, ${value}::DOUBLE AS ${valueAlias} FROM q${notTotal(false)} GROUP BY 1 ORDER BY 2 DESC NULLS LAST, 1`
   const [data, [count]] = await Promise.all([
-    rows(`SELECT ${xr}::VARCHAR AS __x, ${vr}::DOUBLE AS __v FROM ${result.table}${notTotal(true)} GROUP BY 1 ORDER BY 2 DESC NULLS LAST, 1 LIMIT ${TOP_N}`),
+    rows(`SELECT ${xr}::VARCHAR AS __x, ${vr}::DOUBLE AS __v FROM ${result.table}${notTotal(true)} GROUP BY 1 ORDER BY ${inOrder ? 'min(rowid)' : '2 DESC NULLS LAST, 1'} LIMIT ${TOP_N}`),
     rows(`SELECT count(DISTINCT ${xr})::DOUBLE + max(CASE WHEN ${xr} IS NULL THEN 1 ELSE 0 END) AS n FROM ${result.table}${notTotal(true)}`),
   ])
   return {
     kind: 'bar',
-    points: data.map((r) => ({ label: r.__x === null ? '(empty)' : r.__x === '' ? '(blank)' : String(r.__x), value: Number(r.__v ?? 0) })),
+    points: data.map((r) => ({ label: r.__x === null ? '(empty)' : r.__x === '' ? '(blank)' : periodText(String(r.__x)), value: Number(r.__v ?? 0) })),
     groups: Number(count?.n ?? data.length),
+    inOrder,
     title: `${measureLabel(spec)} by ${col.name}`,
     sql: `${sourceCte(result)}${sql}`,
   }
+}
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+/** A pivot's period as a chart says it: 2024-04 → Apr 2024, 2024-Q2 → Q2 2024 (anything else as it is). */
+export function periodText(label: string): string {
+  const month = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(label)
+  if (month) return `${MONTH_NAMES[Number(month[2]) - 1]} ${month[1]}`
+  const quarter = /^(\d{4})-Q([1-4])$/.exec(label)
+  return quarter ? `Q${quarter[2]} ${quarter[1]}` : label
 }
 
 const INTEGER = /^(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT|U)/i

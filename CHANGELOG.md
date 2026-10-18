@@ -7,8 +7,18 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 ### Added
 - **Bank statements, signed and checked**: a statement with money in and money out in two columns (Deposit /
   Withdrawal, Credit / Debit) is offered *Add signed amount*, one column that sums, charts and pivots. With a running
-  balance, each balance is checked against the one before (oldest or newest first): *Checked: every Closing Balance
-  follows from the row above*, or the row where a line is missing or doubled, and by how much.
+  balance, each balance is checked against the one before (oldest or newest first): *Every Closing Balance follows
+  from the row above*, or the row where a line is missing or doubled, and by how much. Its *Opening Balance* and
+  *Closing Balance* lines (and *Balance b/f*, *Carried forward*) are offered for leaving out with the total line.
+- **Checks that travel with a saved view**: running a view on next month's file checks it again, the running
+  balance and the total lines against the rows, and says what passed or which line is missing. Checks sit above the
+  rows (not in a passing toast) while the step they checked is there.
+- **Two-digit years read the right way round**: `01/04/24` is 1 April 2024, not 24 April 2001 (the file reader's
+  guess), and `01/04/24 10:30` is a time, not the year 1. A file read the other way would put its dates years
+  from today, so one that really is year first (`24/01/31`) stays as it is.
+- **Charts by day, week, month, quarter or year**: a *By* control for date axes (a three-month statement now starts
+  by week, not 90 spiky days). A pivot charts in its own order (months by date), its Total row left out, titled
+  *Sum of amount* once. Amounts stored as text are named in Chart and Pivot with *Convert to numbers*.
 - **Undo and redo** for every header action (sort, filters, find, duplicates, clean-up, look-ups, hidden columns):
   ⌘/Ctrl + Z and ⌘/Ctrl + Shift + Z, or the Undo / Redo links. Quick successive clicks build on each other instead
   of the last one silently dropping the one before.
@@ -31,9 +41,12 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   then (a phone number) isn't mistaken for one.
 - **Your SQL on the tidied rows**: a query typed against a table that has tidy-up steps reads the file as it is
   (total lines, amounts as text). Sheetah says so and offers *Run on the tidied rows*, which runs the same query on a
-  `WITH table AS (…)` of the steps (your own WITH and comments are kept).
-- **Tie-out**: leaving out total lines says whether they add up to the rows left (sub-totals and a grand total come
-  to twice them): *Checked: the total lines add up to the rows left. Invoice Total comes to 721,715, counted once.*
+  `WITH table AS (…)` of the steps (your own WITH and comments are kept). When the query failed on what the steps
+  fix (text where a number belongs), that's the error's own fix, in place of advice to convert a converted column.
+- **Tie-out**: leaving out total lines says whether they come to exactly the rows left, column by column (sub-totals
+  and a grand total come to twice them): *The totals match the rows exactly: Invoice Total 721,715*, or *The totals
+  say Withdrawal Amt. is 218,890.84; the rows come to 218,296.92: 593.92 short*. A closing balance or a rate on the
+  total line isn't something the rows add up to, and is left alone.
 - **Saved views keep their steps**: a view saved from a table's header actions comes back as chips, each removable,
   on next month's file too (steps that aren't exactly the view's SQL are ignored, so nothing runs unseen).
 - **More suggestions**: tidy stray spaces in names; hide empty columns (an export's empty first column no longer hides
@@ -137,8 +150,21 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   (the crash screen, a part that failed) (`tests/fixtures.ts`), even when what it checked on screen looked right.
 
 ### Changed
-- Three or more columns converted (usually one click on *Convert*) show as one chip, *4 columns converted*, undone
-  together; *Show each* lists them one by one. Six chips on two rows had left a 720px laptop a handful of rows.
+- Three or more columns converted (usually one click on *Convert*) show as one chip, *4 columns converted*: clicking
+  it lists them one by one, and only its × undoes them all. Look-alike values merged in a column group the same way
+  (*City: 4 values merged*), and the column menu offers *Merge all*; a stray space shows as ␣ (*Mumbai␣ → Mumbai*).
+- Pivot rows and columns by month, quarter or year read as the period (2024-04, 2024-Q2), sort as dates, and go to
+  Excel as real months (*Apr 2024*). The pivot dialog speaks plainly: *Totals over all 58 rows*, *Date (50 values)*.
+- A file that doesn't open says which (*Couldn’t open tally.xml.*), not *That query didn’t run.* Tally's own XML is
+  recognised, with how to get an Excel or CSV out of Tally.
+- The shortcuts list fits a laptop screen (two balanced columns, one line a shortcut); on phones the landing page
+  offers opening a file first; while a big file's total lines are looked for, a quiet *Checking for total lines…*
+  holds their chip's place; running a query closes the editor's suggestions.
+- Copy: *Ran “HDFC tidy” on bank_jul: 6 steps, shown above the rows*; *Checked all 112 rows* (not "sample rows")
+  when that's all of them; *3 of 40 values* (not "sampled") when they were every value; a pasted Excel formula is
+  answered with a sum on your own table and column.
+- The code that looks a table over (total lines, fill down, dates, a column's profile) loads with the first table,
+  not the first screen.
 - App.tsx split up: the library tabs (`Library.tsx`), applied steps and suggestions (`StepChips.tsx`,
   `HintChips.tsx`) and the notice stack (`Toasts.tsx`) are components of their own.
 - Usability pass:

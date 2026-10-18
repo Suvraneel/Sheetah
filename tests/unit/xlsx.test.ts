@@ -119,3 +119,24 @@ test('a workbook can hold several sheets (a pivot, and the rows behind it)', asy
   expect(sheets.map((s) => s.sheet)).toEqual(['pivot', 'pivot (2)'])
   expect(sheets[1].data).toEqual([['city', 'n'], ['Pune', 1], ['Pune', 1]])
 })
+
+test('months written as text (a pivot’s "2024-04") become real dates, shown as months; its Total stays text', async () => {
+  const cols: XlsxColumn[] = [
+    { name: 'Date (month)', type: 'VARCHAR' },
+    { name: 'Sum of amount', type: 'DOUBLE' },
+  ]
+  const rows = [
+    ['2024-04', '505'],
+    ['2024-05', '20'],
+    ['Total', '525'],
+  ]
+  const { rows: back } = await readBack(await build(rows, cols))
+  expect(back[1][0]).toEqual(new Date(Date.UTC(2024, 3, 1)))
+  expect(back[2][0]).toEqual(new Date(Date.UTC(2024, 4, 1)))
+  expect(back[3][0]).toBe('Total')
+  // Text that only sometimes looks like a month stays text.
+  const mixed = await readBack(await build([['Apr 2024', '1'], ['Pune', '2']], cols))
+  expect(mixed.rows[1][0]).toBe('Apr 2024')
+  // A report's own month names count too.
+  expect((await readBack(await build([['Apr 2024', '1'], ['May 2024', '2']], cols))).rows[2][0]).toEqual(new Date(Date.UTC(2024, 4, 1)))
+})

@@ -24,7 +24,7 @@ export function exportViews(views: SavedView[]): string {
         tables,
         shapes,
         savedAt,
-        ...(steps ? { steps: { ...steps, ops: { ...steps.ops, drop: steps.ops.drop?.map(({ label, keep }) => ({ label, keep })) } } } : {}),
+        ...(steps ? { steps: { ...steps, ops: { ...steps.ops, drop: steps.ops.drop?.map(({ label, keep, kind }) => ({ label, keep, ...(kind ? { kind } : {}) })) } } } : {}),
       })),
     },
     null,

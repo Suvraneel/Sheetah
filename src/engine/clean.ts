@@ -170,7 +170,9 @@ export const CLEAN_LABEL: Record<CleanKind, string> = {
   replace: 'values replaced',
 }
 
-const shown = (v: string | null | undefined) => (v === null || v === undefined || v === '' ? 'empty' : `“${v}”`)
+/** Spaces at either end, made visible ("Mumbai␣"): otherwise "Mumbai " → "Mumbai" reads as nothing changing. */
+export const visibleSpaces = (v: string) => v.replace(/^\s+|\s+$/g, (m) => '␣'.repeat(m.length)).replace(/\s{2,}/g, (m) => '␣'.repeat(m.length))
+const shown = (v: string | null | undefined) => (v === null || v === undefined || v === '' ? 'empty' : `“${visibleSpaces(v)}”`)
 
 export const describeClean = (c: Clean) =>
   `${c.column} ${
@@ -242,8 +244,38 @@ export interface DropRows {
   label: string
   /** True for the rows to keep (written against the table's columns; never NULL). */
   keep: string
-  /** Checked: their numbers add up to the rows kept (sub-totals, a grand total), so nothing is lost; the column checked and the rows' sum. */
-  checked?: { column: string; sum: number }
+  /** The tie-out: whether their numbers come to the rows kept (sub-totals, a grand total), column by column. */
+  checked?: TieOut
+  /** What these rows are: total lines (the ones a tie-out adds up), a statement's balance lines, empty rows. */
+  kind?: 'totals' | 'balance' | 'empty'
+}
+
+export interface TieOut {
+  /** Columns whose total lines come to exactly the rows kept (the largest sum first). */
+  ok: { column: string; sum: number }[]
+  /** Columns whose total lines don't: what the lines say, and what the rows come to. */
+  off: { column: string; says: number; rows: number }[]
+}
+
+/**
+ * The tie-out, column by column: the total lines' sum (t) against the rows kept (d), exact to a hundredth
+ * (a total written as a whole number may be off by a half). Sub-totals with a grand total come to twice
+ * the rows. A column whose lines are nowhere near either (a closing balance, a rate) isn't one they total.
+ */
+export function readTieOut(pairs: { column: string; t: number | null; d: number | null }[]): TieOut | null {
+  const ok: TieOut['ok'] = []
+  const off: TieOut['off'] = []
+  for (const { column, t, d } of pairs) {
+    if (typeof t !== 'number' || typeof d !== 'number' || !d) continue
+    const r = t / d
+    const k = r > 0.5 && r < 1.5 ? 1 : r >= 1.5 && r < 2.5 ? 2 : 0
+    if (!k) continue
+    const gap = Math.abs(t - k * d)
+    if (gap < 0.005 * k + Math.abs(t) * 1e-9 || (Number.isInteger(t) && gap <= 0.5 * k)) ok.push({ column, sum: d })
+    else off.push({ column, says: t / k, rows: d })
+  }
+  ok.sort((a, b) => Math.abs(b.sum) - Math.abs(a.sum))
+  return ok.length || off.length ? { ok, off } : null
 }
 
 /** One kind of row that isn't data, as SQL: true for those rows (drop), and its opposite (keep). */
@@ -445,8 +477,6 @@ const MOST = 0.9
 /** Enough to offer converting "anyway" (in the column menu only, with how many values are lost). */
 const SOME = 0.5
 
-/** "1 sampled value has" / "3 sampled values have". */
-const sampled = (n: number, one: string, many: string) => `${n.toLocaleString(LOCALE)} sampled ${n === 1 ? `value ${one}` : `values ${many}`}`
 
 /** Locales that write 12,5 for twelve and a half (de, fr, es, it, pt, ru, id, nl, tr, …). */
 export const usesDecimalComma = (locale: string) => {
@@ -463,13 +493,18 @@ export const usesDecimalComma = (locale: string) => {
  * settled by values only one reading explains ("12,5", "3.25"), then by the reader's locale. When a
  * date could be DD/MM or MM/DD (no day above 12), the locale decides which is offered first.
  */
-export function suggestCleaning(column: string, s: CleanStats, locale = 'en-IN'): CleanSuggestion[] {
+export function suggestCleaning(column: string, s: CleanStats, locale = 'en-IN', whole = true): CleanSuggestion[] {
   const out: CleanSuggestion[] = []
   if (!s.values) return s.blanks ? [{ clean: { column, kind: 'blank' }, label: 'Treat blanks as empty' }] : []
+  const nf = (n: number) => n.toLocaleString(LOCALE)
+  // Counts over every value when the sample was the whole table; else said as what they are (of those checked).
+  const of = whole ? '' : ' checked'
   const lost = (ok: number, what: string) => {
     const bad = s.values - ok
-    return bad > 0 ? `${bad.toLocaleString(LOCALE)} of ${s.values.toLocaleString(LOCALE)} sampled values aren’t ${what} and become empty` : undefined
+    return bad > 0 ? `${nf(bad)} of ${nf(s.values)} values${of} aren’t ${what} and become empty` : undefined
   }
+  /** "1 value has" / "3 values have" (or "3 of 5,000 values checked have"). */
+  const sampled = (n: number, one: string, many: string) => `${nf(n)}${whole ? '' : ` of ${nf(s.values)}`} ${n === 1 && whole ? 'value' : 'values'}${of} ${n === 1 ? one : many}`
   const comma = s.commaOnly > 0 && s.pointOnly === 0 ? true : s.pointOnly > 0 ? false : usesDecimalComma(locale)
   const mixed = s.commaOnly > 0 && s.pointOnly > 0
   const numbers = comma ? s.commaNumbers : s.numbers

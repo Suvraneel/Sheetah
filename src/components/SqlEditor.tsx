@@ -80,7 +80,9 @@ export function SqlEditor({ value, onChange, onRun, tables, id }: Props) {
     })
 
   useEffect(() => {
-    const run = () => {
+    // Running closes any open suggestions: they'd sit over the error or the results.
+    const run = (v: EditorView) => {
+      closeCompletion(v)
       cb.current.onRun()
       return true
     }

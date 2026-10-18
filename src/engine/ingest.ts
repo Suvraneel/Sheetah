@@ -1,7 +1,7 @@
 import { DuckDBDataProtocol } from '@duckdb/duckdb-wasm'
 import { CancelledError, ensureExtension, getEngine, isCancel, quoteIdent, quoteLiteral, sandboxPath, sendAll, withRunLock } from './db'
 import { FileKindError } from './load-errors'
-import { tableNameFor } from './sql'
+import { LOCALE, tableNameFor } from './sql'
 export { FileKindError } from './load-errors'
 
 import type { XlsxReply, XlsxSheet } from './xlsx.worker'
@@ -24,15 +24,104 @@ function readerFor(fileName: string): { fn: string; materialize: boolean } {
   return { fn: 'read_csv_auto', materialize: true } // csv, tsv, txt: delimiter is sniffed
 }
 
+/** Tables whose dates were read day-first or month-first from text (by the CSV reader's guess). */
+export const dateOrders = new Map<string, 'dmy' | 'mdy'>()
+
+const columnTypes = async (table: string) =>
+  (await sendAll(`DESCRIBE ${quoteIdent(table)}`)).toArray().map((r) => {
+    const c = r.toJSON() as { column_name: string; column_type: string }
+    return { name: String(c.column_name), type: String(c.column_type) }
+  })
+
+/**
+ * A two-digit-year-first format (%y/%m/%d) turned day-first or month-first, separators kept:
+ * "%y/%m/%d %H:%M" → "%d/%m/%y %H:%M". Anything else stays as it is (null).
+ */
+function yearLast(format: string, order: 'dmy' | 'mdy'): string | null {
+  const m = /^%y(\W)%m(\W)%d/.exec(format)
+  if (!m) return null
+  return (order === 'dmy' ? `%d${m[1]}%m${m[2]}%y` : `%m${m[1]}%d${m[2]}%y`) + format.slice(m[0].length)
+}
+
+/**
+ * Which way round the reader took dates like 01/02/2024 (it can't know, up to the 12th): kept for the
+ * date hint. Its pick for 01/04/24 is two-digit year first, 24 April 2001 (and 01/04/24 10:30, with no
+ * seconds, isn't seen as a time at all: the year 1). Statements write the day first. When day-first or
+ * month-first (the reader's own habit tried first) reads the same columns as dates, keeps their years as
+ * close together, and puts them nearer today, the file is read again that way. A file that really is
+ * year first (24/01/31, 24/02/29…) stays as it was read: read the other way, its dates are years away.
+ */
+async function readDates(name: string, path: string, read: (opts: string) => string): Promise<void> {
+  const dated = (await columnTypes(name)).filter((c) => c.type === 'DATE' || c.type.startsWith('TIMESTAMP'))
+  if (!dated.length) return
+  const f = await sendAll(`SELECT DateFormat AS d, TimestampFormat AS t FROM sniff_csv(${quoteLiteral(path)})`)
+    .then((t) => t.toArray()[0]?.toJSON() as { d?: string; t?: string } | undefined)
+    .catch((e) => (isCancel(e) ? Promise.reject(e) : undefined))
+  const date = String(f?.d ?? '')
+  let time = String(f?.t ?? '')
+  let order: 'dmy' | 'mdy' | undefined = /^%d\W%m/.test(date) ? 'dmy' : /^%m\W%d/.test(date) ? 'mdy' : undefined
+  const one = (sql: string) => sendAll(sql).then((t) => (t.toArray()[0]?.toJSON() ?? {}) as Record<string, unknown>)
+  // Times read as the year 1 (no seconds, so no format found): how they're written, from the text itself.
+  const times = dated.filter((c) => c.type.startsWith('TIMESTAMP'))
+  if (times.length && !yearLast(time, 'dmy')) {
+    const low = await one(`SELECT least(${times.map((c) => `min(year(${quoteIdent(c.name)}))`).join(', ')})::DOUBLE AS y FROM ${quoteIdent(name)}`)
+    if (Number(low.y ?? 1e9) < 100) {
+      const c = quoteIdent(times[0].name)
+      const raw = String((await one(`SELECT ${c} AS v FROM ${read('all_varchar = true')} WHERE ${c} IS NOT NULL LIMIT 1`)).v ?? '')
+      const m = /^\d{1,2}([/.-])\d{1,2}\1\d{2}\s+\d{1,2}:\d{2}(:\d{2})?$/.exec(raw.trim())
+      if (m) time = `%y${m[1]}%m${m[1]}%d %H:%M${m[2] ? ':%S' : ''}` // as the reader would have said it; turned below
+    }
+  }
+  if (yearLast(date, 'dmy') || yearLast(time, 'dmy')) {
+    // How the dates sit: how many different years, and how far from today on average.
+    const today = new Date().toISOString().slice(0, 10)
+    const shape = async (table: string) => {
+      const r = await one(
+        `SELECT ${dated.map((c, i) => `count(DISTINCT year(${quoteIdent(c.name)}))::DOUBLE AS y${i}, sum(abs(date_diff('day', ${quoteIdent(c.name)}::DATE, DATE '${today}')))::DOUBLE AS d${i}, count(${quoteIdent(c.name)})::DOUBLE AS n${i}`).join(', ')} FROM ${quoteIdent(table)}`,
+      )
+      const sum = (k: string) => dated.reduce((s, _, i) => s + Number(r[`${k}${i}`] ?? 0), 0)
+      return { years: sum('y'), away: sum('d') / Math.max(1, sum('n')) }
+    }
+    const now = await shape(name)
+    const tmp = `__dates_${name}`
+    for (const o of /^en-US$/i.test(LOCALE) ? (['mdy', 'dmy'] as const) : (['dmy', 'mdy'] as const)) {
+      const d = yearLast(date, o)
+      const t = yearLast(time, o)
+      const opts = [d && `dateformat = ${quoteLiteral(d)}`, t && `timestampformat = ${quoteLiteral(t)}`].filter(Boolean).join(', ')
+      try {
+        await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(tmp)} AS SELECT * FROM ${read(opts)}`)
+        const types = new Map((await columnTypes(tmp)).map((c) => [c.name, c.type]))
+        const then = dated.every((c) => types.get(c.name) === c.type) ? await shape(tmp) : null
+        if (then && then.years <= now.years && then.away < now.away) {
+          // Swapped in one transaction (no second copy of the rows): a cancel part-way leaves the first reading.
+          await sendAll('BEGIN TRANSACTION')
+          try {
+            await sendAll(`DROP TABLE ${quoteIdent(name)}`)
+            await sendAll(`ALTER TABLE ${quoteIdent(tmp)} RENAME TO ${quoteIdent(name)}`)
+            await sendAll('COMMIT')
+          } catch (e) {
+            await sendAll('ROLLBACK').catch(() => {})
+            throw e
+          }
+          order = o
+          break
+        }
+      } catch (e) {
+        if (isCancel(e)) throw e
+      } finally {
+        await sendAll(`DROP TABLE IF EXISTS ${quoteIdent(tmp)}`).catch(() => {})
+      }
+    }
+  }
+  if (order) dateOrders.set(name.toLowerCase(), order)
+}
+
 /**
  * Registers the File with DuckDB (it reads straight from disk, nothing is uploaded) and
  * creates a table. CSV/JSON are materialised so scrolling and sorting stay fast;
  * Parquet stays a view because it's already columnar and compressed.
  * Loads run one at a time on the cancellable connection, so the Cancel button stops them.
  */
-/** Tables whose dates were read day-first or month-first from text (by the CSV reader's guess). */
-export const dateOrders = new Map<string, 'dmy' | 'mdy'>()
-
 export async function ingestFile(file: File, taken: Set<string> = new Set(), onNote?: (note: string) => void): Promise<string[]> {
   if (!file.size) throw new FileKindError(`${file.name} is empty.`)
   const { sniff, notATable } = await import('./sniff')
@@ -41,8 +130,12 @@ export async function ingestFile(file: File, taken: Set<string> = new Set(), onN
   if (wrong) throw new FileKindError(wrong)
   if (kind === 'html' || kind === 'xml-sheet') return ingestMarkup(file, kind, taken, onNote)
   if (kind === 'text' && /\.html?$/i.test(file.name)) return ingestMarkup(file, 'html', taken, onNote)
-  if (kind === 'text' && /\.xml$/i.test(file.name))
+  if (kind === 'text' && /\.xml$/i.test(file.name)) {
+    // Tally's own XML (vouchers and masters in an ENVELOPE): its reports export to Excel and CSV too.
+    if (/<ENVELOPE\b|<TALLYMESSAGE\b/i.test(await file.slice(0, 8192).text()))
+      throw new FileKindError(`${file.name} is Tally’s own XML. From Tally, export the report to Excel or CSV instead, and open that.`)
     throw new FileKindError(`${file.name} is XML, but not a spreadsheet. Sheetah opens XML saved by Excel (XML Spreadsheet 2003); for other XML, export a CSV.`)
+  }
   if (/\.xls$/i.test(file.name)) {
     // Some systems save tab-separated text as .xls (Excel opens it): read it as the text it is.
     const head = await file.slice(0, 4096).text()
@@ -85,23 +178,16 @@ function ingestRead(file: File, taken: Set<string>, onNote?: (note: string) => v
     // one text column ("name,city,amount"). Read it again with that separator, padding short rows.
     if (fn === 'read_csv_auto') {
       try {
-        const described = (await sendAll(`DESCRIBE ${quoteIdent(name)}`)).toArray().map((r) => r.toJSON() as { column_name: string; column_type: string })
-        const cols = described.map((r) => String(r.column_name))
-        // Dates the reader recognised: which way round it read 01/02/2024 (it can't know, on dates up to the 12th).
-        if (described.some((r) => r.column_type === 'DATE')) {
-          const f = await sendAll(`SELECT DateFormat AS f FROM sniff_csv(${quoteLiteral(virtualPath)})`)
-            .then((t) => String(t.toArray()[0]?.toJSON().f ?? ''))
-            .catch((e) => (isCancel(e) ? Promise.reject(e) : ''))
-          if (/^%d\W%m/.test(f)) dateOrders.set(name.toLowerCase(), 'dmy')
-          else if (/^%m\W%d/.test(f)) dateOrders.set(name.toLowerCase(), 'mdy')
-        }
+        const cols = (await columnTypes(name)).map((c) => c.name)
         const sep = cols.length === 1 ? [',', ';', '\t', '|'].find((d) => cols[0].includes(d)) : undefined
+        let read = (opts: string) => `read_csv_auto(${quoteLiteral(virtualPath)}${opts ? `, ${opts}` : ''})`
         if (sep) {
-          await sendAll(
-            `CREATE OR REPLACE TABLE ${quoteIdent(name)} AS SELECT * FROM read_csv(${quoteLiteral(virtualPath)}, delim = ${quoteLiteral(sep)}, header = true, null_padding = true, strict_mode = false)`,
-          )
+          read = (opts) =>
+            `read_csv(${quoteLiteral(virtualPath)}, delim = ${quoteLiteral(sep)}, header = true, null_padding = true, strict_mode = false${opts ? `, ${opts}` : ''})`
+          await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(name)} AS SELECT * FROM ${read('')}`)
           onNote?.(`Some rows of ${file.name} have more or fewer fields than its header: missing ones are left empty.`)
         }
+        await readDates(name, virtualPath, read)
       } catch (e) {
         if (isCancel(e)) {
           await db.dropFile(virtualPath).catch(() => {})
@@ -191,8 +277,10 @@ async function ingestSheets(file: File, sheets: XlsxSheet[], taken: Set<string>,
       dateOrders.delete(name.toLowerCase())
       const path = sandboxPath(`${name}__sheet.csv`)
       await db.registerFileText(path, sheet.csv)
+      const read = (opts: string) => `read_csv_auto(${quoteLiteral(path)}, header = true${opts ? `, ${opts}` : ''})`
       try {
-        await sendAll(`CREATE TABLE ${quoteIdent(name)} AS SELECT * FROM read_csv_auto(${quoteLiteral(path)}, header = true)`)
+        await sendAll(`CREATE TABLE ${quoteIdent(name)} AS SELECT * FROM ${read('')}`)
+        await readDates(name, path, read).catch((e) => (isCancel(e) ? Promise.reject(e) : undefined))
       } finally {
         await db.dropFile(path).catch(() => {})
       }

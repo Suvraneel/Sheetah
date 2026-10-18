@@ -140,6 +140,8 @@ a { color: var(--accent); }
 code, kbd, .mono { font-family: var(--mono); }
 code { font-size: 0.86em; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 10px; }
+/* A dialog's heading takes focus so reading starts there; it isn't a control, so no ring. */
+h2[tabindex='-1']:focus-visible { outline: none; }
 h1, h2, h3 { margin: 0; }
 .icon { flex: none; }
 .muted { color: var(--muted); }
@@ -947,8 +949,13 @@ kbd {
 .result-meta { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .result-meta strong { color: var(--text); font-weight: 700; }
 .op-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.op-group { display: inline-flex; align-items: center; gap: 6px; }
 .op-group-toggle { font-size: 12.5px; }
+/* A chip for several steps: its label opens it, its × removes them all. */
+.op-chip-split { padding: 0; gap: 0; cursor: default; }
+.op-chip-split > button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; border-radius: 999px; }
+.op-chip-main { padding: 5px 4px 5px 10px; }
+.op-chip-x { padding: 5px 8px 5px 4px; }
+.op-chip-split > button:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .hint-chips { display: contents; }
 /* Where derived rows came from: a quiet link-like chip, not an applied step (those are filled). */
 .origin-chip {
@@ -1309,19 +1316,20 @@ body:has(.modal-backdrop) .toast-stack { z-index: 29; }
 
 /* ---------- Shortcut sheet ---------- */
 .modal-wrap.modal-wrap-wide { width: min(760px, 100%); }
-.keys { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto 1fr; gap: 8px 28px; margin-top: 18px; }
-.keys-group:nth-child(2) { grid-row: span 2; }
+/* Two balanced columns, each shortcut on one line beside what it does: the whole list fits a laptop screen. */
+.keys { columns: 2; column-gap: 32px; margin-top: 12px; }
+.keys-group { break-inside: avoid; }
 .keys-group dl { margin: 0; }
-.keys-row { display: grid; gap: 4px; padding: 9px 0; box-shadow: inset 0 -1px 0 var(--hair); }
+.keys-row { display: grid; grid-template-columns: minmax(0, 9.5em) minmax(0, 1fr); align-items: baseline; gap: 4px 12px; padding: 5px 0; box-shadow: inset 0 -1px 0 var(--hair); }
 .keys-row:last-child { box-shadow: none; }
 .keys-row dt { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .keys-row dd { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
 .combo { display: inline-flex; align-items: center; gap: 3px; }
 .combo .plus, .keys-row .or { color: var(--faint); font-size: 11px; }
-.keys .label { margin: 12px 0 2px; }
+.keys .label { margin: 10px 0 2px; }
 @media (max-width: 640px) {
-  .keys { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
-  .keys-group:nth-child(2) { grid-row: auto; }
+  .keys { columns: 1; }
+  .keys-row { grid-template-columns: minmax(0, 1fr); }
 }
 /* Tall dialogs scroll inside, so their buttons are always reachable. */
 .modal-wrap .core { max-height: calc(100dvh - 32px); overflow-y: auto; }
@@ -1368,7 +1376,12 @@ body:has(.modal-backdrop) .toast-stack { z-index: 29; }
   .landing { padding: 0 16px; }
   .land-nav { width: auto; margin: 12px 0 0; }
   .engine-pill { font-size: 11.5px; }
-  .hero { padding: 72px 0 80px; }
+  /* Opening a file comes first on a phone's first screen; the sample follows it. */
+  .hero { padding: 40px 0 72px; }
+  .hero-drop { margin-top: 28px; }
+  .hero-ctas { order: 0; }
+  .drop-core { padding: 28px 18px; }
+  .drop-icon { width: 48px; height: 48px; margin-bottom: 6px; }
   .features { padding-bottom: 80px; }
   .shot { margin-bottom: 80px; }
   .shot-frame { padding: 6px; border-radius: 24px; }
@@ -1555,6 +1568,7 @@ body:has(.modal-backdrop) .toast-stack { z-index: 29; }
 .chart-panel { height: 100%; overflow: auto; padding: 14px 18px 18px; background: var(--grid-bg); }
 .chart-panel.is-loading .chart-figure { opacity: 0.55; } /* hold the last render, no skeleton flash */
 .chart-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin-bottom: 14px; }
+.chart-text-numbers { align-self: center; color: var(--muted); font-size: 12.5px; }
 .chart-controls label { display: grid; gap: 4px; font-size: 10.5px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.12em; }
 .chart-controls select {
   min-width: 140px; padding: 7px 10px; border: 0; border-radius: 10px; background: var(--sunken);
@@ -1715,6 +1729,9 @@ body:has(.modal-backdrop) .toast-stack { z-index: 29; }
   background: transparent; color: var(--accent); font: 600 12.5px var(--sans); cursor: pointer;
 }
 .pii-chip:hover { background: var(--accent-soft); border-style: solid; }
+.pii-chip.is-pending { color: var(--muted); border-color: var(--hair-strong); cursor: default; animation: pending-in 300ms var(--ease) 1.2s both; }
+.pii-chip.is-pending:hover { background: transparent; border-style: dashed; }
+@keyframes pending-in { from { opacity: 0; } to { opacity: 1; } }
 .menu-anon .menu-label { display: inline-flex; align-items: center; gap: 6px; }
 
 /* ---------- Unrun edits guard ---------- */
@@ -1764,3 +1781,12 @@ body:has(.modal-backdrop) .toast-stack { z-index: 29; }
 .find-bar { display: inline-flex; align-items: center; gap: 6px; padding: 3px 3px 3px 10px; border-radius: 12px; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--accent-ring); color: var(--muted); }
 .find-bar input { width: 200px; min-width: 0; padding: 5px 2px; border: 0; background: none; color: var(--text); font: 500 13px var(--sans); outline: none; }
 .find-bar:has(input:focus-visible) { box-shadow: inset 0 0 0 2px var(--accent); }
+
+/* ---------- Checks on the rows: a running balance, total lines ---------- */
+.checks { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding: 5px 8px 5px 18px; box-shadow: inset 0 -1px 0 var(--hair); font-size: 13px; }
+.checks:empty { padding: 0; box-shadow: none; }
+.check { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.check svg { flex: none; }
+.check.is-ok svg { color: var(--ok); }
+.check.is-off { color: var(--danger); font-weight: 600; }
+.check-dismiss { margin-left: auto; border: 0; background: transparent; cursor: pointer; }

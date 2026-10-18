@@ -42,7 +42,8 @@ export interface Filter {
 export interface Ops {
   sort?: { column: string; dir: 'asc' | 'desc' }
   filters: Filter[]
-  computed: { name: string; expr: string }[]
+  /** Added columns: a name and its formula (and, for one Sheetah wrote, what it is in words). */
+  computed: { name: string; expr: string; note?: string }[]
   /** Find: rows where any column contains this text. */
   search?: string
   /** Duplicates by a column: show only repeated values, or keep the first row of each. */
@@ -301,6 +302,10 @@ export function tidySteps(o: Ops): { ops: Ops; count: number } {
   const count = (o.drop?.length ?? 0) + (o.clean?.length ?? 0) + (o.lookups?.length ?? 0) + o.computed.length + (ops.dedupe ? 1 : 0)
   return { ops, count }
 }
+
+/** How many steps (chips) there are: each filter, clean-up, look-up, added or hidden column, and the rest. */
+export const stepCount = (o: Ops) =>
+  (o.drop?.length ?? 0) + (o.clean?.length ?? 0) + (o.lookups?.length ?? 0) + o.computed.length + o.filters.length + (o.hidden?.length ?? 0) + (o.sort ? 1 : 0) + (o.search ? 1 : 0) + (o.dedupe ? 1 : 0)
 
 /** Text only these steps write (each clean-up's expression, added columns, rows left out): to tell their SQL from a query of one's own. */
 export function stepMarks(o: Ops): string[] {

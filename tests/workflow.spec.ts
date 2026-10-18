@@ -279,6 +279,24 @@ test.describe('replace a value', () => {
     await expect(page.locator('.topvals li').first()).toContainText('Hyderabad6')
     await expect(page.locator('.colmenu-alike')).toHaveCount(0)
   })
+
+  test('look-alikes show their stray spaces, merge all at once, and come back as one chip', async ({ page }) => {
+    await openApp(page)
+    const cities = [...Array(6).fill('Mumbai'), '"Mumbai "', ...Array(5).fill('Pune'), 'pune', 'Delhi']
+    await page.locator('input[type=file]').setInputFiles([file('cities.csv', `city,n\n${cities.map((c, i) => `${c},${i}`).join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('14 rows')
+    await columnMenu(page, 0)
+    const alike = page.locator('.colmenu-alike')
+    await expect(alike.getByRole('button', { name: 'Mumbai␣ → Mumbai' })).toBeVisible()
+    await alike.getByRole('button', { name: 'Merge all 2' }).click()
+    await expect(page.getByRole('button', { name: 'city: 2 values merged' })).toBeVisible()
+    await idle(page)
+    await page.getByRole('button', { name: 'city: 2 values merged' }).click()
+    await expect(page.locator('.op-chip', { hasText: 'city “pune” → “Pune”' })).toBeVisible()
+    await page.getByRole('button', { name: 'Group city merges' }).click()
+    await page.getByRole('button', { name: 'Undo all 2 merges in city' }).click()
+    await expect(page.locator('.op-chip', { hasText: 'merged' })).toHaveCount(0)
+  })
 })
 
 test.describe('rows that are not data', () => {
@@ -338,13 +356,13 @@ test.describe('the messy sample', () => {
     await expect(page.locator('.result-meta')).toContainText('23 rows')
     await page.getByRole('button', { name: 'Leave out 4 total lines and 3 empty rows' }).click()
     // Tied out: the sub-totals and the Grand Total add up to the invoices, so nothing's lost.
-    await expect(page.locator('.toast', { hasText: 'Checked: the total lines add up to the rows left. Invoice Total comes to 721,' })).toBeVisible()
+    await expect(page.locator('.checks', { hasText: 'The totals match the rows exactly: Invoice Total 721,' })).toBeVisible()
     await expect(page.locator('.result-meta')).toContainText('16 of 23 rows')
     await idle(page)
     await page.getByRole('button', { name: /^Convert 4 text columns to numbers and dates/ }).click()
-    // Four columns converted in one click: one chip for them (undone together), each on request.
-    await expect(page.locator('.op-chip', { hasText: '4 columns converted' })).toBeVisible()
-    await page.getByRole('button', { name: 'Show each' }).click()
+    // Four columns converted in one click: one chip for them; clicking it shows each, its × undoes them all.
+    await expect(page.getByRole('button', { name: 'Undo all 4 conversions' })).toBeVisible()
+    await page.getByRole('button', { name: '4 columns converted' }).click()
     await expect(page.locator('.op-chip', { hasText: 'Taxable Value as number' })).toBeVisible()
     await page.getByRole('button', { name: 'Group conversions' }).click()
     await expect(page.locator('.op-chip', { hasText: 'Taxable Value as number' })).toHaveCount(0)
@@ -369,13 +387,18 @@ test.describe('the messy sample', () => {
     await expect(page.locator('.error-banner')).toHaveCount(0)
     // SQL typed against the file reads it as it is: offered the tidied rows instead.
     await runSql(page, 'SELECT sum("Taxable Value") AS taxable FROM sales_register_april')
-    await expect(page.locator('.error-banner')).toContainText('needs numbers')
-    const offer = page.locator('.toast', { hasText: 'without its 7 tidy-up steps' })
-    await offer.getByRole('button', { name: 'Run on the tidied rows' }).click()
+    // It fails on the total lines' text: the error's own fix is the tidied rows (not "convert the column", done already).
+    await expect(page.locator('.error-banner')).toContainText('This query skips sales_register_april’s 7 tidy-up steps')
+    await page.locator('.error-banner').getByRole('button', { name: 'Run on the tidied rows' }).click()
     await expect(page.locator('.cm-content')).toContainText('WITH sales_register_april AS (')
     await expect(page.locator('.result-meta')).toContainText('1 rows')
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('613,950') // the invoices, not the totals too
     await expect(page.locator('.error-banner')).toHaveCount(0)
+    // A mistake of another kind (a misspelt column) keeps its own explanation; the tidied rows are a second offer.
+    await runSql(page, 'SELECT sum(Taxabel) FROM sales_register_april')
+    await expect(page.locator('.error-banner')).toContainText('Taxabel')
+    await expect(page.locator('.error-banner')).not.toContainText('skips')
+    await expect(page.locator('.error-banner').getByRole('button', { name: 'Run on the tidied rows' })).toBeVisible()
   })
 })
 
@@ -441,7 +464,8 @@ test.describe('bank statements', () => {
     await page.locator('input[type=file]').setInputFiles([file('statement.csv', `${csv}\n`)])
     await expect(page.locator('.result-meta')).toContainText('4 rows')
     await page.getByRole('button', { name: 'Add signed amount (Deposit Amt. − Withdrawal Amt.)' }).click()
-    await expect(page.locator('.toast', { hasText: 'Checked: every Closing Balance follows from the row above (3 rows).' })).toBeVisible()
+    await expect(page.locator('.checks', { hasText: 'Every Closing Balance follows from the row above (3 rows checked)' })).toBeVisible()
+    await expect(page.locator('.op-chip', { hasText: 'amount (Deposit − Withdrawal)' })).toBeVisible()
     await expect(page.locator('.sr-grid [role=columnheader]').last()).toContainText('amount')
     await expect(page.getByRole('button', { name: /^Add signed amount/ })).toHaveCount(0)
 
@@ -450,6 +474,41 @@ test.describe('bank statements', () => {
     await page.locator('input[type=file]').setInputFiles([file('statement_gap.csv', `${gap}\n`)])
     await expect(page.locator('.result-meta')).toContainText('3 rows')
     await page.getByRole('button', { name: /^Add signed amount/ }).click()
-    await expect(page.locator('.toast', { hasText: 'The Closing Balance on row 2 doesn’t follow from the row above (off by 500)' })).toBeVisible()
+    await expect(page.locator('.checks .is-off', { hasText: 'Closing Balance on row 2 doesn’t follow from the row above: off by 500' })).toBeVisible()
+  })
+
+  test('next month’s statement is checked when a saved view runs on it: a missing line is named', async ({ page }) => {
+    await openApp(page)
+    const head = 'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance'
+    const april = [head, ',Opening Balance,,,"10,000.00"', '02/04/24,UPI to Ravi,500.00,,"9,500.00"', '05/04/24,NEFT from Asha,,"2,000.00","11,500.00"',
+      '09/04/24,ATM,"1,500.00",,"10,000.00"', '15/04/24,Rent,"3,000.00",,"7,000.00"', ',,,,', ',Total,"5,000.00","2,000.00",', ',Closing Balance,,,"7,000.00"']
+    await page.locator('input[type=file]').setInputFiles([file('stmt_apr.csv', `${april.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('8 rows')
+    // The opening and closing balance lines aren't transactions: left out with the total line.
+    await page.getByRole('button', { name: 'Leave out 1 total line, 2 balance lines and 1 empty row' }).click()
+    await expect(page.locator('.result-meta')).toContainText('4 of 8 rows')
+    await expect(page.locator('.checks .is-ok', { hasText: 'The totals match the rows exactly: Withdrawal Amt. 5,000' })).toBeVisible()
+    await page.getByRole('button', { name: /^Add signed amount/ }).click()
+    await expect(page.locator('.checks .is-ok', { hasText: 'Every Closing Balance follows from the row above' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Run query' })).toBeVisible({ timeout: 60_000 })
+    await page.getByRole('main').getByRole('button', { name: 'Save view' }).click()
+    await page.fill('#view-name', 'Statement tidy')
+    await page.locator('.modal .btn-primary').click()
+    await expect(page.locator('.side-view')).toContainText('Statement tidy')
+
+    // May's statement, with its 1,300.00 groceries line missing (its footer still counts it).
+    await page.reload()
+    await expect(page.locator('.engine-pill.is-ready')).toBeVisible({ timeout: 90_000 })
+    const may = [head, ',Opening Balance,,,"7,000.00"', '03/05/24,Salary,,"50,000.00","57,000.00"', '06/05/24,UPI to Ravi,700.00,,"56,300.00"',
+      '20/05/24,Rent,"3,000.00",,"52,000.00"', ',,,,', ',Total,"5,000.00","50,000.00",', ',Closing Balance,,,"52,000.00"']
+    await page.locator('input[type=file]').setInputFiles([file('stmt_may.csv', `${may.join('\n')}\n`)])
+    await page.locator('.toast', { hasText: 'Your view “Statement tidy” fits stmt_may' }).getByRole('button', { name: 'Run it' }).click()
+    await expect(page.locator('.toast', { hasText: /Ran “Statement tidy” on stmt_may: \d+ steps, shown above the rows/ })).toBeVisible()
+    await expect(page.locator('.checks .is-off', { hasText: 'The totals say Withdrawal Amt. is 5,000; the rows come to 3,700: 1,300 short' })).toBeVisible()
+    await expect(page.locator('.checks .is-off', { hasText: 'Closing Balance on row 3 doesn’t follow from the row above: off by 1,300' })).toBeVisible()
+    // A check stays only while its step does: with the total line back, there's no tie-out to show.
+    await page.locator('.op-chip', { hasText: 'Without 1 total line' }).click()
+    await expect(page.locator('.checks', { hasText: 'The totals say' })).toHaveCount(0)
+    await expect(page.locator('.checks', { hasText: 'Closing Balance on row 3' })).toBeVisible()
   })
 })

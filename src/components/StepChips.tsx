@@ -27,10 +27,23 @@ interface Props {
 
 /** The steps applied to the rows on screen, each a chip that removes it; Undo, Redo and Clear all. */
 export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLookup, canUndo, canRedo, onUndo, onRedo, origin }: Props) {
-  // Three or more columns converted (usually one click on "Convert"): one chip for them, opened on demand.
-  const [open, setOpen] = useState(false)
-  const conversions = (ops.clean ?? []).flatMap((c, i) => (isConversion(c) ? [i] : []))
-  const grouped = !!withoutCleans && conversions.length >= 3 && !open
+  // Steps of one kind, usually from one click: three or more columns converted ("Convert"), or two or more
+  // look-alike values merged in a column ("Merge all"). One chip for them, opened on demand.
+  const [open, setOpen] = useState<string[]>([])
+  const cleans = ops.clean ?? []
+  const conversions = cleans.flatMap((c, i) => (isConversion(c) ? [i] : []))
+  // A merge is a value replaced by another (one written two ways); replacing with nothing (N/A → empty) isn't.
+  const isMerge = (c: (typeof cleans)[number]) => c.kind === 'replace' && !!c.to
+  const merged = [...new Set(cleans.filter(isMerge).map((c) => c.column))].map((column) => ({
+    column,
+    indices: cleans.flatMap((c, i) => (isMerge(c) && c.column === column ? [i] : [])),
+  }))
+  const groups = [
+    { key: 'convert', indices: conversions, min: 3, label: `${conversions.length} columns converted`, undo: `Undo all ${conversions.length} conversions`, regroup: 'Group conversions' },
+    ...merged.map((m) => ({ key: `merge:${m.column}`, indices: m.indices, min: 2, label: `${m.column}: ${m.indices.length} values merged`, undo: `Undo all ${m.indices.length} merges in ${m.column}`, regroup: `Group ${m.column} merges` })),
+  ].filter((g) => !!withoutCleans && g.indices.length >= g.min)
+  const shut = groups.filter((g) => !open.includes(g.key))
+  const inShut = new Set(shut.flatMap((g) => g.indices))
   return (
     <span className="op-chips">
       {origin && (
@@ -62,34 +75,38 @@ export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLo
           <Icon name="close" size={12} />
         </button>
       )}
-      {grouped && (
-        <span className="op-group">
+      {shut.map((g) => (
+        // Clicking a summary shows what's in it; only its × undoes them all.
+        <span key={g.key} className="op-chip op-chip-split">
           <button
-            className="op-chip"
-            onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply(withoutCleans!(conversions)))}
-            title={`Undo these conversions · ${conversions.map((i) => describeClean(ops.clean![i])).join(' · ')}`}
+            className="op-chip-main"
+            aria-label={`${g.label}: show each`}
+            onClick={(e) => thenKeepFocus(e, '.op-chips', () => setOpen([...open, g.key]))}
+            title={`Show each · ${g.indices.map((i) => describeClean(cleans[i])).join(' · ')}`}
           >
-            <Icon name="spark" size={14} /> {conversions.length} columns converted
+            <Icon name="spark" size={14} /> {g.label}
+            <Icon name="chevronDown" size={12} />
+          </button>
+          <button className="op-chip-x" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply(withoutCleans!(g.indices)))} aria-label={g.undo} title="Undo all of them">
             <Icon name="close" size={12} />
           </button>
-          <button className="link-btn op-group-toggle" aria-expanded={false} onClick={() => setOpen(true)}>
-            Show each
-          </button>
         </span>
-      )}
+      ))}
       {ops.clean?.map((c, i) =>
-        grouped && conversions.includes(i) ? null : (
+        inShut.has(i) ? null : (
           <button key={`clean:${i}:${c.column}`} className="op-chip" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply(withoutClean(i)))} title={`Undo this cleaning · ${cleanExpr(c)}`}>
             <Icon name="spark" size={14} /> {describeClean(c)}
             <Icon name="close" size={12} />
           </button>
         ),
       )}
-      {open && conversions.length >= 3 && (
-        <button className="link-btn op-group-toggle" aria-expanded onClick={() => setOpen(false)}>
-          Group conversions
-        </button>
-      )}
+      {groups
+        .filter((g) => open.includes(g.key))
+        .map((g) => (
+          <button key={g.key} className="link-btn op-group-toggle" onClick={(e) => thenKeepFocus(e, '.op-chips', () => setOpen(open.filter((k) => k !== g.key)))}>
+            {g.regroup}
+          </button>
+        ))}
       {ops.drop?.map((d, i) => (
         <button
           key={`drop:${i}`}
@@ -120,7 +137,8 @@ export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLo
       ))}
       {ops.computed.map((c, i) => (
         <button key={c.name} className="op-chip" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, computed: ops.computed.filter((_, j) => j !== i) }))} title={`Remove column · ${c.expr}`}>
-          <Icon name="column" size={14} /> {c.name}
+          <Icon name="plus" size={14} /> {c.name}
+          {c.note ? ` (${c.note})` : ''}
           <Icon name="close" size={12} />
         </button>
       ))}

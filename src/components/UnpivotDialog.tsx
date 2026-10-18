@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { LOCALE } from '../engine/sql'
-import { emptyColumns, type ColumnInfo } from '../engine/result'
+import type { ColumnInfo } from '../engine/result'
+import { emptyColumns } from '../engine/scan'
 import { seriesColumns, unpivotNames, unpivotSql } from '../engine/unpivot'
 import { BtnIcon } from './Icon'
 import { useDialog } from './useDialog'

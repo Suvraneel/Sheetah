@@ -1,10 +1,10 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getEngine, sqlName } from './engine/db'
-import { signedAmount, statementColumns } from './engine/statement'
+import { isBalanceName, signedAmount, statementColumns } from './engine/statement'
 import { isNumericType, isTemporal, LOCALE, quoteIdent } from './engine/sql'
 import { ACCEPTED, FileKindError, cancelExcel, createDemo, dateOrders, ingestFile, listTables, type TableMeta } from './engine/ingest'
-import { CancelledError, ambiguousDates, cancelRunning, colRef, emptyTextColumns, exportResult, fillDownColumns, holdResult, junkRows, namesRow, rangeStats, rowOf, runSql, splitStatements, textFindings, type RangeStats, type ResultSet } from './engine/result'
-import { addFilter, compose, describeFilter, emptyOps, hasOps, onTidiedRows, pickedValues, plainTable, removePick, removePickAll, stepMarks, tidySteps, type Filter, type Ops } from './engine/compose'
+import { CancelledError, cancelRunning, colRef, exportResult, holdResult, rangeStats, rowOf, runSql, splitStatements, type RangeStats, type ResultSet } from './engine/result'
+import { addFilter, compose, describeFilter, emptyOps, hasOps, onTidiedRows, pickedValues, plainTable, removePick, removePickAll, stepCount, stepMarks, tidySteps, type Filter, type Ops } from './engine/compose'
 import { addClean, isConversion, percentColumns, type Clean, type DropRows } from './engine/clean'
 import { isLoadFailure } from './engine/load-errors'
 import { Grid, type DiffTones, type GridHandle, type SelectionInfo } from './grid/Grid'
@@ -48,6 +48,8 @@ import { UPDATE_EVENT, applyUpdate, setHasWork, updateReady } from './sw-client'
 import type { Starter } from './components/starters'
 import { HintChips } from './components/HintChips'
 import { StepChips } from './components/StepChips'
+import { Checks } from './components/Checks'
+import type { Check } from './engine/checks'
 import { TablesPanel, type HistoryItem } from './components/Library'
 const loadSidePanels = () => import('./components/SidePanels')
 const SavedPanel = lazy(() => loadSidePanels().then((m) => ({ default: m.SavedPanel })))
@@ -176,10 +178,12 @@ export default function App() {
     requestAnimationFrame(() => gridRef.current?.scrollToColumn(name))
   }, [result])
   // A message (DuckDB's, explained when it's a common one), or one already in plain words with its details.
-  const [error, setError] = useState<string | { text: string; detail?: string } | null>(null)
+  const [error, setError] = useState<string | { text: string; detail?: string; heading?: string } | null>(null)
   const errorText = typeof error === 'string' ? error : (error?.text ?? null)
   // The plain-words explanations of SQL errors load with the first error (the raw message shows meanwhile).
   const [errorsModule, setErrorsModule] = useState<typeof import('./engine/errors') | null>(null)
+  // A query that failed reading a table without its tidy-up steps: the fix is to run it on the tidied rows (the query it was for).
+  const [tidyFix, setTidyFix] = useState<{ sql: string; label: string; run: () => void } | null>(null)
   useEffect(() => {
     if (error && !errorsModule) import('./engine/errors').then((m) => setErrorsModule(m), () => {})
   }, [error, errorsModule])
@@ -225,6 +229,14 @@ export default function App() {
   // Range stats are kept with the selection and result they were computed for, so a stale answer never shows.
   const [statsFor, setStatsFor] = useState<{ sel: SelectionInfo; result: ResultSet; stats: RangeStats | null } | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  // What the checks found on a table's rows (its running balance, its total lines): shown while the table's
+  // steps are on screen, each while the step it checked is (leaving out the total lines, the signed amount).
+  type Found = Check & { step?: string }
+  const [checks, setChecks] = useState<{ base: string; items: Found[] } | null>(null)
+  const addChecks = useCallback((on: string, found: (Found | null)[]) => {
+    const items = found.filter((c): c is Found => !!c)
+    if (items.length) setChecks((c) => ({ base: on, items: [...(c?.base === on ? c.items.filter((x) => !items.some((i) => i.kind === x.kind)) : []), ...items] }))
+  }, [])
   const [tab, setTab] = useState<'tables' | 'saved' | 'history'>('tables')
   // Column lists in the library shown or hidden by hand (kept while other tabs are open).
   const [colsOpen, setColsOpen] = useState<Record<string, boolean>>({})
@@ -246,6 +258,8 @@ export default function App() {
   const [emptyHints, setEmptyHints] = useState<Record<string, Hint<string[]>>>({})
   const [spaceHints, setSpaceHints] = useState<Record<string, Hint<string[]>>>({})
   const [dateHints, setDateHints] = useState<Record<string, Hint<string[]>>>({})
+  // Tables whose total lines are still being looked for (a big file takes seconds): a placeholder holds the chip's place.
+  const [junkPending, setJunkPending] = useState<ReadonlySet<string>>(new Set())
   // The Look up dialog, and the column it was opened from (if any).
   const [lookingUp, setLookingUp] = useState<{ here?: string } | null>(null)
   const [unpivoting, setUnpivoting] = useState<{ around?: string } | null>(null)
@@ -516,6 +530,7 @@ export default function App() {
     async (name: string) => {
       const sql = `SELECT * FROM ${sqlName(name)}`
       setEditor(sql)
+      setChecks(null) // a table opened afresh: its rows as in the file, unchecked
       return execute(sql, { base: sql, ops: emptyOps(), remember: false })
     },
     [execute],
@@ -540,32 +555,44 @@ export default function App() {
     // Kept while it's scanned: two quick sorts would otherwise drop the result table from under the scans.
     const release = holdResult(res)
     window.setTimeout(() => {
-      const scans: Promise<unknown>[] = [
-        textFindings(res).then(({ convert, spaces }) => {
-          setTextHints((m) => ({ ...m, [key]: { sig, value: convert } }))
-          setSpaceHints((m) => ({ ...m, [key]: { sig, value: spaces } }))
-        }),
-      ]
-      if (which === 'all') {
-        scans.push(
-          import('./engine/pii')
-            .then((m) => m.detectPii(res))
-            .then((d) => setPiiHints((m) => ({ ...m, [key]: { sig, value: d.map((x) => x.column) } }))),
-          junkRows(res).then((drop) => setJunkHints((m) => ({ ...m, [key]: { sig, value: drop } }))),
-          namesRow(res).then((r) => setNamesHints((m) => ({ ...m, [key]: { sig, value: r === null ? [] : [r] } }))),
-          fillDownColumns(res).then((cols) => setFillHints((m) => ({ ...m, [key]: { sig, value: cols } }))),
-          emptyTextColumns(res).then((cols) => setEmptyHints((m) => ({ ...m, [key]: { sig, value: cols } }))),
-          // Dates the file reader read the other way round from how this reader writes them (01/02: 1 Feb or Jan 2).
-          read && dateOrders.has(read) && dateOrders.get(read) !== DATE_HABIT
-            ? ambiguousDates(res).then((cols) => setDateHints((m) => ({ ...m, [key]: { sig, value: cols } })))
-            : Promise.resolve(),
-        )
-      }
-      // Only a scan that finished counts as done: one that failed is tried again next time the table opens.
-      void Promise.allSettled(scans).then((done) => {
-        release()
-        if (which === 'all' && done.every((d) => d.status === 'fulfilled')) scanned.current.add(`${key}|${sig}`)
-      })
+      // The scans' code arrives with the first table (the first screen doesn't wait for it).
+      void import('./engine/scan').then(({ ambiguousDates, emptyTextColumns, fillDownColumns, junkRows, namesRow, textFindings }) => {
+        const scans: Promise<unknown>[] = [
+          textFindings(res).then(({ convert, spaces }) => {
+            setTextHints((m) => ({ ...m, [key]: { sig, value: convert } }))
+            setSpaceHints((m) => ({ ...m, [key]: { sig, value: spaces } }))
+          }),
+        ]
+        if (which === 'all') {
+          setJunkPending((p) => new Set(p).add(key))
+          const junkDone = () =>
+            setJunkPending((p) => {
+              const next = new Set(p)
+              next.delete(key)
+              return next
+            })
+          scans.push(
+            import('./engine/pii')
+              .then((m) => m.detectPii(res))
+              .then((d) => setPiiHints((m) => ({ ...m, [key]: { sig, value: d.map((x) => x.column) } }))),
+            junkRows(res)
+              .then((drop) => setJunkHints((m) => ({ ...m, [key]: { sig, value: drop } })))
+              .finally(junkDone),
+            namesRow(res).then((r) => setNamesHints((m) => ({ ...m, [key]: { sig, value: r === null ? [] : [r] } }))),
+            fillDownColumns(res).then((cols) => setFillHints((m) => ({ ...m, [key]: { sig, value: cols } }))),
+            emptyTextColumns(res).then((cols) => setEmptyHints((m) => ({ ...m, [key]: { sig, value: cols } }))),
+            // Dates the file reader read the other way round from how this reader writes them (01/02: 1 Feb or Jan 2).
+            read && dateOrders.has(read) && dateOrders.get(read) !== DATE_HABIT
+              ? ambiguousDates(res).then((cols) => setDateHints((m) => ({ ...m, [key]: { sig, value: cols } })))
+              : Promise.resolve(),
+          )
+        }
+        // Only a scan that finished counts as done: one that failed is tried again next time the table opens.
+        void Promise.allSettled(scans).then((done) => {
+          release()
+          if (which === 'all' && done.every((d) => d.status === 'fulfilled')) scanned.current.add(`${key}|${sig}`)
+        })
+      }, release)
     }, 400)
   }, [])
   /** A table opened from the list: scanned the first time it's seen (in this shape). */
@@ -644,14 +671,16 @@ export default function App() {
         }
         const msg = e instanceof Error ? e.message : String(e)
         const plain = friendly(msg)
+        // Whatever went wrong, the heading says which file didn't open (no query was run).
+        const heading = `Couldn’t open ${current || 'that file'}.`
         setError(
           e instanceof FileKindError
-            ? msg
+            ? { heading, text: msg }
             : plain !== msg
-              ? `Couldn’t open ${current || 'that file'}. ${plain}`
+              ? { heading, text: plain }
               : /\.xls[xm]$/i.test(current)
-                ? { text: `Couldn’t read ${current} as an Excel workbook. It may be damaged: opening it in Excel and saving it again usually fixes that.`, detail: msg }
-                : { text: `Couldn’t open ${current || 'that file'}. Sheetah reads CSV, TSV, JSON, Parquet and Excel files, and this one didn’t read as any of them.`, detail: msg },
+                ? { heading, text: `It may be a damaged Excel workbook: opening it in Excel and saving it again usually fixes that.`, detail: msg }
+                : { heading, text: `Sheetah reads CSV, TSV, JSON, Parquet and Excel files, and this one didn’t read as any of them.`, detail: msg },
         )
       }
     },
@@ -906,26 +935,52 @@ export default function App() {
     const taken = new Set(result.columns.map((c) => c.name.toLowerCase()))
     const name = ['amount', 'net_amount', 'signed_amount'].find((n) => !taken.has(n)) ?? `amount_${result.columns.length}`
     const rows = result
+    const on = base
     const inOrder = !ops.sort && !ops.filters.length && !ops.search && !ops.dedupe
     reveal.current = name
-    applyOps({ ...ops, computed: [...ops.computed.filter((c) => c.name !== name), { name, expr: amountExpr }] })
-    const added = `Added ${name}: ${statement.credit} less ${statement.debit}.`
-    if (!statement.balance || !inOrder || !rows.table) return say(added)
+    const short = (n: string) => n.replace(/[\s_]*(amt\.?|amount)$/i, '') || n
+    const note = `${short(statement.credit)} − ${short(statement.debit)}`
+    applyOps({ ...ops, computed: [...ops.computed.filter((c) => c.name !== name), { name, expr: amountExpr, note }] })
+    say(`Added ${name}: ${note}`)
+    if (!statement.balance || !inOrder || !rows.table) return
     const release = holdResult(rows)
     try {
-      const [{ conn }, { balanceCheckSql, readBalanceCheck }] = await Promise.all([getEngine(), import('./engine/statement-check')])
+      const [{ conn }, m] = await Promise.all([getEngine(), import('./engine/checks')])
       const ref = (n: string) => colRef(rows.columns.find((c) => c.name === n)!)
-      const check = readBalanceCheck((await conn.query(balanceCheckSql(rows.table, { ...statement, balance: statement.balance }, isNum, ref))).toArray()[0]?.toJSON() ?? {})
-      const nearby = check?.order === 'newest first' ? 'below' : 'above'
-      say(
-        !check
-          ? added
-          : check.firstBad
-            ? `${added} The ${statement.balance} on row ${nf.format(check.firstBad.row)} doesn’t follow from the row ${nearby} (off by ${nf.format(Math.abs(check.firstBad.off))}): a line missing or doubled?${check.bad > 1 ? ` ${nf.format(check.bad)} rows don’t follow.` : ''}`
-            : `${added} Checked: every ${statement.balance} follows from the row ${nearby} (${nf.format(check.pairs)} rows).`,
-      )
+      const check = m.readBalanceCheck((await conn.query(m.balanceCheckSql(rows.table, { ...statement, balance: statement.balance }, isNum, ref))).toArray()[0]?.toJSON() ?? {})
+      const found = m.balanceText(check, statement.balance, nf.format)
+      addChecks(on, [found && { ...found, step: name }])
     } catch {
-      say(added)
+      /* the column is added; the check is a bonus */
+    } finally {
+      release()
+    }
+  }
+
+  /**
+   * The checks again, on a saved view's rows (next month's file): the total lines its steps leave out
+   * against the rows they keep, and a statement's running balance (while the rows are in their own order).
+   */
+  const recheck = async (table: string, o: Ops, rows: ResultSet) => {
+    const meta = tables.find((t) => t.name === table)
+    const release = holdResult(rows)
+    try {
+      const [{ conn }, m] = await Promise.all([getEngine(), import('./engine/checks')])
+      const found: (Found | null)[] = []
+      const cols = meta?.columns.filter((c) => !isBalanceName(c.name)).map((c) => ({ name: c.name, numeric: isNumericType(c.type) })) ?? []
+      const tie = o.drop?.length ? m.tieOutSql(table, cols, o.drop) : null
+      const totals = o.drop?.find((d) => (d.kind ? d.kind === 'totals' : /total line/.test(d.label)))
+      const tied = tie ? m.tieOutText(m.readTieOutRow(cols, (await conn.query(tie)).toArray()[0]?.toJSON() ?? {}), nf.format) : null
+      if (tied && totals) found.push({ ...tied, step: totals.keep })
+      const st = statementColumns(rows.columns)
+      if (st?.balance && rows.table && !o.sort && !o.filters.length && !o.search && !o.dedupe) {
+        const col = (n: string) => rows.columns.find((c) => c.name === n)!
+        const sql = m.balanceCheckSql(rows.table, { ...st, balance: st.balance }, (n) => !!col(n).numeric, (n) => colRef(col(n)))
+        found.push(m.balanceText(m.readBalanceCheck((await conn.query(sql)).toArray()[0]?.toJSON() ?? {}), st.balance, nf.format))
+      }
+      addChecks(tableBase(table), found)
+    } catch {
+      /* the view ran; the checks are a bonus */
     } finally {
       release()
     }
@@ -944,6 +999,7 @@ export default function App() {
   const runEditor = useCallback(() => {
     const sql = editor.trim()
     if (!sql) return
+    setTidyFix(null) // an offer was for the query that failed, not this run
     // Typed SQL reading a table that has tidy-up steps, without them (not the steps' own SQL, edited):
     // it sees the file as it is, total lines and text amounts included. Offer the tidied rows.
     // Only a query that reads (an INSERT or CREATE … AS would copy the rows twice), and not the steps' own
@@ -955,19 +1011,19 @@ export default function App() {
           .map((t) => tidiedRef.current.get(t.toLowerCase()))
           .find((t) => t && !sql.includes(t.sql) && !t.marks.some((m) => sql.includes(m)))
       : undefined
-    const offer = () => {
+    const offer = (ran: boolean) => {
       if (!tidy) return
-      const label = `This query read ${tidy.table} as it is in the file, without its ${tidy.steps} tidy-up ${tidy.steps === 1 ? 'step' : 'steps'}.`
-      setNudge({
-        label,
-        action: 'Run on the tidied rows',
-        run: () => {
-          const wrapped = onTidiedRows(sql, tidy.table, tidy.sql, tidy.steps)
-          setEditor(wrapped)
-          setError(null)
-          void execute(wrapped, { base: wrapped, ops: emptyOps() })
-        },
-      })
+      const run = () => {
+        const wrapped = onTidiedRows(sql, tidy.table, tidy.sql, tidy.steps)
+        setEditor(wrapped)
+        setError(null)
+        void execute(wrapped, { base: wrapped, ops: emptyOps() })
+      }
+      const steps = `${tidy.steps} tidy-up ${tidy.steps === 1 ? 'step' : 'steps'}`
+      // Failed: the offer is the error's own fix (its explanation, about the file as it is, would mislead).
+      if (!ran) return setTidyFix({ sql, label: `This query skips ${tidy.table}’s ${steps}: it reads the file as it is.`, run })
+      const label = `This query read ${tidy.table} as it is in the file, without its ${steps}.`
+      setNudge({ label, action: 'Run on the tidied rows', run })
       window.setTimeout(() => setNudge((n) => (n?.label === label ? null : n)), 20_000)
     }
     // execute numbers the run: the offer stands for this query, whether it ran or failed (sum over the
@@ -994,7 +1050,7 @@ export default function App() {
       })
     }
     void execute(sql, { base: sql, ops: emptyOps() }).then((res) => {
-      if (runSeq.current === mine && cancelledSeq.current !== mine) offer()
+      if (runSeq.current === mine && cancelledSeq.current !== mine) offer(!!res)
       if (runSeq.current === mine) slips(res)
       if (res && isPhone) {
         // Give the results the screen; if focus was in the editor, keep it on the collapsed peek.
@@ -1219,7 +1275,7 @@ export default function App() {
     // the tie-out's sums (those are this file's data, and views files travel).
     const from = plainTable(base)
     const fromSteps = !!from && hasOps(ops) && editor.trim() === compose(base, ops).trim()
-    const kept: Ops = { ...ops, clean: ops.clean?.filter((c) => c.kind !== 'swapdm'), drop: ops.drop?.map(({ label, keep }) => ({ label, keep })) }
+    const kept: Ops = { ...ops, clean: ops.clean?.filter((c) => c.kind !== 'swapdm'), drop: ops.drop?.map(({ label, keep, kind }) => ({ label, keep, ...(kind ? { kind } : {}) })) }
     if (kept.clean && !kept.clean.length) kept.clean = undefined
     const unswapped = fromSteps && (ops.clean?.length ?? 0) !== (kept.clean?.length ?? 0)
     const sql = fromSteps ? compose(base, kept).trim() : editor.trim()
@@ -1256,7 +1312,12 @@ export default function App() {
       const b = tableBase(on.name)
       const composed = compose(b, s.ops)
       setEditor(composed)
-      void execute(composed, { base: b, ops: s.ops }).then((res) => res && say(`“${view.name}” on ${on.name}: its steps are the chips above the rows`))
+      void execute(composed, { base: b, ops: s.ops }).then((res) => {
+        if (!res) return
+        const n = stepCount(s.ops)
+        say(`Ran “${view.name}” on ${on.name}: ${n} ${n === 1 ? 'step' : 'steps'}, shown above the rows`)
+        void recheck(on.name, s.ops, res)
+      })
       return
     }
     void execute(sql, { base: sql, ops: emptyOps() })
@@ -1473,6 +1534,10 @@ export default function App() {
   const onlyTidy = !shownOps.filters.length && !shownOps.sort && !shownOps.computed.length && !shownOps.search && !shownOps.dedupe && !shownOps.lookups?.length && !shownOps.hidden?.length
   const seriesHere = result && (openName || tableLike.has(base.trim())) && onlyTidy && !result.message ? seriesColumns(result.columns) : null
   const junkHere = !ops.drop?.length ? hintFor(junkHints) : null
+  const junkChecking = !ops.drop?.length && !junkHere && junkPending.has(base.trim())
+  // Checks still about the rows on screen: their table's, while the step each checked is still there.
+  const checksHere =
+    checks?.base === base ? checks.items.filter((c) => !c.step || ops.drop?.some((d) => d.keep === c.step) || ops.computed.some((x) => x.name === c.step)) : []
   // Column names found on a later row: offered first, before anything else is tidied.
   const namesHere = !hasOps(ops) && !running ? (hintFor(namesHints)?.[0] ?? null) : null
   // Which columns the "Convert" suggestion is about, said in their headers until they're converted (even
@@ -1481,6 +1546,8 @@ export default function App() {
   const unconverted = textFound?.filter((c) => !ops.clean?.some((x) => x.column === c.column && isConversion(x)))
   // Offered until something's converted (filling down or trimming first doesn't count).
   const textHere = !ops.clean?.some(isConversion) && unconverted?.length ? unconverted : null
+  // Amounts stored as text that the chart and pivot can't measure until converted (each said there, with the conversion).
+  const textNumbersHere = unconverted?.filter((c) => c.kind !== 'date' && result?.columns.some((x) => x.name === c.column && !x.numeric)) ?? []
   // Group names written once per group, until they're filled down.
   // Dates readable both ways, read the other way from this reader's habit: until they're swapped.
   const datesHere = hintFor(dateHints)?.filter((c) => result?.columns.some((x) => x.name === c) && !ops.clean?.some((x) => x.kind === 'swapdm' && x.column === c)) ?? []
@@ -1516,9 +1583,20 @@ export default function App() {
   const madeUpNames = !!result && result.columns.filter((c) => /^column_?\d+$/i.test(c.name)).length >= Math.ceil((result.columns.length - 1) / 2)
   const explained: { text: string; detail?: string; code?: boolean; fix?: import('./engine/errors').Fix } | null =
     typeof error === 'string'
-      ? (errorsModule?.explainError(error, { tables: tableNames, columns: tables.flatMap((t) => t.columns.map((c) => c.name)), monthFirst: /^en-US$/i.test(LOCALE) }) ?? { text: error })
+      ? (errorsModule?.explainError(error, {
+          tables: tableNames,
+          columns: tables.flatMap((t) => t.columns.map((c) => c.name)),
+          monthFirst: /^en-US$/i.test(LOCALE),
+          sum: errorsModule.sumExample(tables.find((t) => t.name === plainTable(base)) ?? tables[0]),
+        }) ?? { text: error })
       : error
   const fixHere = fixFor(explained?.fix)
+  // The query on screen failed reading a table without its tidy-up steps. When it failed on what those steps
+  // change (text where a number belongs: a total line, an amount as text), running it on the tidied rows is
+  // the fix, said instead of the error; otherwise it's offered beside the error's own explanation.
+  const tidyHere = typeof error === 'string' && tidyFix && tidyFix.sql === editor.trim() ? tidyFix : null
+  const tidyCures =
+    !!tidyHere && /Could not convert|Conversion Error|No function matches the given name and argument types '\w+\(VARCHAR|Cannot compare values of type VARCHAR|Cannot mix values of type VARCHAR/i.test(error as string)
 
   return (
     <div className="app">
@@ -1837,14 +1915,32 @@ export default function App() {
         )}
         {error && (
           <div className="error-banner" role="alert">
-            <strong>{typeof error !== 'string' || fileProblem(error) ? 'Couldn’t finish that.' : 'That query didn’t run.'}</strong>{' '}
-            <span className={explained!.code ? undefined : 'is-plain'}>{explained!.text}</span>
-            {fixHere && (
+            <strong>{typeof error !== 'string' ? (error.heading ?? 'Couldn’t finish that.') : fileProblem(error) ? 'Couldn’t finish that.' : 'That query didn’t run.'}</strong>{' '}
+            {tidyHere && tidyCures ? (
+              <>
+                <span className="is-plain">{tidyHere.label}</span>
+                <button className="btn btn-primary btn-sm" onClick={tidyHere.run}>
+                  Run on the tidied rows
+                </button>
+                <details className="error-detail">
+                  <summary>Details</summary>
+                  <code>{error as string}</code>
+                </details>
+              </>
+            ) : (
+              <span className={explained!.code ? undefined : 'is-plain'}>{explained!.text}</span>
+            )}
+            {!tidyCures && fixHere && (
               <button className="btn btn-ghost btn-sm" onClick={() => runFix(fixHere)}>
                 {fixHere.label}
               </button>
             )}
-            {explained!.detail && (
+            {tidyHere && !tidyCures && (
+              <button className="btn btn-ghost btn-sm" onClick={tidyHere.run} title={tidyHere.label}>
+                Run on the tidied rows
+              </button>
+            )}
+            {!tidyCures && explained!.detail && (
               <details className="error-detail">
                 <summary>Details</summary>
                 <code>{explained!.detail}</code>
@@ -1871,6 +1967,7 @@ export default function App() {
                 namesRow={namesHere}
                 onNames={(r) => void rowAsNames(r)}
                 junk={junkHere}
+                checkingTotals={junkChecking}
                 fill={fillHere.length ? fillHere : null}
                 empty={emptyHere.length ? emptyHere : null}
                 spaces={spacesHere.length ? spacesHere : null}
@@ -1887,9 +1984,16 @@ export default function App() {
                 compact={isPhone}
                 onDrop={(drop) => {
                   applyOps({ ...ops, drop })
-                  // The tie-out, said once it's done: the figure people would check by hand.
-                  const c = drop.find((d) => d.checked)?.checked
-                  if (c) say(`Checked: the total lines add up to the rows left. ${c.column} comes to ${new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 2 }).format(c.sum)}, counted once.`)
+                  // The tie-out, kept above the rows: the figure people would check by hand, or the column that's short.
+                  const tied = drop.find((d) => d.checked)
+                  const on = base
+                  if (tied?.checked) {
+                    const c = tied.checked
+                    void import('./engine/checks').then((m) => {
+                      const found = m.tieOutText(c, nf.format)
+                      addChecks(on, [found && { ...found, step: tied.keep }])
+                    })
+                  }
                 }}
                 onUnpivot={() => setUnpivoting({})}
                 onConvert={(cleans) => applyOps(withCleans(cleans.reduce(addClean, ops.clean ?? [])))}
@@ -2022,12 +2126,15 @@ export default function App() {
                 </span>
               )}
             </div>
+            {result && !result.message && <Checks items={checksHere} onDismiss={() => setChecks(null)} />}
 
             <div className="grid-area">
               {source && view === 'chart' && result ? (
                 <Lazy onFail={(e) => partFailed(e, () => setView('grid'))}>
                   <ChartPanel
                     result={result}
+                    textNumbers={textNumbersHere.map((c) => c.column)}
+                    onConvert={textNumbersHere.length ? () => applyOps(withCleans(textNumbersHere.reduce(addClean, ops.clean ?? []))) : undefined}
                     onOpenSql={(sql) => {
                       setView('grid')
                       setEditor(sql)
@@ -2170,6 +2277,8 @@ export default function App() {
             columns={editingPivot ? pivotOrigin!.columns : result.columns}
             rowCount={editingPivot ? pivotOrigin!.rowCount : result.rowCount}
             initial={editingPivot ? pivotOrigin!.spec : undefined}
+            textNumbers={editingPivot ? undefined : textNumbersHere.map((c) => c.column)}
+            onConvert={!editingPivot && textNumbersHere.length ? () => applyOps(withCleans(textNumbersHere.reduce(addClean, ops.clean ?? []))) : undefined}
             onClose={() => setPivoting(false)}
             onCreate={(sql, spec) => {
               const origin = editingPivot ? pivotOrigin! : { sql: result.sql, columns: result.columns, rowCount: result.rowCount }
@@ -2261,6 +2370,7 @@ export default function App() {
             // Columns added with "Add column" are formulas: clean the columns they're made from instead.
             // Formula columns and looked-up columns are made later in the query: clean what they're made from.
             onClean={derived.has(menuCol.name) ? undefined : (c) => applyOps(withCleans(addClean(ops.clean ?? [], c)))}
+            onCleans={derived.has(menuCol.name) ? undefined : (cs) => applyOps(withCleans(cs.reduce(addClean, ops.clean ?? [])))}
             cleaned={ops.clean?.filter((c) => c.column === menuCol.name)}
             onUnclean={() => applyOps(withCleans((ops.clean ?? []).filter((c) => c.column !== menuCol.name)))}
             onInsert={() => {
