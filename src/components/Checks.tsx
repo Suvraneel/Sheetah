@@ -9,6 +9,7 @@ const ABOUT: Record<Check['kind'], string> = {
   rollforward: 'opening to closing',
   continuity: 'carries on from last time',
   match: 'match',
+  ids: 'tax IDs',
 }
 
 /**

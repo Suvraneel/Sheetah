@@ -89,7 +89,7 @@ const FIELDS: Record<string, string> = {
   DSPVCHDATE: 'Date',
   DSPVCHTYPE: 'Voucher Type',
   DSPVCHNUMBER: 'Voucher No',
-  DSPVCHLEDACCOUNT: 'Account',
+  DSPVCHLEDACCOUNT: 'Particulars', // the other account of a ledger's line, as Tally shows it
   DSPVCHDRAMT: 'Debit',
   DSPVCHCRAMT: 'Credit',
   DSPVCHNARR: 'Narration',

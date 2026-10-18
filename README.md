@@ -20,7 +20,7 @@ There is no backend; it deploys as a static site for free.
 - **Canvas grid** that stays at ~60 fps from 1 to 10,000,000+ rows; the first column stays in view while wide tables scroll
 - **Open** CSV, TSV, Excel (.xlsx, every sheet becomes a table), JSON / NDJSON, Parquet, and gzipped CSV; drop several files at once and join them
 - **Paste cells** copied from Excel, Google Sheets or the grid itself (⌘/Ctrl + V) and they become a table
-- **Tally XML** (Day Book vouchers, one row per ledger line; reports like the Trial Balance) opens as a table
+- **Tally XML** (Day Book vouchers, one row per ledger line, item invoices included; reports like the Trial Balance) opens as a table, with a voucher whose debits and credits don't agree named, and a trial balance's totals checked
 - **The ".xls" that isn't**: a web page's table or Excel 2003 XML (what banks and ERPs export) opens like a workbook, and Excel's UTF-16 "Unicode text" too; a PDF, an image or a zip renamed .csv says what it is instead of failing
 - **Spreadsheet-grade numbers**: thousands separators in your locale, decimals that match the data, percentages as 18%, exact 64-bit values; column widths survive sorting and filtering
 - **Status bar**: select any range for count / sum / average / min / max, computed by SQL so it works on a million rows
@@ -30,17 +30,18 @@ There is no backend; it deploys as a static site for free.
 
 - **Suggestions when a file opens**: total lines and empty rows to leave out (so sums aren't doubled, with a tie-out that names a column that's short, and by how much), group names written once per group to fill down, numbers and dates stored as text to convert (their headers say so), names with stray spaces, empty columns, dates the reader may have read the wrong way round, months laid out as columns to turn into rows, the row the column names are really on, personal data to anonymize
 - **Categories from words**: narrations (or any text) grouped by rules like *swiggy, zomato → Food*, picked from the column's common words, then pivoted by month; kept with a saved view
-- **Bank statements**: money in and out by month, a signed amount from Deposit and Withdrawal columns, a check that every running balance follows from the row before, opening and closing balance lines left out with the total line, and two-digit years (01/04/24) read day first
+- **Bank statements**: money in and out by month, a signed amount from Deposit and Withdrawal columns, a check that every running balance follows from the row before, opening and closing balance lines left out with the total line (and checked: opening + in − out = closing), and two-digit years (01/04/24) read day first
+- **Month-end, Indian books**: a **bank reconciliation statement** from the payments matched (the bank's closing balance, cheques not yet presented, deposits not yet credited, the bank's own charges and interest, and what the books should show); **ageing** of open bills by party (not yet due, 0–30 days … over 180); a day book's **totals by ledger**; **GSTINs** checked by their check character, **PANs** and **IFSC codes** by their shape, as a table opens
 - **Clean a column**: ₹1,200 · 1,00,000 · (250) · 12% · 50,000.00 Cr · 15/08/24 to real numbers and dates, extra spaces, case, fill down, replace a value; codes with leading zeros and phone numbers are never converted
 - **Point-and-click** sort, filter (type-aware: between, at least, doesn't contain, pick values), find in every column (⌘/Ctrl + F), duplicates, hide, formula columns, date parts and split, column profiles; each step is a chip, every one composes readable SQL (and never silently replaces SQL you edited but didn't run), and **undo / redo** (⌘/Ctrl + Z) covers them all
-- **Look up** values from another table (VLOOKUP without the formula), **stack** monthly exports into one, **unpivot** month columns, **compare** two versions of a file, **match payments** bank against books (same amount, dates a few days apart); each offered when the files you open call for it
+- **Look up** values from another table (VLOOKUP without the formula), **stack** monthly exports into one, **unpivot** month columns, **compare** two versions of a file, **match payments** bank against books (same amount, dates a few days apart; what's left over says where the same amount is on the other side), then the **reconciliation statement** from it; each offered when the files you open call for it
 - **Your SQL on the tidied rows**: a query typed against the file is offered the tidy-up steps as a `WITH`, so clicks and SQL work together
-- **Saved views** re-run next month, steps and all (as chips), and check the new file again (running balance, totals against rows): a file with the same columns under a new name is recognised and offered the view; export views to a file to hand to a colleague (only names, SQL and the steps behind it travel, never data, and imported views are shown before they run)
+- **Saved views** re-run next month, steps and all (as chips), and check the new file again (running balance, totals against rows, opening + in − out = closing, and that it opens where the month before closed): a file with the same columns under a new name is recognised and offered the view; export views to a file to hand to a colleague (only names, SQL and the steps behind it travel, never data, and imported views are shown before they run)
 
 ### Answer questions
 
 - **SQL editor** with highlighting and table/column autocomplete (⌘/Ctrl + Enter), cancellable, with errors explained in spreadsheet terms (text in double quotes, a misspelt table with your tables listed, VLOOKUP or SUMIF and what does the job in SQL, clauses out of order) and DuckDB's own message under Details
-- **Pivot tables**: rows, columns (dates by year, quarter, month, week or day), up to three values, totals, as readable SQL
+- **Pivot tables**: rows, columns (dates by year, financial year April to March, quarter, month, week or day), up to three values, totals, as readable SQL
 - **Quick charts**: trend over time (by day, week, month, quarter or year), top groups, or a distribution, computed over every row; "Open as query" turns a chart back into a table
 - **Example queries for any table**: totals by a category, a monthly trend, the largest rows, a summary of every column
 

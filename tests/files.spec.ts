@@ -174,6 +174,15 @@ test.describe('files that are something else inside', () => {
     await expect(page.locator('.sr-grid [role=row]').nth(5)).toContainText('10,000')
     // A voucher whose debits and credits don't agree is named above the rows.
     await expect(page.locator('.checks .is-off', { hasText: '1 voucher doesn’t balance: J-7 (100.00 more in debits)' })).toBeVisible()
+    // A day book is every ledger's lines: summed by ledger (not offered a bank account's signed amount).
+    await expect(page.getByRole('button', { name: /^Add signed amount/ })).toHaveCount(0)
+    await page.getByRole('button', { name: 'Totals by Ledger' }).click()
+    await expect(page.locator('.result-meta')).toContainText('8 rows · 5 columns')
+    await expect(page.locator('.origin-chip')).toContainText('Totals by Ledger, from')
+    const total = page.locator('.sr-grid [role=row]').nth(8)
+    await expect(total).toContainText('Total')
+    await expect(total).toContainText('87,800')
+    await expect(total).toContainText('87,700')
     // A report (a trial balance): one row per account.
     const report = `<ENVELOPE><DSPACCNAME><DSPDISPNAME>Capital Account</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA></DSPCLDRAMTA></DSPCLDRAMT><DSPCLCRAMT><DSPCLCRAMTA>500000.00</DSPCLCRAMTA></DSPCLCRAMT></DSPACCINFO>
 <DSPACCNAME><DSPDISPNAME>Rent</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA>-25000.00</DSPCLDRAMTA></DSPCLDRAMT><DSPCLCRAMT><DSPCLCRAMTA></DSPCLCRAMTA></DSPCLCRAMT></DSPACCINFO>
@@ -184,6 +193,24 @@ test.describe('files that are something else inside', () => {
     await expect(page.locator('.checks .is-ok', { hasText: 'Debits and credits agree: 500,000.00 each' })).toBeVisible()
     await expect(page.locator('.sr-grid [role=columnheader]').nth(0)).toContainText('Particulars')
     await expect(page.locator('.sr-grid [role=row]').nth(2)).toContainText('Rent')
+  })
+})
+
+test.describe('India’s identifiers', () => {
+  test('GSTINs and PANs are checked as the table opens: a mistyped one is named', async ({ page }) => {
+    await openApp(page)
+    const csv = 'Vendor,GSTIN,PAN No,Amount\nAcme,27AAPFU0939F1ZV,AAPFU0939F,1000\nBeta,27AAPFU0939F1ZW,AAPFU0939F,2000\nGamma,24AAACC1206D1ZM,AAACC1206D,500\n'
+    await page.locator('input[type=file]').setInputFiles([buf('vendors.csv', csv), buf('other.csv', 'a,b\n1,2\n')])
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    const wrong = page.locator('.checks .is-off', { hasText: '1 GSTIN doesn’t look right (a character mistyped, or the wrong length): 27AAPFU0939F1ZW' })
+    await expect(wrong).toBeVisible()
+    // Each table keeps what was found in it: away and back, it's still said.
+    await page.locator('.side-table .side-name', { hasText: 'other' }).click()
+    await expect(page.locator('.result-meta')).toContainText('1 row')
+    await expect(wrong).toHaveCount(0)
+    await page.locator('.side-table .side-name', { hasText: 'vendors' }).click()
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    await expect(wrong).toBeVisible()
   })
 })
 

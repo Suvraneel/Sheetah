@@ -5,6 +5,27 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 ## Unreleased
 
 ### Added
+- **Bank reconciliation statement**: from the payments matched, *Reconciliation statement* starts at the bank's
+  closing balance (where its running balance ends, read the way round its rows run) and takes it to the balance the
+  books should show: deposits not yet credited, cheques not yet presented, the bank's own credits (interest) and
+  debits (charges), each with how many lines. Lines left over say where the same amount is on the other side, up to
+  a month away; a line with no date is listed, not dropped. Compare suggests matching when the two tables are a
+  statement and its books.
+- **Opening + in − out = closing**: a statement's opening and closing balance lines, once left out, check the rows
+  between them (*Opening 10,000.00 + in 2,000.00 − out 5,000.00 = closing 7,000.00, as the file says*, or how far
+  apart). A saved view keeps each period it has run on, so a month is checked against the one just before it,
+  whichever ran last. Money in checks is shown to the paisa; passed checks fold into one line until shown.
+- **Ageing**: a list of open bills (Tally's Bills Receivable, an outstanding invoices export) is offered *Ageing by
+  Party's Name*: each party's money not yet due, 0–30 days, 31–60, 61–90, 91–180 and over 180, biggest first, as of
+  today. Dr and Cr are read (an advance counts against what's owed).
+- **Totals by ledger**: a day book (each voucher's lines, each to its ledger) sums each ledger's debits and credits
+  and its net, with a total where the debits meet the credits.
+- **GSTIN, PAN and IFSC checks**: a column named for one is checked as the table opens: a GSTIN by its check
+  character (a business's, a TDS deductor's, a UIN), a PAN and an IFSC code by their shape. A wrong one is named
+  above the rows (NA, URP and the like aren't counted).
+- **Financial years**: pivots group dates by financial year (April to March: *FY 2024-25*) and its quarters.
+- **Tally**: an item invoice's sales ledger is read from its stock lines, a foreign-currency amount in rupees; a
+  voucher whose debits and credits don't agree is named, and a trial balance's totals are checked.
 - **Bank statements, signed and checked**: a statement with money in and money out in two columns (Deposit /
   Withdrawal, Credit / Debit) is offered *Add signed amount*, one column that sums, charts and pivots. With a running
   balance, each balance is checked against the one before (oldest or newest first): *Every Closing Balance follows
@@ -13,7 +34,7 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   *Money in and out by month* summarises it: each month's money in, money out, the net and how many lines.
 - **Checks that travel with a saved view**: running a view on next month's file checks it again, the running
   balance and the total lines against the rows, and says what passed or which line is missing. A statement is
-  checked to open where the last one closed (*Opens at 7,000, where stmt_apr closed*, or how far apart: a statement
+  checked to open where the last one closed (*Opens at 7,000.00, where stmt_apr closed*, or how far apart: a statement
   missing in between), whether or not each month's file has the same name, and the rows are counted against last
   time. Checks sit above the rows (not in a passing
   toast) while the step they checked is there. What a view last ran on stays in this browser, never in a views file.
@@ -174,6 +195,13 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   (the crash screen, a part that failed) (`tests/fixtures.ts`), even when what it checked on screen looked right.
 
 ### Changed
+- Step chips are named for what clicking them does (*Remove step: Without 1 total line*); an added category column's
+  chip opens its rules, and its × removes it. Category words come from the rows no category has taken yet, and
+  focus stays among them as they're used.
+- *1 row*, *1 column*; the sidebar says text, number, date (the database's type on hover); a view's suggested name
+  leaves out the table's month and year; Excel dates use Excel's own short date (as the reader's computer writes
+  dates); the chart's date grain reads *Auto (month)*.
+- Each table keeps its checks while another is open.
 - Three or more columns converted (usually one click on *Convert*) show as one chip, *4 columns converted*: clicking
   it lists them one by one, and only its × undoes them all. Look-alike values merged in a column group the same way
   (*City: 4 values merged*), and the column menu offers *Merge all*; a stray space shows as ␣ (*Mumbai␣ → Mumbai*).

@@ -9,10 +9,13 @@ import type { ColumnInfo } from './result'
  * optional grand-total row (GROUPING SETS). The result is an ordinary query: it lands in the editor,
  * and can be sorted, charted, saved, shared and exported like any other.
  */
-export type Grain = 'none' | 'year' | 'quarter' | 'month' | 'week' | 'day'
+export type Grain = 'none' | 'year' | 'fy' | 'quarter' | 'fquarter' | 'month' | 'week' | 'day'
 export const GRAINS: { id: Grain; label: string }[] = [
   { id: 'year', label: 'Year' },
+  // India's (and others'): April to March, FY 2024-25. Its quarters start in April.
+  { id: 'fy', label: 'Financial year (Apr–Mar)' },
   { id: 'quarter', label: 'Quarter' },
+  { id: 'fquarter', label: 'Financial quarter' },
   { id: 'month', label: 'Month' },
   { id: 'week', label: 'Week' },
   { id: 'day', label: 'Day' },
@@ -55,9 +58,14 @@ const byName = (cols: ColumnInfo[], name: string) => cols.find((c) => c.name ===
 function fieldExpr(f: Field, cols: ColumnInfo[]) {
   const col = byName(cols, f.column)
   const q = quoteIdent(f.column)
-  return col && isTemporal(col) && f.grain !== 'none' ? `date_trunc('${f.grain}', ${timeExpr(col)})::DATE` : q
+  if (!col || !isTemporal(col) || f.grain === 'none') return q
+  const t = timeExpr(col)
+  // A financial year from its 1 April; a financial quarter is a calendar one, named from April.
+  if (f.grain === 'fy') return `(date_trunc('year', ${t} - INTERVAL 3 MONTH) + INTERVAL 3 MONTH)::DATE`
+  return `date_trunc('${f.grain === 'fquarter' ? 'quarter' : f.grain}', ${t})::DATE`
 }
-const fieldAlias = (f: Field) => (f.grain === 'none' ? f.column : `${f.column} (${f.grain})`)
+const GRAIN_NAME: Partial<Record<Grain, string>> = { fy: 'financial year', fquarter: 'financial quarter' }
+const fieldAlias = (f: Field) => (f.grain === 'none' ? f.column : `${f.column} (${GRAIN_NAME[f.grain] ?? f.grain})`)
 
 /**
  * A field grouped into periods (a month, a quarter…): labelled as the period, written so that sorting the
@@ -68,8 +76,14 @@ const isPeriod = (f: Field, cols: ColumnInfo[]) => {
   return !!col && isTemporal(col) && f.grain !== 'none' && f.grain !== 'day'
 }
 
-/** A period's label in SQL, from its first day: 2024, 2024-Q2, 2024-04, and a week by its Monday (2024-04-08). */
+/**
+ * A period's label in SQL, from its first day: 2024, 2024-Q2, 2024-04, and a week by its Monday (2024-04-08).
+ * A financial year FY 2024-25, its quarters FY 2024-25 Q1 (April to June).
+ */
 function periodSql(e: string, grain: Grain): string {
+  const fy = (d: string) => `'FY ' || year(${d}) || '-' || right((year(${d}) + 1)::VARCHAR, 2)`
+  if (grain === 'fy') return fy(e)
+  if (grain === 'fquarter') return `${fy(`(${e} - INTERVAL 3 MONTH)`)} || ' Q' || ((quarter(${e}) + 2) % 4 + 1)`
   if (grain === 'year') return `strftime(${e}, '%Y')`
   if (grain === 'quarter') return `year(${e}) || '-Q' || quarter(${e})`
   if (grain === 'month') return `strftime(${e}, '%Y-%m')`
@@ -80,6 +94,10 @@ function periodSql(e: string, grain: Grain): string {
 export function periodLabel(iso: string, grain: Grain): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso)
   if (!m) return iso
+  const [y, mo] = [Number(m[1]), Number(m[2])]
+  const fy = (start: number) => `FY ${start}-${String((start + 1) % 100).padStart(2, '0')}`
+  if (grain === 'fy') return fy(mo >= 4 ? y : y - 1)
+  if (grain === 'fquarter') return `${fy(mo >= 4 ? y : y - 1)} Q${((Math.floor((mo - 1) / 3) + 1 + 2) % 4) + 1}`
   if (grain === 'year') return m[1]
   if (grain === 'quarter') return `${m[1]}-Q${Math.floor((Number(m[2]) - 1) / 3) + 1}`
   if (grain === 'month') return `${m[1]}-${m[2]}`

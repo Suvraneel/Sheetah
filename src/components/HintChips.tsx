@@ -22,6 +22,12 @@ interface Props {
   /** The payments matched are on screen: the bank reconciliation statement from them. */
   reconcile?: boolean
   onReconcile?: () => void
+  /** Open bills' party column: what each party owes, by how long it's been due. */
+  ageing?: string | null
+  onAgeing?: () => void
+  /** A day book's ledger column: each ledger's debits and credits summed. */
+  ledgers?: string | null
+  onLedgers?: () => void
   /** Dates the reader read one way (day first, 'dmy') that could be the other: to read the other way. */
   dates?: { columns: string[]; read: 'dmy' | 'mdy' } | null
   onSwapDates?: (columns: string[]) => void
@@ -54,9 +60,9 @@ const listed = (xs: string[]) => (xs.length < 3 ? xs.join(' and ') : `${xs.slice
  * Suggestions from looking the table over, outlined so they never read as applied steps (filled chips),
  * in the order they're best taken: rows that aren't data first, then the layout, then the types.
  */
-export function HintChips({ namesRow, onNames, junk, checkingTotals, empty, onHideEmpty, amount, onAmount, categorize, onCategorize, monthly, onMonthly, reconcile, onReconcile, dates, onSwapDates, spaces, onTrim, fill, onFill, series, text, personal, compact, onDrop, onUnpivot, onConvert, onAnonymize }: Props) {
+export function HintChips({ namesRow, onNames, junk, checkingTotals, empty, onHideEmpty, amount, onAmount, categorize, onCategorize, monthly, onMonthly, reconcile, onReconcile, ageing, onAgeing, ledgers, onLedgers, dates, onSwapDates, spaces, onTrim, fill, onFill, series, text, personal, compact, onDrop, onUnpivot, onConvert, onAnonymize }: Props) {
   const names = typeof namesRow === 'number'
-  if (!names && !junk && !checkingTotals && !empty && !fill && !series && !text && !amount && !categorize && !monthly && !reconcile && !dates && !spaces && !personal) return null
+  if (!names && !junk && !checkingTotals && !empty && !fill && !series && !text && !amount && !categorize && !monthly && !reconcile && !ageing && !ledgers && !dates && !spaces && !personal) return null
   const into = (t: Clean[]) => (t.every((c) => c.kind === 'date') ? 'dates' : t.some((c) => c.kind === 'date') ? 'numbers and dates' : 'numbers')
   return (
     <span className="hint-chips">
@@ -129,6 +135,24 @@ export function HintChips({ namesRow, onNames, junk, checkingTotals, empty, onHi
       {monthly && (
         <button className="pii-chip" onClick={(e) => thenKeepFocus(e, '.hint-chips', () => onMonthly?.())} title="A summary: each month's money in, money out, the net and how many lines, as a new result (Undo comes back here).">
           <Icon name="calendar" size={13} /> Money in and out by month
+        </button>
+      )}
+      {ageing && (
+        <button
+          className="pii-chip"
+          onClick={(e) => thenKeepFocus(e, '.hint-chips', () => onAgeing?.())}
+          title={`What each ${ageing} owes, by how long it has been due: not yet due, 0–30 days, 31–60… over 180, as of today (Undo comes back here).`}
+        >
+          <Icon name="calendar" size={13} /> Ageing by {ageing}
+        </button>
+      )}
+      {ledgers && (
+        <button
+          className="pii-chip"
+          onClick={(e) => thenKeepFocus(e, '.hint-chips', () => onLedgers?.())}
+          title={`Each ${ledgers}'s debits and credits over these lines, and its net: the debits and credits agree when every voucher balances (Undo comes back here).`}
+        >
+          <Icon name="layers" size={13} /> Totals by {ledgers}
         </button>
       )}
       {reconcile && (

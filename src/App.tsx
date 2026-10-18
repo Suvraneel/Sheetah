@@ -1,9 +1,9 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getEngine, sqlName } from './engine/db'
-import { isBalanceName, monthlySql, signedAmount, signedNote, statementColumns } from './engine/statement'
+import { ageingColumns, ledgerColumn, monthlySql, signedAmount, signedNote, statementColumns } from './engine/statement'
 import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent } from './engine/sql'
 import { ACCEPTED, FileKindError, cancelExcel, createDemo, dateOrders, ingestFile, listTables, type TableMeta } from './engine/ingest'
-import { CancelledError, cancelRunning, colRef, exportResult, holdResult, rangeStats, rowOf, runSql, splitStatements, type RangeStats, type ResultSet } from './engine/result'
+import { CancelledError, cancelRunning, exportResult, holdResult, rangeStats, rowOf, runSql, splitStatements, type RangeStats, type ResultSet } from './engine/result'
 import { addFilter, compose, describeFilter, emptyOps, hasOps, onTidiedRows, pickedValues, plainTable, removePick, removePickAll, stepCount, stepMarks, tidySteps, type Filter, type Ops } from './engine/compose'
 import { addClean, isConversion, percentColumns, type Clean, type DropRows } from './engine/clean'
 import { isLoadFailure } from './engine/load-errors'
@@ -37,7 +37,7 @@ const loadAnonymizeDialog = () => import('./components/AnonymizeDialog')
 const AnonymizeDialog = lazy(() => loadAnonymizeDialog().then((m) => ({ default: m.AnonymizeDialog })))
 import type { CompareLayout, CompareSpec } from './engine/compare'
 import type { PivotSpec } from './engine/pivot'
-import type { MatchSide, MatchSpec } from './engine/match'
+import type { MatchSpec } from './engine/match'
 import type { ColumnInfo } from './engine/result'
 const loadAddColumn = () => import('./components/AddColumn')
 const AddColumn = lazy(() => loadAddColumn().then((m) => ({ default: m.AddColumn })))
@@ -59,7 +59,7 @@ import { TablesPanel, type HistoryItem } from './components/Library'
 const loadSidePanels = () => import('./components/SidePanels')
 const SavedPanel = lazy(() => loadSidePanels().then((m) => ({ default: m.SavedPanel })))
 const HistoryPanel = lazy(() => loadSidePanels().then((m) => ({ default: m.HistoryPanel })))
-import { seriesColumns } from './engine/unpivot'
+import { seriesColumns } from './engine/series'
 import { useMediaQuery } from './components/useMediaQuery'
 import { THEME_KEY } from './theme'
 import { EditorResizer } from './components/EditorResizer'
@@ -239,10 +239,31 @@ export default function App() {
   // What the checks found on a table's rows (its running balance, its total lines): shown while the table's
   // steps are on screen, each while the step it checked is (leaving out the total lines, the signed amount).
   type Found = Check & { step?: string }
-  const [checks, setChecks] = useState<{ base: string; items: Found[] } | null>(null)
+  // By the rows they're about (a table's, or a result's): each table keeps its own while another is open.
+  const [checks, setChecks] = useState<Record<string, Found[]>>({})
+  // `steps`: only those about steps (the rows shown afresh); else all of them (the data itself is new).
+  const forgetChecks = useCallback(
+    (on: string, steps = false) =>
+      setChecks((c) => {
+        if (!(on in c)) return c
+        const { [on]: was, ...next } = c
+        const kept = steps ? was.filter((x) => !x.step) : []
+        return kept.length ? { ...next, [on]: kept } : next
+      }),
+    [],
+  )
   const addChecks = useCallback((on: string, found: (Found | null)[]) => {
     const items = found.filter((c): c is Found => !!c)
-    if (items.length) setChecks((c) => ({ base: on, items: [...(c?.base === on ? c.items.filter((x) => !items.some((i) => i.kind === x.kind)) : []), ...items] }))
+    if (!items.length) return
+    setChecks((c) => {
+      // Moved to the end as it's added to: what's dropped below is what was looked at longest ago.
+      const { [on]: was = [], ...rest } = c
+      const next = { ...rest, [on]: [...was.filter((x) => !items.some((i) => i.kind === x.kind)), ...items] }
+      // The last few dozen kept: older ones go (they'd be checked again as their view runs).
+      const keys = Object.keys(next)
+      for (const k of keys.slice(0, Math.max(0, keys.length - 30))) delete next[k]
+      return next
+    })
   }, [])
   const [tab, setTab] = useState<'tables' | 'saved' | 'history'>('tables')
   // Column lists in the library shown or hidden by hand (kept while other tabs are open).
@@ -545,10 +566,10 @@ export default function App() {
     async (name: string) => {
       const sql = `SELECT * FROM ${sqlName(name)}`
       setEditor(sql)
-      setChecks(null) // a table opened afresh: its rows as in the file, unchecked
+      forgetChecks(sql, true) // a table opened afresh: its rows as in the file (what the file and its scan found stays)
       return execute(sql, { base: sql, ops: emptyOps(), remember: false })
     },
-    [execute],
+    [execute, forgetChecks],
   )
 
   /**
@@ -595,6 +616,15 @@ export default function App() {
               .finally(junkDone),
             namesRow(res).then((r) => setNamesHints((m) => ({ ...m, [key]: { sig, value: r === null ? [] : [r] } }))),
             fillDownColumns(res).then((cols) => setFillHints((m) => ({ ...m, [key]: { sig, value: cols } }))),
+            // GSTINs, PANs and IFSC codes, where a column is named for one: a wrong one is said above the rows.
+            import('./engine/ids').then(async (m) => {
+              const cols = m.idColumns(res.columns)
+              if (!cols.length || !res.table) return
+              const { conn } = await getEngine()
+              const found = await Promise.all(cols.map(async ({ column, kind }) => m.readIdRow(column.name, kind, (await conn.query(m.idCheckSql(res.table!, column, kind))).toArray()[0]?.toJSON() ?? {})))
+              const check = m.idCheckText(found)
+              if (check) addChecks(res.sql, [check])
+            }),
             emptyTextColumns(res).then((cols) => setEmptyHints((m) => ({ ...m, [key]: { sig, value: cols } }))),
             // Dates the file reader read the other way round from how this reader writes them (01/02: 1 Feb or Jan 2).
             read && dateOrders.has(read) && dateOrders.get(read) !== DATE_HABIT
@@ -609,7 +639,7 @@ export default function App() {
         })
       }, release)
     }, 400)
-  }, [])
+  }, [addChecks])
   /** A table opened from the list: scanned the first time it's seen (in this shape). */
   const openAndScan = async (name: string) => {
     const res = await openTable(name)
@@ -640,6 +670,8 @@ export default function App() {
           const notes: string[] = []
           const said: Check[] = []
           const names = await ingestFile(f, undefined, (note, check) => (check ? said.push({ kind: 'totals', ok: check.ok, text: note }) : notes.push(note)))
+          // New data under these names: what was found in what they held before is forgotten.
+          for (const n of names) forgetChecks(tableBase(n))
           if (said.length && names[0]) fileChecks.set(names[0], said)
           first ||= names[0]
           last = names[names.length - 1]
@@ -705,7 +737,7 @@ export default function App() {
         )
       }
     },
-    [refreshTables, openTable, say, cancelWork, scanHints, addChecks],
+    [refreshTables, openTable, say, cancelWork, scanHints, addChecks, forgetChecks],
   )
 
   // Cells copied from a spreadsheet (or this grid), pasted outside the editor and inputs: a new table.
@@ -965,10 +997,7 @@ export default function App() {
     if (!statement.balance || !inOrder || !rows.table) return
     const release = holdResult(rows)
     try {
-      const [{ conn }, m] = await Promise.all([getEngine(), import('./engine/checks')])
-      const ref = (n: string) => colRef(rows.columns.find((c) => c.name === n)!)
-      const check = m.readBalanceCheck((await conn.query(m.balanceCheckSql(rows.table, { ...statement, balance: statement.balance }, isNum, ref))).toArray()[0]?.toJSON() ?? {})
-      const found = m.balanceText(check, statement.balance, nf.format, money)
+      const found = await (await import('./engine/month-end')).balanceOf(rows, { ...statement, balance: statement.balance })
       addChecks(on, [found && { ...found, step: name }])
     } catch {
       /* the column is added; the check is a bonus */
@@ -977,62 +1006,20 @@ export default function App() {
     }
   }
 
-  /**
-   * A statement's roll-forward, when steps leave out its opening and closing balance lines: the opening line
-   * plus money in less money out (the rows kept) against the closing line. Tied to the balance lines' step.
-   */
-  const rollForward = async (table: string, drop: DropRows[]): Promise<Found | null> => {
-    const lines = drop.find((d) => (d.kind ? d.kind === 'balance' : /balance line/.test(d.label)))
-    const meta = tables.find((t) => t.name === table)
-    const st = meta && statementColumns(meta.columns)
-    if (!lines || !meta || !st?.balance) return null
-    const [{ conn }, m] = await Promise.all([getEngine(), import('./engine/checks')])
-    const numeric = (n: string) => isNumericType(meta.columns.find((c) => c.name === n)?.type ?? '')
-    const text = meta.columns.filter((c) => /CHAR|TEXT|STRING/i.test(c.type)).map((c) => c.name)
-    const sql = m.rollForwardSql(table, { ...st, balance: st.balance }, text, numeric, `(${drop.map((d) => `(${d.keep})`).join(' AND ')})`)
-    const found = sql ? m.rollForwardText((await conn.query(sql)).toArray()[0]?.toJSON() ?? {}, money) : null
-    return found && { ...found, step: lines.keep }
-  }
-
-  /** Categories added as a column (or their rules changed); then a pivot of them by month is offered. */
-  /**
-   * The bank reconciliation statement from the match on screen: the bank's closing balance (where its
-   * running balance ends, read the way round its rows run) and the lines left over on each side.
-   */
+  /** The bank reconciliation statement from the match on screen (see month-end.ts). */
   const reconcile = async () => {
     if (!matched) return
-    const { sql, spec } = matched
     try {
-      const [{ conn }, b, m] = await Promise.all([getEngine(), import('./engine/brs'), import('./engine/checks')])
-      const describe = async (s: MatchSide) =>
-        (await conn.query(`DESCRIBE SELECT * FROM ${b.numberedRows(s)}`)).toArray().map((r) => {
-          const j = r.toJSON()
-          return { name: String(j.column_name), type: String(j.column_type) }
-        })
-      const [ca, cb] = await Promise.all([describe(spec.a), describe(spec.b)])
-      const { bank, statement } = b.bankOf({ a: ca, b: cb })
-      let closing: number | null = null
-      let asOf: string | null = null
-      if (statement) {
-        const side = spec[bank]
-        const rows = b.numberedRows(side)
-        const types = bank === 'a' ? ca : cb
-        const isN = (n: string) => isNumericType(types.find((c) => c.name === n)?.type ?? '')
-        const counts = (await conn.query(m.balanceCheckSql(rows, statement, isN))).toArray()[0]?.toJSON() ?? {}
-        const order = m.readOrder(counts)
-        const ends = order && m.readEnds((await conn.query(m.endsSql(rows, statement, isN))).toArray()[0]?.toJSON() ?? {}, order)
-        if (ends) {
-          closing = Math.round(ends.closing * 100) / 100
-          asOf = ((await conn.query(`SELECT max(${quoteIdent(side.date)})::DATE::VARCHAR AS d FROM ${rows}`)).toArray()[0]?.toJSON().d as string | null) ?? null
-        }
-      }
-      runDerived(b.brsSql({ match: sql, spec, bank, closing, asOf }), { label: 'Bank reconciliation' })
-      if (!statement) say(`No running balance in ${spec[bank].table}: the statement starts from the lines left over, without the bank’s closing balance.`)
+      const { sql, bank, closing } = await (await import('./engine/month-end')).reconcileQuery(matched)
+      runDerived(sql, { label: 'Bank reconciliation' })
+      if (closing === 'none') say(`No running balance in ${bank}: the statement starts from the lines left over, without the bank’s closing balance.`)
+      if (closing === 'unread') say(`${bank}’s running balance doesn’t follow its rows either way round, so its closing balance isn’t known: the statement starts from the lines left over.`)
     } catch (e) {
       say(`Couldn’t make the reconciliation: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
+  /** Categories added as a column (or their rules changed); then a pivot of them by month is offered. */
   const addCategories = (name: string, expr: string, c: import('./engine/categorize').Categorize) => {
     setCategorizing(null)
     const editing = ops.computed.some((x) => x.name === name)
@@ -1066,43 +1053,8 @@ export default function App() {
     const meta = tables.find((t) => t.name === table)
     const release = holdResult(rows)
     try {
-      const [{ conn }, m] = await Promise.all([getEngine(), import('./engine/checks')])
-      const found: (Found | null)[] = []
-      const cols = meta?.columns.filter((c) => !isBalanceName(c.name)).map((c) => ({ name: c.name, numeric: isNumericType(c.type) })) ?? []
-      const tie = o.drop?.length ? m.tieOutSql(table, cols, o.drop) : null
-      const totals = o.drop?.find((d) => (d.kind ? d.kind === 'totals' : /total line/.test(d.label)))
-      const tied = tie ? m.tieOutText(m.readTieOutRow(cols, (await conn.query(tie)).toArray()[0]?.toJSON() ?? {}), money) : null
-      if (tied && totals) found.push({ ...tied, step: totals.keep })
-      const st = statementColumns(rows.columns)
-      let closing: number | undefined
-      let period: NonNullable<SavedView['periods']>[number] | undefined
-      if (st?.balance && rows.table && !o.sort && !o.filters.length && !o.search && !o.dedupe) {
-        const col = (n: string) => rows.columns.find((c) => c.name === n)!
-        const s = { ...st, balance: st.balance }
-        const isN = (n: string) => !!col(n).numeric
-        const ref = (n: string) => colRef(col(n))
-        const counts = (await conn.query(m.balanceCheckSql(rows.table, s, isN, ref))).toArray()[0]?.toJSON() ?? {}
-        found.push(m.balanceText(m.readBalanceCheck(counts), st.balance, nf.format, money))
-        // Where it starts and ends, read the way round the rows run (not at all if they don't run either way).
-        const order = m.readOrder(counts)
-        const ends = order && m.readEnds((await conn.query(m.endsSql(rows.table, s, isN, ref))).toArray()[0]?.toJSON() ?? {}, order)
-        const saved = view && (viewsRef.current.find((x) => x.id === view.id) ?? view)
-        // The period these rows cover (by their dates), so each month is checked against the one before it,
-        // whatever ran last: May again after June, or April after both, isn't a statement gone missing.
-        const date = rows.columns.find(isTemporal)
-        const span = date && ((await conn.query(`SELECT min(${colRef(date)})::DATE::VARCHAR AS a, max(${colRef(date)})::DATE::VARCHAR AS b FROM ${rows.table}`)).toArray()[0]?.toJSON() as { a: string | null; b: string | null } | undefined)
-        if (ends && span?.a && span.b) {
-          // Run again on the same month, it's checked against the month before, as it was the first time.
-          const before = (saved?.periods ?? []).filter((p) => p.to < span.a!).sort((x, y) => (x.to < y.to ? 1 : -1))[0]
-          if (before) found.push(m.continuityText(ends.opening, { table: before.table === table ? `the statement to ${before.to}` : before.table, closing: before.closing }, money))
-          period = { from: span.a, to: span.b, closing: ends.closing, table, rows: rows.rowCount }
-        } else if (ends && saved?.last?.closing !== undefined && saved.last.table.toLowerCase() !== table.toLowerCase()) {
-          // No dates to tell the months apart (left as text): against the file it ran on last, if that's another.
-          found.push(m.continuityText(ends.opening, { table: saved.last.table, closing: saved.last.closing }, money))
-        }
-        closing = ends?.closing ?? undefined
-      }
-      if (o.drop?.length) found.push(await rollForward(table, o.drop).catch(() => null))
+      const saved = view && (viewsRef.current.find((x) => x.id === view.id) ?? view)
+      const { found, closing, period } = await (await import('./engine/month-end')).checkRows({ table, columns: meta?.columns ?? [], ops: o, rows, saved })
       if (view)
         updateViews((v) =>
           v.map((x) =>
@@ -1110,7 +1062,7 @@ export default function App() {
               ? {
                   ...x,
                   last: { table, rows: rows.rowCount, ...(closing !== undefined ? { closing } : {}) },
-                  ...(period ? { periods: [...(x.periods ?? []).filter((p) => p.from !== period!.from || p.to !== period!.to), period].sort((a, b) => (a.from < b.from ? -1 : 1)).slice(-36) } : {}),
+                  ...(period ? { periods: [...(x.periods ?? []).filter((p) => p.from !== period.from || p.to !== period.to), period].sort((a, b) => (a.from < b.from ? -1 : 1)).slice(-36) } : {}),
                 }
               : x,
           ),
@@ -1680,7 +1632,7 @@ export default function App() {
   const junkChecking = !ops.drop?.length && !junkHere && junkPending.has(base.trim())
   // Checks still about the rows on screen: their table's, while the step each checked is still there.
   const checksHere =
-    checks?.base === base ? checks.items.filter((c) => !c.step || ops.drop?.some((d) => d.keep === c.step) || ops.computed.some((x) => x.name === c.step)) : []
+    (checks[base] ?? []).filter((c) => !c.step || ops.drop?.some((d) => d.keep === c.step) || ops.computed.some((x) => x.name === c.step))
   // Column names found on a later row: offered first, before anything else is tidied.
   const namesHere = !hasOps(ops) && !running ? (hintFor(namesHints)?.[0] ?? null) : null
   // Which columns the "Convert" suggestion is about, said in their headers until they're converted (even
@@ -1701,7 +1653,13 @@ export default function App() {
   // A bank statement (money in and out in two columns): offered a signed amount, until it's added.
   // A statement's suggestions are for its own rows (with their steps, or stacked month on month), not a
   // summary made from them (by month, a match, a pivot).
-  const statement = result && !result.message && !origins[base.trim()] ? statementColumns(result.columns) : null
+  const inOut = result && !result.message && !origins[base.trim()] ? statementColumns(result.columns) : null
+  // A day book (each voucher's lines, each to its ledger) isn't one account's money in and out: it's summed
+  // by ledger instead.
+  const ledgerHere = inOut?.books && result ? ledgerColumn(result.columns) : null
+  const statement = ledgerHere ? null : inOut
+  // Open bills (an amount still owed, by party): their ageing.
+  const ageingHere = result && !result.message && !origins[base.trim()] && !inOut ? ageingColumns(result.columns) : null
   const isNum = (name: string) => !!result?.columns.find((c) => c.name === name)?.numeric
   const amountExpr = statement ? signedAmount(statement, isNum) : null
   // Added already, even if its formula has changed since (the columns were converted after): not offered twice.
@@ -2139,6 +2097,25 @@ export default function App() {
                 monthly={!!monthlyHere}
                 reconcile={!!reconcileHere}
                 onReconcile={() => void reconcile()}
+                ageing={ageingHere?.party ?? null}
+                onAgeing={() => {
+                  if (!ageingHere) return
+                  const rows = compose(base, { ...ops, sort: undefined, hidden: undefined })
+                  // As of today, in the reader's own calendar.
+                  const d = new Date()
+                  const asOf = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+                  void import('./engine/ageing')
+                    .then(({ ageingSql }) => runDerived(ageingSql(rows, ageingHere, asOf, isNum), { label: `Ageing by ${ageingHere.party}` }))
+                    .catch((e) => partFailed(e))
+                }}
+                ledgers={ledgerHere}
+                onLedgers={() => {
+                  if (!inOut || !ledgerHere) return
+                  const rows = compose(base, { ...ops, sort: undefined, hidden: undefined })
+                  void import('./engine/books')
+                    .then(({ ledgerTotalsSql }) => runDerived(ledgerTotalsSql(rows, inOut, ledgerHere, isNum), { label: `Totals by ${ledgerHere}` }))
+                    .catch((e) => partFailed(e))
+                }}
                 onMonthly={() => {
                   if (!statement || !monthlyHere) return
                   const rows = compose(base, { ...ops, sort: undefined, hidden: undefined })
@@ -2154,9 +2131,10 @@ export default function App() {
                   const tied = drop.find((d) => d.checked)
                   const on = base
                   const table = plainTable(base)
-                  void import('./engine/checks').then(async (m) => {
+                  const columns = tables.find((t) => t.name === table)?.columns
+                  void Promise.all([import('./engine/checks'), import('./engine/month-end')]).then(async ([m, e]) => {
                     const found = tied?.checked ? m.tieOutText(tied.checked, money) : null
-                    addChecks(on, [found && tied ? { ...found, step: tied.keep } : null, table ? await rollForward(table, drop).catch(() => null) : null])
+                    addChecks(on, [found && tied ? { ...found, step: tied.keep } : null, table && columns ? await e.rollForward(table, columns, drop).catch(() => null) : null])
                   })
                 }}
                 onUnpivot={() => setUnpivoting({})}
@@ -2291,7 +2269,7 @@ export default function App() {
                 </span>
               )}
             </div>
-            {result && !result.message && <Checks items={checksHere} onDismiss={() => setChecks(null)} />}
+            {result && !result.message && <Checks items={checksHere} onDismiss={() => forgetChecks(base)} />}
 
             <div className="grid-area">
               {source && view === 'chart' && result ? (

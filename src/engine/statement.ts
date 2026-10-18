@@ -3,7 +3,7 @@
  * Debit), and a running balance. Sheetah offers the signed amount (in − out) that sums, charts and
  * pivots, and checks that each balance follows from the one before: a missing or doubled line shows.
  */
-import { isIdLike, isNumericType, nameKey, sqlName } from './sql'
+import { isIdLike, isNumericType, isTemporal, nameKey, sqlName } from './sql'
 
 export interface StatementColumns {
   /** Money in, money out, and the running balance (if there is one). */
@@ -35,6 +35,14 @@ export function statementColumns(columns: { name: string; type: string }[]): Sta
   const books = /^(debits?|dr)$/.test(nameKey(debit.name)) && /^(credits?|cr)$/.test(nameKey(credit.name)) && columns.some((c) => /(^|_)(vch|voucher)(_|$)/.test(nameKey(c.name)))
   if (books) return { credit: debit.name, debit: credit.name, books: true, ...(balance ? { balance: balance.name } : {}) }
   return { credit: credit.name, debit: debit.name, ...(balance ? { balance: balance.name } : {}) }
+}
+
+/**
+ * The books' ledger column (a day book: each voucher's lines, each to its ledger): text named for the
+ * account a line goes to. A single ledger's own export names the other account "Particulars": not this.
+ */
+export function ledgerColumn(columns: { name: string; type: string }[]): string | null {
+  return columns.find((c) => /^VARCHAR/i.test(c.type) && /^(ledger|account)(_(name|head))?$|^ledger_account$/.test(nameKey(c.name)))?.name ?? null
 }
 
 /** What the signed amount is, in words: "Deposit − Withdrawal" (its columns, without "Amt."). */
@@ -85,4 +93,32 @@ ${rows}
 WHERE ${sqlName(date)} IS NOT NULL
 GROUP BY 1
 ORDER BY 1`
+}
+
+/* Open bills (what's still owed, by party): their ageing is in ageing.ts, loaded when asked for. */
+
+export interface AgeingColumns {
+  party: string
+  amount: string
+  /** The date the age is counted from: when it fell due, else the bill's date. */
+  date: string
+  by: 'due' | 'bill'
+}
+
+const OPEN = /(^|_)(pending|outstanding|unpaid|overdue|due|balance|receivable|payable|open)(_|$)/
+const PARTY = /(^|_)(party|customer|debtor|client|vendor|supplier|creditor|ledger|account|name|buyer)(_|$)/
+
+/**
+ * A list of open bills, by its columns: an amount still open ("Pending Amount", "Balance Due"), a party,
+ * and a date (a due date by preference). Not a bank statement (its balance is a running one).
+ */
+export function ageingColumns(columns: { name: string; type: string }[]): AgeingColumns | null {
+  if (statementColumns(columns)) return null
+  const amount = columns.find((c) => !isTemporal(c) && OPEN.test(nameKey(c.name)) && (isNumericType(c.type) || /^VARCHAR/i.test(c.type)) && !/(^|_)(days?|date|on|by)$/.test(nameKey(c.name)))
+  const party = columns.find((c) => /^VARCHAR/i.test(c.type) && PARTY.test(nameKey(c.name)))
+  const dates = columns.filter(isTemporal)
+  const due = dates.find((c) => /(^|_)due(_|$)/.test(nameKey(c.name)))
+  const date = due ?? dates[0]
+  if (!amount || !party || !date) return null
+  return { party: party.name, amount: amount.name, date: date.name, by: due ? 'due' : 'bill' }
 }

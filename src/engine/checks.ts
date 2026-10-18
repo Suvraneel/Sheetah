@@ -10,7 +10,7 @@ import type { StatementColumns } from './statement'
 
 /** One check's outcome, as shown above the rows. */
 export interface Check {
-  kind: 'balance' | 'totals' | 'continuity' | 'rollforward' | 'match'
+  kind: 'balance' | 'totals' | 'continuity' | 'rollforward' | 'match' | 'ids'
   ok: boolean
   text: string
 }

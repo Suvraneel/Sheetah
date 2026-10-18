@@ -645,3 +645,29 @@ test.describe('bank statements', () => {
     await expect(page.locator('.checks', { hasText: 'Closing Balance on row 3' })).toBeVisible()
   })
 })
+
+test.describe('open bills', () => {
+  test('what each party owes, by how long it has been due', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      "Date,Ref. No.,Party's Name,Pending Amount,Due on",
+      '2019-11-01,INV-1,Acme Ltd,"11,800.00 Dr",2020-01-01',
+      '2019-12-01,INV-2,Beta,"2,000.00 Dr",2020-02-01',
+      '2098-12-01,INV-9,Acme Ltd,"5,000.00 Dr",2099-01-01',
+    ]
+    await page.locator('input[type=file]').setInputFiles([file('receivables.csv', `${csv.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    await page.getByRole('button', { name: "Ageing by Party's Name" }).click()
+    await expect(page.locator('.origin-chip')).toContainText("Ageing by Party's Name, from")
+    await expect(page.locator('.result-meta')).toContainText('3 rows · 9 columns')
+    const header = page.locator('.sr-grid [role=columnheader]')
+    await expect(header.nth(1)).toContainText('Not yet due')
+    await expect(header.nth(6)).toContainText('Over 180 days')
+    const acme = page.locator('.sr-grid [role=row]').nth(1)
+    await expect(acme).toContainText('Acme Ltd')
+    await expect(acme).toContainText('5,000')
+    await expect(acme).toContainText('11,800')
+    await expect(acme).toContainText('16,800')
+    await expect(page.locator('.sr-grid [role=row]').nth(3)).toContainText('Total')
+  })
+})
