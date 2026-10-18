@@ -83,7 +83,8 @@ export async function checkRows({ table, columns, ops: o, rows, saved }: { table
   const tie = o.drop?.length ? tieOutSql(table, cols, o.drop) : null
   const tied = tie ? tieOutText(readTieOutRow(cols, await first(tie)), money) : null
   if (tied && totals) found.push({ ...tied, step: totals.keep })
-  const st = statementColumns(rows.columns)
+  const named = statementColumns(rows.columns)
+  const st = named && rows.table && (await orientation(rows.table, rows.columns).catch(() => null)) === 'books' ? turned(named) : named
   let closing: number | undefined
   let period: Period | undefined
   if (st?.balance && rows.table && !o.sort && !o.filters.length && !o.search && !o.dedupe) {
@@ -161,3 +162,25 @@ export async function idCheck(res: ResultSet): Promise<Check | null> {
   const pans = gstin && pan ? readIdRow(pan.column.name, 'pan', await first(panMatchSql(table, gstin.column, pan.column))) : undefined
   return idCheckText(found, pans)
 }
+
+/**
+ * Which way round a register's Debit and Credit go, by its running balance. A bank's statement takes money
+ * out as Debit; an account in the books (a QuickBooks or Xero register, a ledger) puts money in as Debit.
+ * When the balance follows the books' way and not the bank's, the columns are turned round: the signed
+ * amount is Debit − Credit, and the balance is checked that way. Null when there's nothing to turn.
+ */
+export async function orientation(table: string, columns: { name: string; type: string; numeric?: boolean; ident?: string }[]): Promise<'books' | null> {
+  const st = statementColumns(columns)
+  if (!st?.balance || st.books || !/^(debits?|dr)$/i.test(st.debit.trim()) || !/^(credits?|cr)$/i.test(st.credit.trim())) return null
+  const col = (n: string) => columns.find((c) => c.name === n)!
+  const isN = (n: string) => !!col(n).numeric || isNumericType(col(n).type)
+  const ref = (n: string) => quoteIdent(col(n).ident ?? n)
+  const s = { ...st, balance: st.balance }
+  const turned = { ...s, credit: st.debit, debit: st.credit }
+  const [bank, books] = await Promise.all([first(balanceCheckSql(table, s, isN, ref)), first(balanceCheckSql(table, turned, isN, ref))])
+  const bad = (r: Record<string, number | null>) => readBalanceCheck(r)?.bad ?? Infinity
+  return bad(books) < bad(bank) ? 'books' : null
+}
+
+/** A statement's columns as they're meant: a register whose balance follows Debit as money in, turned round. */
+export const turned = (st: StatementColumns): StatementColumns => ({ ...st, credit: st.debit, debit: st.credit, books: true })

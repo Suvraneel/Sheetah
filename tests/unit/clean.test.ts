@@ -296,3 +296,17 @@ test('bank-statement amounts marked Cr and Dr read as plus and minus, and the su
   expect(await suggestionsFor(allCr, undefined, 'Balance')).toContainEqual(expect.objectContaining({ label: 'Convert to number (Cr +, Dr −)' }))
   expect(await suggestionsFor(allCr, undefined, 'Amount')).not.toContainEqual(expect.objectContaining({ label: 'Convert to number (Cr +, Dr −)' }))
 })
+
+test('a report’s “Total for Acme Corp” is a total label; a product called Total Gym is not', async () => {
+  const rows = await q(
+    `SELECT v, is_total_label(v) AS t FROM (VALUES ('Total for Acme Corp'), ('TOTAL'), ('North Total'), ('Total of Region'), ('Total Gym 2000'), ('Totally')) x(v)`,
+  )
+  expect(rows.map((r) => [r.v, r.t])).toEqual([
+    ['Total for Acme Corp', true],
+    ['TOTAL', true],
+    ['North Total', true],
+    ['Total of Region', true],
+    ['Total Gym 2000', false],
+    ['Totally', false],
+  ])
+})

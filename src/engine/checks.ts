@@ -134,7 +134,16 @@ export function tieOutSql(table: string, cols: { name: string; numeric: boolean 
   if (!totals.length || !cols.length) return null
   const all = (ds: DropRows[]) => `(${ds.map((d) => `(${d.keep})`).join(' AND ')})`
   const n = (c: { name: string; numeric: boolean }) => (c.numeric ? `TRY_CAST(${sqlName(c.name)} AS DOUBLE)` : `number_from_text(${sqlName(c.name)}::VARCHAR)`)
-  return `SELECT ${cols.map((c, i) => `sum(${n(c)}) FILTER (WHERE NOT ${all(totals)})::DOUBLE AS t${i}, sum(${n(c)}) FILTER (WHERE ${all(drop)})::DOUBLE AS d${i}`).join(', ')} FROM ${sqlName(table)}`
+  // The rows a total adds up: the books' total (Tally's Current Total) includes the opening balance written in
+  // Debit or Credit, never the closing one below it. A statement's balance lines have nothing in or out anyway.
+  const balance = drop.filter((d) => d.kind === 'balance' || (!d.kind && /balance line/.test(d.label)))
+  const rows = `${all(drop.filter((d) => !balance.includes(d)))} AND NOT ${closingLineSql(cols.filter((c) => !c.numeric).map((c) => sqlName(c.name)))}`
+  return `SELECT ${cols.map((c, i) => `sum(${n(c)}) FILTER (WHERE NOT ${all(totals)})::DOUBLE AS t${i}, sum(${n(c)}) FILTER (WHERE ${rows})::DOUBLE AS d${i}`).join(', ')} FROM ${sqlName(table)}`
+}
+
+/** SQL true for a closing balance line ("Closing Balance", "Balance c/f", "Carried forward"), by its text columns. */
+export function closingLineSql(texts: string[]): string {
+  return texts.length ? `(${texts.map((r) => `regexp_matches(coalesce(${r}::VARCHAR, ''), ${CLOSING}, 'i')`).join(' OR ')})` : 'false'
 }
 
 /** The tie-out query's row, read column by column. */

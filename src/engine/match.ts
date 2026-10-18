@@ -195,7 +195,7 @@ near_b AS (
   QUALIFY row_number() OVER (PARTITION BY b_row ORDER BY abs(date_diff('day', a_date, b_date)), a_row) = 1
 )
 SELECT * FROM (
-  SELECT ${quoteLiteral(st.matched)} AS status, a_date AS ${aDate}, b_date AS ${bDate}, a.amount, a_text AS ${aText}, b_text AS ${bText}, date_diff('day', a_date, b_date) AS "days apart",
+  SELECT ${quoteLiteral(st.matched)} AS status, a_date AS ${aDate}, b_date AS ${bDate}, a.amount, a_text AS ${aText}, b_text AS ${bText}, abs(date_diff('day', a_date, b_date)) AS "days apart",
     CASE WHEN a_ref = b_ref AND NOT abs(date_diff('day', a_date, b_date)) <= ${n} THEN 'paired by reference ' || a_ref END AS note
   FROM pairs JOIN a USING (a_row) JOIN b USING (b_row)
   UNION ALL

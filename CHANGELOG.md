@@ -207,7 +207,14 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 - *1 row*, *1 column*; the sidebar says text, number, date (the database's type on hover); a view's suggested name
   leaves out the table's month and year; Excel dates use Excel's own short date (as the reader's computer writes
   dates); the chart's date grain reads *Auto (month)*.
-- Each table keeps its checks while another is open.
+- Each table keeps its checks and its steps while another is open: opened again from the list, it comes back
+  tidied (Clear all shows the file as it is).
+- Dates that read both ways (no day past the 12th) are read the reader's way when the file opens: 01/02/2024 is
+  January 2nd in the US, 1 February in India.
+- A register whose running balance follows Debit as money in (QuickBooks, Xero) has its columns turned round.
+- Identifier checks run only where the values begin the Indian way (not Canada's GST numbers, or a card's PAN).
+- Personal data: US phone numbers, and columns named for a phone or ZIP; a column of company names isn't a
+  person's name.
 - The sidebar says what a converted column now is (*date (converted)*); notices sit to the right in the workspace,
   clear of the rows being read; the Export menu's items load as it's first opened.
 - Three or more columns converted (usually one click on *Convert*) show as one chip, *4 columns converted*: clicking
@@ -261,6 +268,10 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   says to tap for exact values.
 
 ### Fixed
+- Tie-outs counted a Tally ledger's closing balance line (and not its opening, which its Current Total includes):
+  a correct ledger was flagged. "Total for Acme Corp" lines weren't seen as totals.
+- Ageing as of a past day counted bills raised after it.
+- A CSV report whose title lines had no separators failed to open, or opened as one column.
 - A statement whose total line has a field missing (read again with its separator) had its two-digit years read
   year first (13/04/24 as 2013-04-24): now day first, as any other.
 - Charts of a pivot counted its Total row as a category; comparing a whole number with "12.0" read as a change;

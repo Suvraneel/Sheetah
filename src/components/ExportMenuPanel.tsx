@@ -84,7 +84,8 @@ export default function ExportMenuPanel({
       e.preventDefault()
       e.stopPropagation()
       close(true)
-    } else if (e.key === 'Tab') close(false)
+      // Tab leaves the menu from its button (not from the menu at the end of the page): on to what follows it.
+    } else if (e.key === 'Tab') close(true)
   }
 
   return createPortal(

@@ -6,7 +6,7 @@ import { sql, PostgreSQL } from '@codemirror/lang-sql'
 import { syntaxHighlighting, HighlightStyle, bracketMatching } from '@codemirror/language'
 import { autocompletion, closeBrackets, closeCompletion, completionKeymap } from '@codemirror/autocomplete'
 import { tags as t } from '@lezer/highlight'
-import type { TableMeta } from '../engine/ingest'
+import type { TableMeta } from '../engine/tables'
 import { EDITOR_FIT_MAX, EDITOR_MIN } from './editorSize'
 import { registerEditor } from './editorBridge'
 

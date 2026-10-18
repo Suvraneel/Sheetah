@@ -136,5 +136,8 @@ const zone = (() => {
 })()
 export const LOCALE = readerLocale(typeof navigator !== 'undefined' ? navigator.language : undefined, zone)
 
+/** Words that differ between American English and the rest (India's included): aging as of, ageing as on. */
+export const WORDS = /^en-US$/i.test(LOCALE) ? { ageing: 'Aging', asOn: 'As of' } : { ageing: 'Ageing', asOn: 'As on' }
+
 /** Dates and timestamps (with or without a time zone): charted over time, bucketed by month in pivots. */
 export const isTemporal = (c: { type: string }) => /^(DATE|TIMESTAMP)/i.test(c.type)

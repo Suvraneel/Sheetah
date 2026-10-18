@@ -2,12 +2,11 @@ import { DuckDBDataProtocol } from '@duckdb/duckdb-wasm'
 import { CancelledError, ensureExtension, getEngine, isCancel, quoteIdent, quoteLiteral, sandboxPath, sendAll, withRunLock } from './db'
 import { FileKindError } from './load-errors'
 import { LOCALE, tableNameFor } from './sql'
-export { FileKindError } from './load-errors'
-
+import { dateOrders } from './tables'
 import type { XlsxReply, XlsxSheet } from './xlsx.worker'
 
-export const ACCEPTED = '.csv,.tsv,.txt,.gz,.json,.jsonl,.ndjson,.parquet,.xlsx,.xlsm,.xls,.xml,.htm,.html'
-
+export { FileKindError } from './load-errors'
+export { ACCEPTED, dateOrders, listTables, type TableMeta } from './tables'
 export { tableNameFor } from './sql'
 
 /** Names already in use, straight from the engine (DuckDB names are case-insensitive). */
@@ -24,8 +23,6 @@ function readerFor(fileName: string): { fn: string; materialize: boolean } {
   return { fn: 'read_csv_auto', materialize: true } // csv, tsv, txt: delimiter is sniffed
 }
 
-/** Tables whose dates were read day-first or month-first from text (by the CSV reader's guess). */
-export const dateOrders = new Map<string, 'dmy' | 'mdy'>()
 
 const columnTypes = async (table: string) =>
   (await sendAll(`DESCRIBE ${quoteIdent(table)}`)).toArray().map((r) => {
@@ -122,6 +119,34 @@ async function readDates(name: string, path: string, read: (opts: string) => str
       }
     }
   }
+  // Dates that read both ways (no day past the 12th: 01/02/2024): the reader's own way, not the file
+  // reader's guess. Read the other way, every value must still be a date, or the guess stands.
+  const habit: 'dmy' | 'mdy' = /^en-US$/i.test(LOCALE) ? 'mdy' : 'dmy'
+  if (order && order !== habit && /^%[dm]\W%[dm]\W%Y/.test(date) && !yearLast(date, 'dmy')) {
+    const turn = (f: string) => f.replace(/^%(d|m)(\W)%(d|m)/, (_, a: string, s: string, b: string) => `%${b}${s}%${a}`)
+    const tmp = `__order_${name}`
+    const opts = [`dateformat = ${quoteLiteral(turn(date))}`, ...(/^%[dm]\W%[dm]/.test(time) ? [`timestampformat = ${quoteLiteral(turn(time))}`] : [])].join(', ')
+    try {
+      await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(tmp)} AS SELECT * FROM ${read(opts)}`)
+      const types = new Map((await columnTypes(tmp)).map((c) => [c.name, c.type]))
+      if (dated.every((c) => types.get(c.name) === c.type)) {
+        await sendAll('BEGIN TRANSACTION')
+        try {
+          await sendAll(`DROP TABLE ${quoteIdent(name)}`)
+          await sendAll(`ALTER TABLE ${quoteIdent(tmp)} RENAME TO ${quoteIdent(name)}`)
+          await sendAll('COMMIT')
+          order = habit
+        } catch (e) {
+          await sendAll('ROLLBACK').catch(() => {})
+          throw e
+        }
+      }
+    } catch (e) {
+      if (isCancel(e)) throw e
+    } finally {
+      await sendAll(`DROP TABLE IF EXISTS ${quoteIdent(tmp)}`).catch(() => {})
+    }
+  }
   if (order) dateOrders.set(name.toLowerCase(), order)
 }
 
@@ -178,6 +203,12 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
     const virtualPath = sandboxPath(`${name}__${file.name}`)
     await db.registerFileHandle(virtualPath, file, DuckDBDataProtocol.BROWSER_FILEREADER, true)
     const source = `${fn}(${quoteLiteral(virtualPath)})`
+    // A report's title lines above its table, with no separators (QuickBooks' "Sales by Customer Detail"),
+    // its group names too: the file reader gives up, or reads it all as one column. Read from the names on.
+    let titled: { sep: string; skip: number } | null | undefined
+    const titles = async () => (titled === undefined ? (titled = (await import('./sniff')).titleLines(await file.slice(0, 64 * 1024).text())) : titled)
+    const fromNames = (t: { sep: string; skip: number }, opts = '') =>
+      `read_csv(${quoteLiteral(virtualPath)}, delim = ${quoteLiteral(t.sep)}, header = true, skip = ${t.skip}, null_padding = true, strict_mode = false${opts ? `, ${opts}` : ''})`
     try {
       await sendAll(
         materialize
@@ -185,8 +216,12 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
           : `CREATE VIEW ${quoteIdent(name)} AS SELECT * FROM ${source}`,
       )
     } catch (e) {
-      await db.dropFile(virtualPath).catch(() => {})
-      throw isCancel(e) ? new CancelledError() : e
+      const t = !isCancel(e) && fn === 'read_csv_auto' ? await titles().catch(() => null) : null
+      if (!t) {
+        await db.dropFile(virtualPath).catch(() => {})
+        throw isCancel(e) ? new CancelledError() : e
+      }
+      await sendAll(`CREATE TABLE ${quoteIdent(name)} AS SELECT * FROM ${fromNames(t)}`)
     }
     // Rows with more or fewer fields than the header make the sniffer give up and read each line as
     // one text column ("name,city,amount"). Read it again with that separator, padding short rows.
@@ -200,6 +235,11 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
             `read_csv(${quoteLiteral(virtualPath)}, delim = ${quoteLiteral(sep)}, header = true, null_padding = true, strict_mode = false${opts ? `, ${opts}` : ''})`
           await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(name)} AS SELECT * FROM ${read('')}`)
           onNote?.(`Some rows of ${file.name} have more or fewer fields than its header: missing ones are left empty.`)
+        } else if (titled || (cols.length === 1 && (await titles()))) {
+          const found = (await titles())!
+          read = (opts) => fromNames(found, opts)
+          if (!titled || cols.length === 1) await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(name)} AS SELECT * FROM ${read('')}`)
+          onNote?.(`Left out ${found.skip === 1 ? 'a title line' : `${found.skip} title lines`} above the column names in ${file.name}.`)
         }
         await readDates(name, virtualPath, read)
       } catch (e) {
@@ -354,46 +394,4 @@ export function createDemo(rows = 1_000_000): Promise<string> {
     `)
     return name
   })
-}
-
-export interface TableMeta {
-  name: string
-  kind: 'table' | 'view'
-  rows: number | null
-  columns: { name: string; type: string }[]
-}
-
-export async function listTables(): Promise<TableMeta[]> {
-  const { conn } = await getEngine()
-  const tables = (
-    // Only the database's own tables: TEMP tables also report schema 'main', but live in the temp catalog.
-    await conn.query(`SELECT table_name, table_type FROM information_schema.tables
-      WHERE table_schema = 'main' AND table_catalog = current_database()
-        AND table_name NOT LIKE '\\_\\_%' ESCAPE '\\' ORDER BY table_name`)
-  )
-    .toArray()
-    .map((r) => r.toJSON() as { table_name: string; table_type: string })
-  const cols = (
-    await conn.query(`SELECT table_name, column_name, data_type FROM information_schema.columns
-      WHERE table_schema = 'main' AND table_catalog = current_database() ORDER BY table_name, ordinal_position`)
-  )
-    .toArray()
-    .map((r) => r.toJSON() as { table_name: string; column_name: string; data_type: string })
-
-  const out: TableMeta[] = []
-  for (const t of tables) {
-    const kind = t.table_type === 'VIEW' ? 'view' : 'table'
-    let rows: number | null = null
-    if (kind === 'table') {
-      const c = await conn.query(`SELECT count(*)::DOUBLE AS n FROM ${quoteIdent(t.table_name)}`)
-      rows = Number(c.toArray()[0]?.toJSON().n ?? 0)
-    }
-    out.push({
-      name: t.table_name,
-      kind,
-      rows,
-      columns: cols.filter((c) => c.table_name === t.table_name).map((c) => ({ name: c.column_name, type: c.data_type })),
-    })
-  }
-  return out
 }

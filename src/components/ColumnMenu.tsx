@@ -11,6 +11,8 @@ import { Icon } from './Icon'
 import { Chart } from './Chart'
 import { histogram, isTemporal, type Point } from '../engine/chart'
 
+const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
+
 interface Props {
   result: ResultSet
   column: ColumnInfo
@@ -281,7 +283,8 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
             aria-invalid={!!invalid || undefined}
             aria-describedby={invalid ? 'filter-error' : undefined}
             inputMode={kind === 'number' ? 'decimal' : undefined}
-            autoFocus
+            // On a touch screen, not: the keyboard would cover the menu of someone who only wants to sort.
+            autoFocus={!coarse}
           />
         )}
         {between && (

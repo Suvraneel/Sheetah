@@ -8,6 +8,7 @@ import type { Clean, DropRows } from './clean'
 import { confidentConversion, dataSumsSql, eitherJunk, fillDownSql, isTextColumn, looksFilledDown, junkPredicates, labelSumsSql, readTieOut, totalsAgree, readStats, statsSql, suggestCleaning, type CleanSuggestion } from './clean-scan'
 import { LOCALE, nameKey } from './sql'
 import { balanceLineSql, isBalanceName, statementColumns } from './statement'
+import { closingLineSql } from './checks'
 import { colRef, type ColumnInfo, type ResultSet } from './result'
 
 export interface ColumnProfile {
@@ -191,7 +192,11 @@ export async function junkRows(result: ResultSet): Promise<DropRows[]> {
       const t = sums ? ((await conn.query(sums)).toArray()[0]?.toJSON() as Record<string, number | null> | undefined) : undefined
       const which = Object.keys(t ?? {}).filter((k) => typeof t![k] === 'number').map((k) => Number(k.slice(1)))
       if (t && which.length) {
-        const d = (await conn.query(dataSumsSql(result.table, refs, p.first, which, `${here.keep} AND ${p.blank.keep}`))).toArray()[0]?.toJSON() as Record<string, number | null> | undefined
+        // Not the closing balance line (the books write it in Debit or Credit, below their total).
+        const closing = closingLineSql(columns.filter((c) => isTextColumn(c.type)).map(colRef))
+        const d = (await conn.query(dataSumsSql(result.table, refs, p.first, which, `${here.keep} AND ${p.blank.keep} AND NOT ${closing}`))).toArray()[0]?.toJSON() as
+          | Record<string, number | null>
+          | undefined
         const pairs = which.filter((i) => typeof d?.[`d${i}`] === 'number').map((i) => ({ i, t: t[`t${i}`] as number, d: d![`d${i}`] as number }))
         const others = columns.filter((_, k) => refs[k].ref !== p.first)
         // A running balance isn't something total lines add up.

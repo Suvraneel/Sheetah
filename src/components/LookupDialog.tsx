@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { LOCALE } from '../engine/sql'
 import { getEngine } from '../engine/db'
-import type { TableMeta } from '../engine/ingest'
+import type { TableMeta } from '../engine/tables'
 import { bestPair, lookupMissesSql, lookupNames, lookupStatsSql, suggestMatch, type Lookup } from '../engine/lookup'
 import type { ColumnInfo } from '../engine/result'
 import { BtnIcon } from './Icon'

@@ -103,6 +103,21 @@ test('next month’s tie-out adds up the total lines only: not the balance lines
   // Steps without total lines have nothing to tie out; a view saved before steps had kinds goes by the label.
   expect(tieOutSql('nm', cols, drop.slice(1))).toBeNull()
   expect(tieOutSql('nm', cols, drop.map(({ label, keep }) => ({ label, keep })))).not.toBeNull()
+  // Tally's ledger: its Current Total includes the opening balance (in Debit); the closing balance (in Credit)
+  // comes after it, to make the Grand Total agree. The tie-out counts the first and not the second.
+  await q(`CREATE OR REPLACE TABLE tly AS SELECT * FROM (VALUES
+    (NULL, 'Opening Balance', '1,00,000.00', NULL), ('1-Apr-26', 'Rent', NULL, '25,000.00'), ('5-Apr-26', 'Acme Ltd', '50,000.00', NULL),
+    (NULL, 'Current Total', '1,50,000.00', '25,000.00'), (NULL, 'Closing Balance', NULL, '1,25,000.00')
+  ) t("Date", "Particulars", "Debit", "Credit")`)
+  const books = { credit: 'Debit', debit: 'Credit', books: true }
+  const lines = balanceLineSql(books, ['Date', 'Particulars'], () => false)!
+  const tally = [
+    { label: '1 total line', keep: `"Particulars" IS DISTINCT FROM 'Current Total'`, kind: 'totals' as const },
+    { label: '2 balance lines', keep: `NOT ${lines}`, kind: 'balance' as const },
+  ]
+  const tcols = ['Date', 'Particulars', 'Debit', 'Credit'].map((name) => ({ name, numeric: false }))
+  const trow = (await q(tieOutSql('tly', tcols, tally)!))[0] as Record<string, unknown>
+  expect(readTieOutRow(tcols, trow)?.off).toEqual([])
 })
 
 test('a statement’s ends: where it opened and closed, either way round, and whether next month carries on from there', async () => {

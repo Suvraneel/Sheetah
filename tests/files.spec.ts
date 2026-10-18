@@ -211,6 +211,31 @@ test.describe('a statement whose total line has a field missing', () => {
   })
 })
 
+test.describe('a report with title lines above its table', () => {
+  test('QuickBooks’ title lines (no commas) are left out, and its “Total for …” lines are total lines', async ({ page }) => {
+    await openApp(page)
+    // Its group names (each customer) are lines without commas too: the file reader gives up on the lot.
+    const csv = [
+      'Sales by Customer Detail',
+      'Sunny Side Bakery LLC',
+      '"January 1 - December 31, 2024"',
+      '',
+      ',Date,Transaction Type,Num,Amount',
+      "Amy's Bird Sanctuary",
+      ',06/18/2024,Sales Receipt,1074,836.97',
+      ',06/19/2024,Invoice,1075,"1,145.84"',
+      "Total for Amy's Bird Sanctuary,,,,\"$1,982.81\"",
+      "Bill's Windsurf Shop",
+      ',06/20/2024,Invoice,1792,450.00',
+      "Total for Bill's Windsurf Shop,,,,$450.00",
+    ].join('\r\n')
+    await page.locator('input[type=file]').setInputFiles([buf('qb_sales.csv', `${csv}\n`)])
+    await expect(page.locator('.toast', { hasText: 'Left out 4 title lines above the column names in qb_sales.csv.' })).toBeVisible()
+    await expect(page.locator('.result-meta')).toContainText('7 rows · 5 columns')
+    await expect(page.getByRole('button', { name: /^Leave out 2 total lines/ })).toBeVisible()
+  })
+})
+
 test.describe('India’s identifiers', () => {
   test('GSTINs and PANs are checked as the table opens: a mistyped one is named', async ({ page }) => {
     await openApp(page)
@@ -266,13 +291,16 @@ test.describe('a browser on US English in India', () => {
 test.describe('dates that read both ways', () => {
   test.use({ locale: 'en-US' })
 
-  test('01/02/2024 read day first is offered month first to a reader who writes it that way', async ({ page }) => {
+  test('01/02/2024, with no day past the 12th, is read the reader’s way: month first in the US', async ({ page }) => {
     await openApp(page)
     await page.locator('input[type=file]').setInputFiles([buf('paid.csv', 'id,paid_on\n1,01/02/2024\n2,03/04/2024\n3,12/11/2024\n')])
     await expect(page.locator('.result-meta')).toContainText('3 rows')
-    await page.getByRole('button', { name: 'Read paid_on month first' }).click()
-    await expect(page.locator('.op-chip', { hasText: 'paid_on day and month swapped' })).toBeVisible()
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2024-01-02')
+    await expect(page.getByRole('button', { name: /month first/ })).toHaveCount(0)
+    // A day past the 12th settles it: 25/12/2024 is day first, whoever reads it.
+    await page.locator('input[type=file]').setInputFiles([buf('paid_uk.csv', 'id,paid_on\n1,01/02/2024\n2,25/12/2024\n')])
+    await expect(page.locator('.result-meta')).toContainText('2 rows')
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2024-02-01')
   })
 
   test('two-digit years: 01/04/24 is 1 April 2024, not 24 April 2001', async ({ page }) => {

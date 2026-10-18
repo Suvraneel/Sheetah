@@ -1,4 +1,4 @@
-import type { TableMeta } from '../engine/ingest'
+import type { TableMeta } from '../engine/tables'
 import { LOCALE, sqlName } from '../engine/sql'
 import { friendlyType } from '../grid/format'
 import { Icon } from './Icon'

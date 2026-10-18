@@ -111,8 +111,8 @@ export const RULES: PiiRule[] = [
     kind: 'phone',
     label: 'Phone number',
     hint: /phone|mobile|(^|_)tel(_|$)|contact_?(no|number)|whatsapp/i,
-    // Indian mobiles (+91, 0 prefixes) and international E.164-ish numbers.
-    pattern: '^(\\+?91[ -]?|0)?[6-9][0-9]{4}[ -]?[0-9]{5}$|^\\+[1-9][0-9 ()-]{7,16}[0-9]$',
+    // Indian mobiles (+91, 0 prefixes), US and Canadian numbers ((212) 555-0101), and international E.164-ish ones.
+    pattern: '^(\\+?91[ -]?|0)?[6-9][0-9]{4}[ -]?[0-9]{5}$|^\\+[1-9][0-9 ()-]{7,16}[0-9]$|^(\\+?1[ .-]?)?\\(?[2-9][0-9]{2}\\)?[ .-]?[0-9]{3}[ .-][0-9]{4}$',
     defaultAction: 'mask',
     actions: ['mask', 'pseudonym', 'remove', 'keep'],
   },

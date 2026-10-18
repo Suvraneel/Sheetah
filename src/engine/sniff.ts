@@ -61,3 +61,33 @@ export function notATable(kind: FileKind, name: string): string | null {
       return null
   }
 }
+
+/** A line's fields by a separator, quotes respected ("Acme, Inc" is one). */
+function fields(line: string, sep: string): number {
+  let n = 1
+  let quoted = false
+  for (const ch of line) {
+    if (ch === '"') quoted = !quoted
+    else if (ch === sep && !quoted) n++
+  }
+  return n
+}
+
+/**
+ * A report's title lines above its table, written without separators ("Sales by Customer Detail", "Acme
+ * Inc", "January 2024"): the file reader takes the first as the only column. The separator and how many
+ * lines come before the column names (the first line with as many fields as most of the lines), or null.
+ */
+export function titleLines(text: string): { sep: string; skip: number } | null {
+  const lines = text.split(/\r?\n/).slice(0, 60).filter((l, i, all) => l.trim() !== '' || i < all.length - 1)
+  for (const sep of [',', ';', '\t', '|']) {
+    const counts = lines.map((l) => (l.trim() ? fields(l, sep) : 0))
+    const tally = new Map<number, number>()
+    for (const c of counts) if (c > 1) tally.set(c, (tally.get(c) ?? 0) + 1)
+    const [common, times] = [...tally].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0] ?? [0, 0]
+    if (common < 2 || times < 2) continue
+    const skip = counts.findIndex((c) => c === common)
+    if (skip > 0 && counts.slice(0, skip).every((c) => c < common)) return { sep, skip }
+  }
+  return null
+}

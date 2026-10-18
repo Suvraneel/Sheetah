@@ -48,10 +48,10 @@ test('lines match one to one by amount and nearest date; a missing line doesn’
   // Every line once; the unreadable "Rs. 500/-" is listed with no amount (not lost), the opening line left out.
   expect(rows.map((r) => [r.status, r.amount, r['days apart'] === null ? null : Number(r['days apart'])])).toEqual([
     ['only in bank', -500, null],
-    ['matched', 50000, -1],
+    ['matched', 50000, 1],
     ['only in bank', -118, null],
     ['only in bank', null, null],
-    ['matched', -500, -1],
+    ['matched', -500, 1],
     ['only in books', 2500, null],
   ])
   expect(Object.keys(rows[0])).toEqual(['status', 'bank date', 'books date', 'amount', 'bank: Narration', 'books: Party', 'days apart', 'note'])

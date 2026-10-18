@@ -126,10 +126,13 @@ function quarterOfYear(spec: PivotSpec, cols: ColumnInfo[]): string | null {
   const c = spec.columns
   const col = c && byName(cols, c.column)
   if (!c || !col || !isTemporal(col) || (c.grain !== 'quarter' && c.grain !== 'fquarter')) return null
-  if (!spec.rows.some((r) => r.column === c.column && r.grain === (c.grain === 'fquarter' ? 'fy' : 'year'))) return null
+  const year = spec.rows.find((r) => r.column === c.column && (r.grain === 'fy' || r.grain === 'year'))?.grain
+  if (!year) return null
+  // Financial years down the side: their quarters (Q1 is April to June), whichever quarter was picked.
+  const fiscal = year === 'fy'
   const t = timeExpr(col)
-  const months = c.grain === 'fquarter' ? ['Apr–Jun', 'Jul–Sep', 'Oct–Dec', 'Jan–Mar'] : ['Jan–Mar', 'Apr–Jun', 'Jul–Sep', 'Oct–Dec']
-  const q = c.grain === 'fquarter' ? `((quarter(${t}) + 2) % 4 + 1)` : `quarter(${t})`
+  const months = fiscal ? ['Apr–Jun', 'Jul–Sep', 'Oct–Dec', 'Jan–Mar'] : ['Jan–Mar', 'Apr–Jun', 'Jul–Sep', 'Oct–Dec']
+  const q = fiscal ? `((quarter(${t}) + 2) % 4 + 1)` : `quarter(${t})`
   return `'Q' || ${q} || ' (' || [${months.map((m) => quoteLiteral(m)).join(', ')}][${q}] || ')'`
 }
 const columnExpr = (spec: PivotSpec, cols: ColumnInfo[]) => quarterOfYear(spec, cols) ?? fieldExpr(spec.columns!, cols)
@@ -245,8 +248,9 @@ export async function cardinalities(sourceSql: string, cols: ColumnInfo[], rows?
 
 /** A first pivot: the smallest category across, the next one down the side, money in the cells. */
 export function defaultPivot(cols: ColumnInfo[], counts: Record<string, number>): PivotSpec {
+  // Categories to group by: not codes (an invoice number per row says nothing grouped).
   const cats = groupable(cols)
-    .filter((c) => !c.numeric && !isTemporal(c) && (counts[c.name] ?? 0) >= 2)
+    .filter((c) => !c.numeric && !isTemporal(c) && !isIdLike(c.name) && (counts[c.name] ?? 0) >= 2)
     .sort((a, b) => (counts[a.name] ?? 0) - (counts[b.name] ?? 0))
   const time = cols.find(isTemporal)
   const measures = cols.filter((c) => c.numeric && !isIdLike(c.name))

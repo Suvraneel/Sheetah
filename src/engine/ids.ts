@@ -17,6 +17,11 @@ const NAMES: [IdKind, RegExp][] = [
   ['ifsc', /(^|_)ifsc(_?code)?$/],
 ]
 const LABEL: Record<IdKind, string> = { gstin: 'GSTIN', pan: 'PAN', ifsc: 'IFSC code' }
+/**
+ * How India's begin, mistyped or not (a GSTIN with its state and a PAN's letters, a PAN's letters, a bank's
+ * four): a column named GST Number or PAN elsewhere (Canada's GST, a card's PAN) mostly doesn't, and isn't checked.
+ */
+const SHAPE: Record<IdKind, string> = { gstin: `'^[0-9]{2}[A-Z]{3}'`, pan: `'^[A-Z]{5}[0-9]'`, ifsc: `'^[A-Z]{4}'` }
 const ALNUM = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
 /** The text columns named for an identifier (GSTIN, PAN No, IFSC Code), and which. */
@@ -49,7 +54,8 @@ export function idOk(kind: IdKind, v: string): string {
 export function idCheckSql(table: string, column: ColumnInfo, kind: IdKind): string {
   // As result.ts's colRef (not imported: that would load the engine with these checks' tests).
   const v = `upper(trim(${quoteIdent(column.ident ?? column.name)}::VARCHAR))`
-  return `SELECT count(*)::DOUBLE AS n, count(*) FILTER (WHERE NOT ok)::DOUBLE AS bad, (list(v ORDER BY r) FILTER (WHERE NOT ok))[1:3] AS examples
+  return `SELECT count(*)::DOUBLE AS n, count(*) FILTER (WHERE NOT ok)::DOUBLE AS bad, (list(v ORDER BY r) FILTER (WHERE NOT ok))[1:3] AS examples,
+  count(*) FILTER (WHERE regexp_matches(v, ${SHAPE[kind]}))::DOUBLE AS shaped
 FROM (SELECT rowid AS r, v, ${idOk(kind, 'v')} AS ok FROM (SELECT rowid, nullif(${v}, '') AS v FROM ${table}) WHERE regexp_matches(v, '[0-9]'))`
 }
 
@@ -71,6 +77,8 @@ export interface IdFinding {
   n: number
   bad: number
   examples: string[]
+  /** How many begin the way India's do (most must, for the column to be checked). */
+  shaped?: number
 }
 
 /**
@@ -78,7 +86,7 @@ export interface IdFinding {
  * their GSTIN's), else that all are well formed.
  */
 export function idCheckText(found: IdFinding[], pans?: { bad: number; examples: string[] }): Check | null {
-  const seen = found.filter((f) => f.n > 0)
+  const seen = found.filter((f) => f.n > 0 && (f.shaped === undefined || f.shaped * 2 >= f.n))
   if (!seen.length) return null
   const off = seen.filter((f) => f.bad > 0)
   const unlike = pans && pans.bad > 0 ? `${pans.bad} ${pans.bad === 1 ? 'PAN doesn’t' : 'PANs don’t'} match ${pans.bad === 1 ? 'its' : 'their'} GSTIN: ${pans.examples.join(', ')}${pans.bad > pans.examples.length ? '…' : ''}` : null
@@ -99,5 +107,5 @@ export function idCheckText(found: IdFinding[], pans?: { bad: number; examples: 
 /** Reads a check's row (from idCheckSql). */
 export function readIdRow(column: string, kind: IdKind, row: Record<string, unknown>): IdFinding {
   const examples = Array.isArray(row.examples) ? row.examples : row.examples && typeof row.examples === 'object' && 'toArray' in row.examples ? (row.examples as { toArray: () => unknown[] }).toArray() : []
-  return { column, kind, n: Number(row.n ?? 0), bad: Number(row.bad ?? 0), examples: examples.map(String) }
+  return { column, kind, n: Number(row.n ?? 0), bad: Number(row.bad ?? 0), examples: examples.map(String), ...(row.shaped !== undefined ? { shaped: Number(row.shaped) } : {}) }
 }

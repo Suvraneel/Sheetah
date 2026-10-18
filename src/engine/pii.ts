@@ -11,6 +11,9 @@ export interface Detection {
   verified?: number
 }
 
+/** Words that make a name a company's: Inc, LLC, Ltd, Pvt, Corp, Enterprises, Industries, Traders… */
+const COMPANY = '(^|[^a-z])(inc|llc|llp|ltd|limited|pvt|plc|corp|corporation|co|company|gmbh|enterprises?|industries|traders|trading|associates|solutions|services|systems|technologies|group|holdings|bank|store|shop|foods|bakery|motors|labs?|studio|agency|partners)([^a-z]|$)'
+
 export const SAMPLE_ROWS = 5000
 
 const TEXTY = /^(VARCHAR|TEXT|STRING|CHAR|BPCHAR|BIGINT|HUGEINT|UBIGINT|INTEGER|UINTEGER)/i
@@ -33,6 +36,8 @@ export async function detectPii(result: ResultSet): Promise<Detection[]> {
     const v = `trim(${colRef(c)}::VARCHAR)`
     parts.push(`count(nullif(${v}, ''))::DOUBLE AS "n${i}"`)
     patterned.forEach((r, j) => parts.push(`count(*) FILTER (WHERE regexp_full_match(${v}, ${quoteLiteral(r.pattern!)}))::DOUBLE AS "m${i}_${j}"`))
+    // Companies, not people ("Wayne Enterprises", "Acme Pvt Ltd"): a Customer column of them isn't personal.
+    parts.push(`count(*) FILTER (WHERE regexp_matches(lower(${v}), ${quoteLiteral(COMPANY)}))::DOUBLE AS "co${i}"`)
   })
   const counts = parts.length
     ? (((await conn.query(`WITH s AS (SELECT * FROM ${result.table} USING SAMPLE ${SAMPLE_ROWS} ROWS) SELECT ${parts.join(', ')} FROM s`)).toArray()[0]?.toJSON() ??
@@ -61,7 +66,10 @@ export async function detectPii(result: ResultSet): Promise<Detection[]> {
     if (!best) {
       // Kinds recognised by name: names, birth dates, addresses (and the others when the column name says so).
       const named = RULES.find((r) => nameSuggests(r, c.name) && (r.kind === 'birthdate' ? true : TEXTY.test(c.type) && !TEMPORAL.test(c.type)))
-      if (named && (named.kind === 'birthdate' || !named.pattern || nonEmpty === 0)) best = { column: c.name, kind: named.kind, ratio: null }
+      // A phone or postal code column by its name alone (written any country's way); names unless they're companies.
+      const companies = nonEmpty > 0 && Number(counts[`co${i}`] ?? 0) / nonEmpty >= 0.4
+      if (named && !(named.kind === 'name' && companies) && (named.kind === 'birthdate' || named.kind === 'phone' || named.kind === 'postcode' || !named.pattern || nonEmpty === 0))
+        best = { column: c.name, kind: named.kind, ratio: null }
     }
     if (best) out.push(best)
   }

@@ -86,7 +86,8 @@ export function numberText(t: string, comma: boolean, drcr = false): string {
  */
 const T = textOf('x')
 const GRAND_OR_SUB = '(grand|sub)[ -]*totals?:?'
-const ANY_TOTAL = '(.*[^ ] +)?totals?:?'
+// "North Total", "Total:"; and a report's "Total for Acme Corp" (QuickBooks), "Total of Region" — not "Total Gym".
+const ANY_TOTAL = '(.*[^ ] +)?totals?:?|totals? (for|of) .+'
 
 export const CLEAN_MACROS: string[] = [
   `CREATE OR REPLACE TEMP MACRO number_from_text(x) AS TRY_CAST(${numberText(T, false)} AS DOUBLE)`,

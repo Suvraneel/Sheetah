@@ -36,7 +36,9 @@ WITH r AS (
     date_diff('day', ${sqlName(a.date)}::DATE, ${quoteLiteral(asOf)}::DATE) AS age
   FROM (
 ${rows}
-  )
+  )${a.bill ? `
+  -- Bills raised after that day weren't open on it.
+  WHERE ${sqlName(a.bill)} IS NULL OR ${sqlName(a.bill)}::DATE <= ${quoteLiteral(asOf)}::DATE` : ''}
 ),
 -- What's owed counts as plus, whichever way it's written ("12,000.00 Dr" owed to us, "Cr" owed by us):
 -- an advance the other way round counts against it.
@@ -49,7 +51,7 @@ p AS (
   FROM t WHERE amount IS NOT NULL AND amount <> 0 AND NOT is_total_label(party)
   GROUP BY party
 )
-SELECT ${P}, ${cols.map((c) => `round(${c}, 2) AS ${c}`).join(', ')} FROM (
+SELECT ${P}, ${cols.map((c) => `round(${c}, 2)::DECIMAL(18, 2) AS ${c}`).join(', ')} FROM (
   SELECT 0 AS o, party AS ${P}, ${cols.join(', ')} FROM p
   UNION ALL
   SELECT 1, 'Total', ${cols.map((c) => `sum(${c})`).join(', ')} FROM p

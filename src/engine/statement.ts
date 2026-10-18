@@ -109,6 +109,8 @@ export interface AgeingColumns {
   /** The date the age is counted from: when it fell due, else the bill's date. */
   date: string
   by: 'due' | 'bill'
+  /** The bill's own date (raised after the day asked about, a bill isn't open on it yet). */
+  bill?: string
 }
 
 const OPEN = /(^|_)(pending|outstanding|unpaid|overdue|due|balance|receivable|payable|open)(_|$)/
@@ -124,7 +126,8 @@ export function ageingColumns(columns: { name: string; type: string }[]): Ageing
   const party = columns.find((c) => /^VARCHAR/i.test(c.type) && PARTY.test(nameKey(c.name)))
   const dates = columns.filter(isTemporal)
   const due = dates.find((c) => /(^|_)due(_|$)/.test(nameKey(c.name)))
+  const bill = dates.find((c) => c !== due)
   const date = due ?? dates[0]
   if (!amount || !party || !date) return null
-  return { party: party.name, amount: amount.name, date: date.name, by: due ? 'due' : 'bill' }
+  return { party: party.name, amount: amount.name, date: date.name, by: due ? 'due' : 'bill', ...(bill ? { bill: bill.name } : {}) }
 }

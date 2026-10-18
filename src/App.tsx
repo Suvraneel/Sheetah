@@ -1,8 +1,11 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getEngine, sqlName } from './engine/db'
 import { ageingColumns, ledgerColumn, type AgeingColumns, monthlySql, signedAmount, signedNote, statementColumns } from './engine/statement'
-import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent } from './engine/sql'
-import { ACCEPTED, FileKindError, cancelExcel, createDemo, dateOrders, ingestFile, listTables, type TableMeta } from './engine/ingest'
+import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent, WORDS } from './engine/sql'
+import { ACCEPTED, dateOrders, listTables, type TableMeta } from './engine/tables'
+import { FileKindError } from './engine/load-errors'
+// Reading a file (CSV, Excel, Tally…) is loaded when one is opened, or when the page is idle.
+const ingest = () => import('./engine/ingest')
 import { CancelledError, cancelRunning, exportResult, holdResult, rangeStats, rowOf, runSql, splitStatements, type RangeStats, type ResultSet } from './engine/result'
 import { addFilter, compose, describeFilter, emptyOps, hasOps, onTidiedRows, pickedValues, plainTable, removePick, removePickAll, stepCount, stepMarks, tidySteps, type Filter, type Ops } from './engine/compose'
 import { addClean, isConversion, percentColumns, type Clean, type DropRows } from './engine/clean'
@@ -206,6 +209,9 @@ export default function App() {
   const [past, setPast] = useState<Step[]>([])
   /** Tables tidied by steps (lower-case name → the tidied rows as SQL), for SQL typed against them. */
   const tidiedRef = useRef(new Map<string, { table: string; sql: string; steps: number; marks: string[] }>())
+  // Each table's steps, as last left (by its name, lower case): opened again from the list, it comes back
+  // with them (Clear all shows it as in the file). New data under its name starts afresh.
+  const stepsByTable = useRef(new Map<string, Ops>())
   // Results made from other rows (counted, unpivoted, column names from a row): what they came from.
   const [origins, setOrigins] = useState<Record<string, { label: string; from: Step }>>({})
   const [future, setFuture] = useState<Step[]>([])
@@ -287,6 +293,8 @@ export default function App() {
   const [emptyHints, setEmptyHints] = useState<Record<string, Hint<string[]>>>({})
   const [spaceHints, setSpaceHints] = useState<Record<string, Hint<string[]>>>({})
   const [dateHints, setDateHints] = useState<Record<string, Hint<string[]>>>({})
+  // A register whose running balance follows Debit as money in (the books' way, not a bank's): ['books'].
+  const [orientHints, setOrientHints] = useState<Record<string, Hint<string[]>>>({})
   // Tables whose total lines are still being looked for (a big file takes seconds): a placeholder holds the chip's place.
   const [junkPending, setJunkPending] = useState<ReadonlySet<string>>(new Set())
   // The Look up dialog, and the column it was opened from (if any).
@@ -400,7 +408,11 @@ export default function App() {
 
   useEffect(() => {
     getEngine()
-      .then(() => setReady(true))
+      .then(() => {
+        setReady(true)
+        // The file reader, while nothing else is going on: there by the time a file is dropped.
+        window.setTimeout(() => void ingest().catch(() => {}), 1200)
+      })
       .catch((e) => {
         setEngineFailed(true)
         setError(
@@ -408,7 +420,7 @@ export default function App() {
         )
       })
     if (import.meta.env.DEV && new URLSearchParams(location.search).has('debug')) {
-      ;(window as unknown as Record<string, unknown>).sheetah = { getEngine, runSql, createDemo, listTables }
+      ;(window as unknown as Record<string, unknown>).sheetah = { getEngine, runSql, ingest, listTables }
     }
     const onUpdate = () => setUpdateAvailable(true)
     window.addEventListener(UPDATE_EVENT, onUpdate)
@@ -517,6 +529,8 @@ export default function App() {
             const tidy = tidySteps(opts.ops)
             if (tidy.count) tidiedRef.current.set(t.toLowerCase(), { table: t, sql: compose(shownBase, tidy.ops), steps: tidy.count, marks: stepMarks(tidy.ops) })
             else tidiedRef.current.delete(t.toLowerCase())
+            if (hasOps(opts.ops)) stepsByTable.current.set(t.toLowerCase(), opts.ops)
+            else stepsByTable.current.delete(t.toLowerCase())
           }
         }
         if (opts.remember !== false) {
@@ -553,7 +567,7 @@ export default function App() {
 
   /** Stops the file that is loading. */
   const cancelWork = useCallback(() => {
-    cancelExcel()
+    void ingest().then((m) => m.cancelExcel())
     void cancelRunning('load').catch(() => false)
   }, [])
 
@@ -568,8 +582,17 @@ export default function App() {
   const openTable = useCallback(
     async (name: string) => {
       const sql = `SELECT * FROM ${sqlName(name)}`
+      // Back to a table tidied before: with its steps (each a chip; Clear all shows the file as it is).
+      const kept = stepsByTable.current.get(name.toLowerCase())
+      const run = kept ? compose(sql, kept) : sql
+      setEditor(run)
+      // Opened afresh, its rows as in the file: what the file and its scan found stays, the steps' checks go.
+      if (!kept) forgetChecks(sql, true)
+      const res = await execute(run, { base: sql, ops: kept ?? emptyOps(), remember: false })
+      if (res || !kept) return res
+      // Steps that no longer fit (the table was made again under its name): the table as it is.
+      stepsByTable.current.delete(name.toLowerCase())
       setEditor(sql)
-      forgetChecks(sql, true) // a table opened afresh: its rows as in the file (what the file and its scan found stays)
       return execute(sql, { base: sql, ops: emptyOps(), remember: false })
     },
     [execute, forgetChecks],
@@ -586,9 +609,10 @@ export default function App() {
   const scanned = useRef(new Set<string>())
   // Queries that stand for a table (one whose column names were on a later row): suggestions as for a table.
   const [tableLike, setTableLike] = useState<ReadonlySet<string>>(new Set())
-  const scanHints = useCallback((res: ResultSet, which: 'all' | 'text', metas?: TableMeta[]) => {
+  const scanHints = useCallback((res: ResultSet, which: 'all' | 'text', metas?: TableMeta[], as?: string) => {
     if (!res.table) return
-    const key = res.sql.trim()
+    // `as`: the rows looked over are a table's with steps, the hints the table's own (by its query).
+    const key = (as ?? res.sql).trim()
     const read = plainTable(key)?.toLowerCase()
     const sig = tableSig(read ? (metas ?? tablesRef.current).find((t) => t.name.toLowerCase() === read) : undefined)
     // Kept while it's scanned: two quick sorts would otherwise drop the result table from under the scans.
@@ -623,6 +647,9 @@ export default function App() {
             import('./engine/month-end')
               .then((m) => m.idCheck(res))
               .then((check) => check && addChecks(res.sql, [check])),
+            import('./engine/month-end')
+              .then((m) => m.orientation(res.table!, res.columns))
+              .then((o) => setOrientHints((m) => ({ ...m, [key]: { sig, value: o ? [o] : [] } }))),
             emptyTextColumns(res).then((cols) => setEmptyHints((m) => ({ ...m, [key]: { sig, value: cols } }))),
             // Dates the file reader read the other way round from how this reader writes them (01/02: 1 Feb or Jan 2).
             read && dateOrders.has(read) && dateOrders.get(read) !== DATE_HABIT
@@ -643,6 +670,8 @@ export default function App() {
     const res = await openTable(name)
     if (!res?.table) return
     const meta = tables.find((t) => t.name === name)
+    // A table back with its steps was looked over when it first opened (its hints are kept by its name).
+    if (res.sql.trim() !== tableBase(name).trim()) return
     if (!scanned.current.has(`${res.sql.trim()}|${tableSig(meta)}`) && !demoTables.current.has(name)) scanHints(res, 'all')
   }
 
@@ -667,9 +696,12 @@ export default function App() {
           // on it (a trial balance's debits against its credits) go above its rows.
           const notes: string[] = []
           const said: Check[] = []
-          const names = await ingestFile(f, undefined, (note, check) => (check ? said.push({ kind: 'totals', ok: check.ok, text: note }) : notes.push(note)))
-          // New data under these names: what was found in what they held before is forgotten.
-          for (const n of names) forgetChecks(tableBase(n))
+          const names = await (await ingest()).ingestFile(f, undefined, (note, check) => (check ? said.push({ kind: 'totals', ok: check.ok, text: note }) : notes.push(note)))
+          // New data under these names: what was found in what they held before is forgotten, and its steps.
+          for (const n of names) {
+            forgetChecks(tableBase(n))
+            stepsByTable.current.delete(n.toLowerCase())
+          }
           if (said.length && names[0]) fileChecks.set(names[0], said)
           first ||= names[0]
           last = names[names.length - 1]
@@ -769,7 +801,7 @@ export default function App() {
     setBusy('Generating 1,000,000 orders…')
     try {
       await getEngine()
-      const name = await createDemo()
+      const name = await (await ingest()).createDemo()
       demoTables.current.add(name)
       setSampleName(name)
       await refreshTables()
@@ -896,13 +928,17 @@ export default function App() {
       // Shown at once, so a second click before this query finishes builds on it. If it fails, the chips
       // go back to what's on screen, and a new step that never happened leaves no undo entry behind.
       setOps(next)
+      // Lines left out (a summary below the transactions, total lines): its columns are looked over again
+      // without them, so text that's all dates or amounts now is offered for converting.
+      const dropped = !!next.drop?.length && JSON.stringify(next.drop) !== JSON.stringify(ops.drop ?? [])
       void execute(sql, { ops: next, remember: false, history: 'keep' }).then((res) => {
+        if (res && dropped && plainTable(base)) scanHints(res, 'text', undefined, base)
         if (res !== null || wantedOps.current !== null) return
         if (shownRef.current.base === base) setOps(shownRef.current.ops)
         if (record === 'new') setPast((p) => (p.at(-1)?.id === now.id ? p.slice(0, -1) : p))
       })
     },
-    [base, ops, execute, editor],
+    [base, ops, execute, editor, scanHints],
   )
 
   /** Goes to an earlier (or later) step, which may be another query (after "Count rows by"). */
@@ -1651,10 +1687,12 @@ export default function App() {
   // A bank statement (money in and out in two columns): offered a signed amount, until it's added.
   // A statement's suggestions are for its own rows (with their steps, or stacked month on month), not a
   // summary made from them (by month, a match, a pivot).
-  const inOut = result && !result.message && !origins[base.trim()] ? statementColumns(result.columns) : null
+  const named = result && !result.message && !origins[base.trim()] ? statementColumns(result.columns) : null
+  // A register (QuickBooks, Xero) whose balance follows Debit as money in: its columns turned round.
+  const inOut = named && !named.books && hintFor(orientHints)?.[0] === 'books' ? { ...named, credit: named.debit, debit: named.credit, books: true } : named
   // A day book (each voucher's lines, each to its ledger) isn't one account's money in and out: it's summed
   // by ledger instead.
-  const ledgerHere = inOut?.books && result ? ledgerColumn(result.columns) : null
+  const ledgerHere = named?.books && result ? ledgerColumn(result.columns) : null
   const statement = ledgerHere ? null : inOut
   // Open bills (an amount still owed, by party): their ageing.
   const ageingHere = result && !result.message && !origins[base.trim()] && !inOut ? ageingColumns(result.columns) : null
@@ -2259,7 +2297,14 @@ export default function App() {
                 </span>
               )}
             </div>
-            {result && !result.message && <Checks items={checksHere} onDismiss={() => forgetChecks(base)} />}
+            {result && !result.message && <Checks
+                items={checksHere}
+                onDismiss={() => {
+                  forgetChecks(base)
+                  // The button goes with the checks: focus goes on to the rows.
+                  keepFocusIn(null, 0)
+                }}
+              />}
 
             <div className="grid-area">
               {source && view === 'chart' && result ? (
@@ -2589,7 +2634,7 @@ export default function App() {
               setAgeing(null)
               const on = new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${asOf}T00:00:00Z`))
               void import('./engine/ageing')
-                .then(({ ageingSql }) => runDerived(ageingSql(rows, columns, asOf, (n) => !!numeric[n]), { label: `Ageing by ${columns.party} as on ${on}` }))
+                .then(({ ageingSql }) => runDerived(ageingSql(rows, columns, asOf, (n) => !!numeric[n]), { label: `${WORDS.ageing} by ${columns.party} ${WORDS.asOn.toLowerCase()} ${on}` }))
                 .catch((e) => partFailed(e))
             }}
           />

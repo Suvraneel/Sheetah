@@ -1,5 +1,6 @@
 import type { Clean, DropRows } from '../engine/clean'
 import { thenKeepFocus } from './focus'
+import { WORDS } from '../engine/sql'
 import { Icon } from './Icon'
 
 interface Props {
@@ -141,9 +142,9 @@ export function HintChips({ namesRow, onNames, junk, checkingTotals, empty, onHi
         <button
           className="pii-chip"
           onClick={(e) => thenKeepFocus(e, '.hint-chips', () => onAgeing?.())}
-          title={`What each ${ageing} owes, by how long it has been due: not yet due, 0–30 days, 31–60… over 180, as of today (Undo comes back here).`}
+          title={`What's open with each ${ageing}, by how long it has been due: not yet due, 0–30 days, 31–60… over 180, on the day you pick (Undo comes back here).`}
         >
-          <Icon name="calendar" size={13} /> Ageing by {ageing}
+          <Icon name="calendar" size={13} /> {WORDS.ageing} by {ageing}
         </button>
       )}
       {ledgers && (

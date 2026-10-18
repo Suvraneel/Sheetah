@@ -657,17 +657,21 @@ test.describe('open bills', () => {
       "Date,Ref. No.,Party's Name,Pending Amount,Due on",
       '2019-11-01,INV-1,Acme Ltd,"11,800.00 Dr",2020-01-01',
       '2019-12-01,INV-2,Beta,"2,000.00 Dr",2020-02-01',
-      '2098-12-01,INV-9,Acme Ltd,"5,000.00 Dr",2099-01-01',
+      '2026-09-01,INV-9,Acme Ltd,"5,000.00 Dr",2099-01-01',
     ]
     await page.locator('input[type=file]').setInputFiles([file('receivables.csv', `${csv.join('\n')}\n`)])
     await expect(page.locator('.result-meta')).toContainText('3 rows')
-    await page.getByRole('button', { name: "Ageing by Party's Name" }).click()
-    // As on a day (today to start with): the month's last day for month-end.
+    // American English (these tests' reader): aging, as of. India's reader sees ageing, as on.
+    await page.getByRole('button', { name: "Aging by Party's Name" }).click()
+    // As of a day (today to start with): the month's last day for month-end.
     const dialog = page.getByRole('dialog', { name: "Pending Amount by Party's Name" })
-    await expect(dialog.getByLabel('As on')).toBeFocused()
-    await dialog.getByLabel('As on').fill('2026-09-30')
-    await dialog.getByRole('button', { name: 'Show the ageing' }).click()
-    await expect(page.locator('.origin-chip')).toContainText("Ageing by Party's Name as on")
+    await expect(dialog.getByLabel('As of')).toBeFocused()
+    // The days a month-end asks about are a click away.
+    await dialog.getByRole('button', { name: /^Month end/ }).click()
+    await expect(dialog.getByRole('button', { name: /^Month end/ })).toHaveAttribute('aria-pressed', 'true')
+    await dialog.getByLabel('As of').fill('2026-09-30')
+    await dialog.getByRole('button', { name: 'Show the aging' }).click()
+    await expect(page.locator('.origin-chip')).toContainText("Aging by Party's Name as of")
     await expect(page.locator('.result-meta')).toContainText('3 rows · 10 columns')
     const header = page.locator('.sr-grid [role=columnheader]')
     await expect(header.nth(1)).toContainText('Not yet due')
@@ -696,5 +700,23 @@ test.describe('a bank’s own export', () => {
     await expect(page.locator('.result-meta')).toContainText('14 rows')
     await page.getByRole('button', { name: /^Leave out .*4 undated lines/ }).click()
     await expect(page.locator('.result-meta')).toContainText('9 of 14 rows')
+  })
+})
+
+test.describe('a register from the books', () => {
+  test('a QuickBooks register’s Debit is money in: its signed amount and balance check go that way', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      'Date,Type,Num,Name,Memo,Split,Debit,Credit,Balance',
+      '2024-07-01,Deposit,,Acme Corp,Invoice 1001,Accounts Receivable,"1,723.10",,"11,723.10"',
+      '2024-07-03,Check,1042,Office Depot,Supplies,Office Expenses,,250.00,"11,473.10"',
+      '2024-07-05,Deposit,,Globex,Invoice 1002,Accounts Receivable,"3,000.00",,"14,473.10"',
+      '2024-07-09,Check,1043,City Power,Electric,Utilities,,410.25,"14,062.85"',
+    ]
+    await page.locator('input[type=file]').setInputFiles([file('checking.csv', `${csv.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('4 rows')
+    await page.getByRole('button', { name: 'Add signed amount (Debit − Credit)' }).click()
+    await expect(page.locator('.checks .is-ok', { hasText: 'Every Balance follows from the row above (3 rows checked)' })).toBeVisible()
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('1,723.10')
   })
 })

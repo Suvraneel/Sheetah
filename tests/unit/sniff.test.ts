@@ -30,3 +30,12 @@ test('what isn’t a table says what to do instead', () => {
   expect(notATable('text', 'a.csv')).toBeNull()
   expect(notATable('html', 'a.xls')).toBeNull()
 })
+
+test('a report’s title lines without separators are found above its table', async () => {
+  const { titleLines } = await import('../../src/engine/sniff')
+  const qb = ['Sales by Customer Detail', 'Acme Inc', 'January - June 2024', '', ',Date,Transaction Type,Num,Amount', 'Wayne Enterprises,,,,', ',06/18/2024,Sales Receipt,1001,"1,200.00"', ',06/19/2024,Invoice,1002,300.00', 'Total for Wayne Enterprises,,,,"1,500.00"'].join('\n')
+  expect(titleLines(qb)).toEqual({ sep: ',', skip: 4 })
+  // A plain table: nothing above its names.
+  expect(titleLines('a,b\n1,2\n3,4\n')).toBe(null)
+  expect(titleLines('just one line of text\nand another\n')).toBe(null)
+})

@@ -55,7 +55,7 @@ test('a column’s identifiers are counted and the wrong ones named, in their or
   ) t("Supplier GSTIN")`)
   const c = col('Supplier GSTIN')
   const found = readIdRow(c.name, 'gstin', (await q(idCheckSql('vendors', c, 'gstin')))[0])
-  expect(found).toEqual({ column: 'Supplier GSTIN', kind: 'gstin', n: 4, bad: 2, examples: ['27AAPFU0939F1ZW', '29ABCDE1234F1Z'] })
+  expect(found).toEqual({ column: 'Supplier GSTIN', kind: 'gstin', n: 4, bad: 2, examples: ['27AAPFU0939F1ZW', '29ABCDE1234F1Z'], shaped: 4 })
   expect(idCheckText([found])).toEqual({
     kind: 'ids',
     ok: false,
@@ -78,4 +78,12 @@ test('a PAN that isn’t its GSTIN’s is named (a GSTIN on a TAN isn’t compar
   const pans = readIdRow('pan', 'pan', (await q(panMatchSql('vm', col('gstin'), col('pan'))))[0])
   expect([pans.bad, pans.examples]).toEqual([1, ['AAACC1260D (GSTIN 24AAACC1206D1ZM)']])
   expect(idCheckText([{ column: 'gstin', kind: 'gstin', n: 3, bad: 0, examples: [] }], pans)?.text).toBe('1 PAN doesn’t match its GSTIN: AAACC1260D (GSTIN 24AAACC1206D1ZM)')
+})
+
+test('a GST Number or a PAN from elsewhere (Canada’s GST, a card’s number) isn’t checked as India’s', async () => {
+  await q(`CREATE OR REPLACE TABLE abroad AS SELECT * FROM (VALUES ('123456789RT0001', '411111******9557'), ('987654321RT0001', '550000******0004')) t("GST Number", "PAN")`)
+  const gst = readIdRow('GST Number', 'gstin', (await q(idCheckSql('abroad', col('GST Number'), 'gstin')))[0])
+  const pan = readIdRow('PAN', 'pan', (await q(idCheckSql('abroad', col('PAN'), 'pan')))[0])
+  expect([gst.bad, gst.shaped, pan.bad, pan.shaped]).toEqual([2, 0, 2, 0])
+  expect(idCheckText([gst, pan])).toBe(null)
 })
