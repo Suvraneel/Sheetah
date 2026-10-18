@@ -64,7 +64,7 @@ export function startersFor(table: string, cols: StarterColumn[], rows?: number)
   // name says otherwise (salary). Distinct counts are estimates, off by up to ~20%: hence 0.8.
   const unique = (c: StarterColumn) =>
     isInt(c) && rows !== undefined && rows > 10 && (c.distinct ?? 0) >= rows * 0.8 && rank(c.name, MEASURE_WORDS) === MEASURE_WORDS.length
-  const measure = cols
+  const numeric = cols
     .filter((c) => isNumericType(c.type) && !NOT_A_MEASURE.test(nameKey(c.name)) && !unique(c) && (c.distinct ?? 3) > 2)
     // Names that sound like amounts first, then decimals before whole numbers.
     .sort((a, b) => rank(a.name, MEASURE_WORDS) - rank(b.name, MEASURE_WORDS) || Number(isInt(a)) - Number(isInt(b)))[0]
@@ -75,11 +75,17 @@ export function startersFor(table: string, cols: StarterColumn[], rows?: number)
     /(^|[^a-z])(rate|price|amount|amt|cost|tax|value|total|balance|bal|qty|quantity|debit|credit|withdrawal|deposit|dr|cr)s?$|%$/i.test(
       c.name.trim().replace(/\s*\([^)]*\)$/, '').replace(/[.:]+$/, ''),
     )
+  // An amount still written as text ("1,145.84" in a QuickBooks report) that sounds more like the amount than
+  // the numbers do (Amount beside Qty): summed read as a number, not passed over for Qty.
+  const textAmount = cols
+    .filter((c) => TEXT.test(c.type) && !/BOOLEAN/i.test(c.type) && amountLike(c) && !/%$/.test(c.name.trim()) && rank(c.name, MEASURE_WORDS) < MEASURE_WORDS.length)
+    .sort((a, b) => rank(a.name, MEASURE_WORDS) - rank(b.name, MEASURE_WORDS))[0]
+  const measure = textAmount && (!numeric || rank(textAmount.name, MEASURE_WORDS) < rank(numeric.name, MEASURE_WORDS)) ? textAmount : numeric
   const category = cols
     .filter((c) => TEXT.test(c.type) && c.distinct !== undefined && c.distinct >= 2 && c.distinct <= 60 && !amountLike(c))
     .sort((a, b) => rank(a.name, CATEGORY_WORDS) - rank(b.name, CATEGORY_WORDS) || (a.distinct ?? 0) - (b.distinct ?? 0))[0]
   const time = cols.find((c) => TEMPORAL.test(c.type) && !/birth|dob/i.test(c.name))
-  const m = measure && sqlName(measure.name)
+  const m = measure && (measure === textAmount ? `number_from_text(${sqlName(measure.name)})` : sqlName(measure.name))
   const total = measure && sqlName(`total_${measure.name.replace(/\W+/g, '_').toLowerCase()}`)
   const out: Starter[] = []
 

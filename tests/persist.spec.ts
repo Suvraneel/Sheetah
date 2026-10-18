@@ -89,3 +89,17 @@ test('leaving with tables that aren’t kept asks first; kept ones don’t', asy
   await expect(page.locator('.toast', { hasText: 'Restored 1 table' })).toBeVisible({ timeout: 90_000 })
   expect(asked).toEqual(['beforeunload'])
 })
+
+test('kept tables come back with the work as it was: the query on screen, run again', async ({ page }) => {
+  await openApp(page)
+  await page.locator('input[type=file]').setInputFiles([{ name: 'sales.csv', mimeType: 'text/csv', buffer: Buffer.from('city,amount\nPune,10\nGoa,20\nPune,5\n') }])
+  await expect(page.locator('.result-meta')).toContainText('3 rows')
+  await page.getByLabel('Keep my tables in this browser').check()
+  await expect.poll(() => hasSnapshot(page, 'sales.arrow')).toBe(true)
+  await runSql(page, 'SELECT city, sum(amount) AS total FROM sales GROUP BY city ORDER BY total DESC')
+  await expect(page.locator('.result-meta')).toContainText('2 rows')
+  await page.reload()
+  await expect(page.locator('.toast', { hasText: 'and the work as you left it' })).toBeVisible({ timeout: 90_000 })
+  await expect(page.locator('.result-meta')).toContainText('2 rows')
+  await expect(page.locator('.cm-content')).toContainText('GROUP BY city')
+})

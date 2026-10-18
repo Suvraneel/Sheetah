@@ -61,3 +61,11 @@ test('a statement’s amounts stored as text are no categories, however they are
   const labels = startersFor('stmt', statement, 500).map((s) => s.label)
   expect(labels.filter((l) => /^Rows by (Withdrawal|Deposit|Amount)/.test(l))).toEqual([])
 })
+
+test('an amount still written as text is summed as a number, not passed over for the quantity', async () => {
+  await q(`CREATE OR REPLACE TABLE qbr AS SELECT ['Acme', 'Beta', 'Cyan'][1 + i % 3] AS customer, (i % 7 + 1) AS qty, '1,' || lpad((i * 37 % 1000)::VARCHAR, 3, '0') || '.50' AS "Amount" FROM range(30) t(i)`)
+  const starters = startersFor('qbr', await columnsOf('qbr'), 30)
+  expect(starters.map((s) => s.label)).toEqual(['Amount by customer', 'Top 10 by Amount', 'Summary of every column'])
+  const rows = await q(starters[0].sql)
+  expect(rows.reduce((n, r) => n + Number(r.total_amount), 0)).toBeGreaterThan(30_000)
+})

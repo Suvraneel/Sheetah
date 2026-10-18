@@ -201,6 +201,11 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   (the crash screen, a part that failed) (`tests/fixtures.ts`), even when what it checked on screen looked right.
 
 ### Changed
+- **Kept tables come back with the work**: with *Keep my tables* on, a reload brings back the query on screen (a
+  stack, a pivot, a table with its steps) and each table's steps, not just the tables. Only a query that reads is
+  run again (never a CREATE or DELETE).
+- Example queries sum an amount still written as text (*Amount by customer*, read as a number) rather than passing
+  it over for the quantity beside it.
 - **Excel exports are about 40% faster and smaller**: each distinct text is written once (shared strings, as Excel
   does), the checksum comes from the browser's own compressor, and the page draws between every thousand rows
   instead of freezing on a million.

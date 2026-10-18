@@ -121,6 +121,10 @@ const num = (n: number | null) => (n === null ? '—' : Math.abs(n) >= 1e6 ? com
 const HISTORY_KEY = 'sheetah:history'
 const REMEMBER_KEY = 'sheetah:remember-history'
 const KEEP_KEY = 'sheetah:keep-tables'
+/** With tables kept: where the work was (the query on screen and its steps, each table's steps), to come back to. */
+const WORK_KEY = 'sheetah:kept-work'
+/** One statement that only reads (SELECT, WITH, a pivot…): safe to run again on its own. Never a CREATE, DELETE, DROP. */
+const readsOnly = (sql: string) => splitStatements(sql).length === 1 && /^\s*(--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*(SELECT|WITH|FROM|PIVOT|UNPIVOT|VALUES|TABLE|SUMMARIZE|DESCRIBE)\b/i.test(sql)
 const EDITOR_KEY = 'sheetah:editor-height'
 const editorElement = () => document.getElementById('sql-editor')
 const STARTERS_KEY = 'sheetah:starters'
@@ -865,7 +869,28 @@ export default function App() {
         setTables(metas)
         setBusy(null)
         if (names.length) {
-          say(`Restored ${names.length} ${names.length === 1 ? 'table' : 'tables'} kept in this browser`)
+          const restored = `Restored ${names.length} ${names.length === 1 ? 'table' : 'tables'} kept in this browser`
+          // Where the work was: each table's steps, and the query on screen (a stack, a pivot, a table tidied).
+          let work: { base?: unknown; ops?: unknown; steps?: unknown } = {}
+          try {
+            work = JSON.parse(store.get(WORK_KEY) ?? '{}') as typeof work
+          } catch {
+            /* nothing to come back to */
+          }
+          if (Array.isArray(work.steps))
+            for (const [k, v] of work.steps as [string, { ops: Ops; sig: string }][]) if (typeof k === 'string' && v?.ops && typeof v.sig === 'string') stepsByTable.current.set(k, v)
+          const wb = typeof work.base === 'string' ? work.base : ''
+          const from = wb ? referencedTables(wb, metas.map((t) => t.name)) : []
+          if (wb && from.length && readsOnly(wb) && work.ops && typeof work.ops === 'object') {
+            const wops = { ...emptyOps(), ...(work.ops as Partial<Ops>) }
+            const run = compose(wb, wops)
+            setEditor(run)
+            if (await execute(run, { base: wb, ops: wops, remember: false })) {
+              say(`${restored}, and the work as you left it`)
+              return
+            }
+          }
+          say(restored)
           const res = await openTable(names[0])
           if (res) scanHints(res, 'all', metas)
         }
@@ -873,7 +898,18 @@ export default function App() {
         setBusy(null)
       }
     })()
-  }, [ready, say, openTable, scanHints])
+  }, [ready, say, openTable, scanHints, execute])
+
+  // With tables kept: where the work is, so a reload comes back to it (not for the sample data's queries).
+  useEffect(() => {
+    if (!keepTables || !base.trim()) return
+    const from = referencedTables(
+      base,
+      tables.map((t) => t.name),
+    )
+    if (!from.length || from.some((t) => demoTables.current.has(t)) || !readsOnly(base)) return
+    store.set(WORK_KEY, JSON.stringify({ base, ops, steps: [...stepsByTable.current] }))
+  }, [base, ops, keepTables, tables])
 
   // Keep snapshots in step with the tables: save new or changed ones, delete dropped ones.
   useEffect(() => {
@@ -926,6 +962,7 @@ export default function App() {
       say('Your tables will be kept in this browser')
     } else {
       store.remove(KEEP_KEY)
+      store.remove(WORK_KEY)
       await syncQueue.current
       await clearSaved()
       snapshots.current.clear()
