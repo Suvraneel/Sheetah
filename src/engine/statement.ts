@@ -126,7 +126,8 @@ export function ageingColumns(columns: { name: string; type: string }[]): Ageing
   const party = columns.find((c) => /^VARCHAR/i.test(c.type) && PARTY.test(nameKey(c.name)))
   const dates = columns.filter(isTemporal)
   const due = dates.find((c) => /(^|_)due(_|$)/.test(nameKey(c.name)))
-  const bill = dates.find((c) => c !== due)
+  // The bill's own date: not the day it was paid or received.
+  const bill = dates.find((c) => c !== due && !/(^|_)(paid|payment|receipt|received|cleared|realised|realized)(_|$)/.test(nameKey(c.name)))
   const date = due ?? dates[0]
   if (!amount || !party || !date) return null
   return { party: party.name, amount: amount.name, date: date.name, by: due ? 'due' : 'bill', ...(bill ? { bill: bill.name } : {}) }

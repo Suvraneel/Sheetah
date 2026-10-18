@@ -81,7 +81,11 @@ export function makeFormatter(col: ColumnInfo, sample: (string | null | undefine
     // Whole numbers stay whole (8820.0 → 8,820); if any value has decimals, the column shows two, like
     // money in a spreadsheet: 1,200.00 and 12,450.50 line up, never 1,200.0 next to 216.00. A column named
     // for money (Withdrawal Amt., Balance, Debit) always shows two: its whole rupees beside another's paise.
-    const money = /(^|_)(amount|amt|balance|bal|debit|credit|dr|cr|withdrawals?|deposits?|price|tax|gst|igst|cgst|sgst|net|paid|received|pending|outstanding|due)(_|$)/.test(nameKey(col.name))
+    // (A pivot's sums too: "Sum of Taxable Value".) Not a count of things: "Total Units", "Net Qty".
+    const key = nameKey(col.name)
+    const money =
+      /(^|_)(amount|amt|balance|bal|debit|credit|dr|cr|withdrawals?|deposits?|price|tax|gst|igst|cgst|sgst|tds|net|paid|received|pending|outstanding|due|value|cost|revenue|fees?|charges|salary|income|expenses?|profit|spend)(_|$)/.test(key) &&
+      !/(^|_)(units?|qty|quantity|count|pcs|nos|items|orders|rows|days|hours)(_|$)/.test(key)
     const decimals = money || values.slice(0, 200).some((v) => /\.\d*[1-9]\d*$/.test(v)) ? 2 : 0
     const f = fixed[decimals]
     return (v) => {

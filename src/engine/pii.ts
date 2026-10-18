@@ -66,8 +66,9 @@ export async function detectPii(result: ResultSet): Promise<Detection[]> {
     if (!best) {
       // Kinds recognised by name: names, birth dates, addresses (and the others when the column name says so).
       const named = RULES.find((r) => nameSuggests(r, c.name) && (r.kind === 'birthdate' ? true : TEXTY.test(c.type) && !TEMPORAL.test(c.type)))
-      // A phone or postal code column by its name alone (written any country's way); names unless they're companies.
-      const companies = nonEmpty > 0 && Number(counts[`co${i}`] ?? 0) / nonEmpty >= 0.4
+      // A phone or postal code column by its name alone (written any country's way); names unless nearly all are
+      // companies (a few people among them are still people).
+      const companies = nonEmpty > 0 && Number(counts[`co${i}`] ?? 0) / nonEmpty >= 0.9
       if (named && !(named.kind === 'name' && companies) && (named.kind === 'birthdate' || named.kind === 'phone' || named.kind === 'postcode' || !named.pattern || nonEmpty === 0))
         best = { column: c.name, kind: named.kind, ratio: null }
     }

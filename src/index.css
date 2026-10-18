@@ -244,6 +244,7 @@ h1, h2, h3 { margin: 0; }
 }
 .chip:hover { box-shadow: inset 0 0 0 1px var(--accent-ring); }
 .chip:active { transform: scale(0.96); }
+.colmenu:focus { outline: none; }
 .chip.is-on { box-shadow: inset 0 0 0 1.5px var(--accent); color: var(--accent-ink, var(--text)); }
 .ageing-days .chip { font-family: inherit; }
 

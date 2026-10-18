@@ -15,7 +15,7 @@ export const GRAINS: { id: Grain; label: string }[] = [
   // India's (and others'): April to March, FY 2024-25. Its quarters start in April.
   { id: 'fy', label: 'Financial year (Apr–Mar)' },
   { id: 'quarter', label: 'Quarter' },
-  { id: 'fquarter', label: 'Financial quarter' },
+  { id: 'fquarter', label: 'Financial quarter (Q1 Apr–Jun)' },
   { id: 'month', label: 'Month' },
   { id: 'week', label: 'Week' },
   { id: 'day', label: 'Day' },

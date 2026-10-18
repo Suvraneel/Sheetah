@@ -2,7 +2,7 @@ import { DuckDBDataProtocol } from '@duckdb/duckdb-wasm'
 import { CancelledError, ensureExtension, getEngine, isCancel, quoteIdent, quoteLiteral, sandboxPath, sendAll, withRunLock } from './db'
 import { FileKindError } from './load-errors'
 import { LOCALE, tableNameFor } from './sql'
-import { dateOrders } from './tables'
+import { dateOrders, datesGuessed } from './tables'
 import type { XlsxReply, XlsxSheet } from './xlsx.worker'
 
 export { FileKindError } from './load-errors'
@@ -136,6 +136,7 @@ async function readDates(name: string, path: string, read: (opts: string) => str
           await sendAll(`ALTER TABLE ${quoteIdent(tmp)} RENAME TO ${quoteIdent(name)}`)
           await sendAll('COMMIT')
           order = habit
+          datesGuessed.add(name.toLowerCase())
         } catch (e) {
           await sendAll('ROLLBACK').catch(() => {})
           throw e
@@ -197,6 +198,7 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
     const { db } = await getEngine()
     const name = tableNameFor(file.name, await takenNames(taken))
     dateOrders.delete(name.toLowerCase()) // a name used before (that table since dropped): read afresh
+    datesGuessed.delete(name.toLowerCase())
     const { fn, materialize } = readerFor(file.name)
     if (fn === 'read_parquet') await ensureExtension('parquet')
     if (fn === 'read_json_auto') await ensureExtension('json')
@@ -217,11 +219,12 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
       )
     } catch (e) {
       const t = !isCancel(e) && fn === 'read_csv_auto' ? await titles().catch(() => null) : null
-      if (!t) {
+      const read = t && (await sendAll(`CREATE TABLE ${quoteIdent(name)} AS SELECT * FROM ${fromNames(t)}`).then(() => null, (again: unknown) => again))
+      if (!t || read) {
         await db.dropFile(virtualPath).catch(() => {})
-        throw isCancel(e) ? new CancelledError() : e
+        const why = read ?? e
+        throw isCancel(why) ? new CancelledError() : why
       }
-      await sendAll(`CREATE TABLE ${quoteIdent(name)} AS SELECT * FROM ${fromNames(t)}`)
     }
     // Rows with more or fewer fields than the header make the sniffer give up and read each line as
     // one text column ("name,city,amount"). Read it again with that separator, padding short rows.
@@ -346,6 +349,7 @@ async function ingestSheets(file: File, sheets: XlsxSheet[], taken: Set<string>,
       const name = tableNameFor(reply.sheets.length === 1 ? `${stem}.x` : `${stem} ${sheet.name}.x`, used)
       used.add(name)
       dateOrders.delete(name.toLowerCase())
+      datesGuessed.delete(name.toLowerCase())
       const path = sandboxPath(`${name}__sheet.csv`)
       await db.registerFileText(path, sheet.csv)
       const read = (opts: string) => `read_csv_auto(${quoteLiteral(path)}, header = true${opts ? `, ${opts}` : ''})`

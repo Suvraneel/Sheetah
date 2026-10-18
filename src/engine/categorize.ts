@@ -51,6 +51,7 @@ const FILLER = new Set(
   `upi neft imps rtgs nach ach ecs pos cms mmt inb ib net txn trf transfer tfr payment paid pay to from by for the and of in
   cr dr ref no bank ltd pvt private limited india indian co inc llp com www http https ok id via mob mobile acct ac account
   wdl withdrawal deposit chq cheque clg branch
+  purchase debit card visa mastercard autopay pymt pmt tst sq mkt web online recurring help pending
   hdfc icici sbi axis kotak yes yesb yesbank idfc indusind pnb bob canara union federal rbl paytm paytmqr pytm phonepe gpay googlepay
   ybl okicici okhdfcbank oksbi okaxis apl ibl axl srl sbin utib icic kkbk barb punb ubin cnrb idib ioba mahb ucba indb kotk ratn fdrl`
     .split(/\s+/)
@@ -89,18 +90,18 @@ export function knownWordsSql(table: string, ref: string): string {
 const KNOWN: Record<string, string[]> = {
   // First: a charge names what it's for ("ATM CHGS", "SMS CHGS+GST"), and it's a charge, not that.
   'Charges and fees': ['charges', 'chrg', 'chgs', 'fee', 'fees', 'penalty', 'amc'],
-  'Food and dining': ['swiggy', 'zomato', 'dominos', 'mcdonalds', 'starbucks', 'restaurant', 'cafe', 'eatsure', 'blinkit', 'zepto', 'bigbasket', 'dunzo', 'instamart'],
-  Shopping: ['amazon', 'flipkart', 'myntra', 'ajio', 'nykaa', 'meesho', 'tatacliq', 'decathlon', 'ikea'],
-  Travel: ['uber', 'ola', 'rapido', 'irctc', 'makemytrip', 'goibibo', 'indigo', 'vistara', 'airindia', 'redbus', 'cleartrip', 'fastag'],
-  'Bills and recharges': ['airtel', 'jio', 'vodafone', 'bsnl', 'tatasky', 'electricity', 'bescom', 'tneb', 'msedcl', 'billdesk', 'broadband', 'recharge'],
+  'Food and dining': ['swiggy', 'zomato', 'dominos', 'mcdonalds', 'starbucks', 'restaurant', 'cafe', 'eatsure', 'blinkit', 'zepto', 'bigbasket', 'dunzo', 'instamart', 'chipotle', 'doordash', 'grubhub', 'ubereats', 'dunkin', 'kroger', 'safeway', 'wholefds'],
+  Shopping: ['amazon', 'flipkart', 'myntra', 'ajio', 'nykaa', 'meesho', 'tatacliq', 'decathlon', 'ikea', 'walmart', 'costco', 'ebay', 'etsy', 'bestbuy'],
+  Travel: ['uber', 'ola', 'rapido', 'irctc', 'makemytrip', 'goibibo', 'indigo', 'vistara', 'airindia', 'redbus', 'cleartrip', 'fastag', 'lyft', 'airbnb', 'expedia', 'marriott', 'hilton'],
+  'Bills and recharges': ['airtel', 'jio', 'vodafone', 'bsnl', 'tatasky', 'electricity', 'bescom', 'tneb', 'msedcl', 'billdesk', 'broadband', 'recharge', 'comcast', 'xfinity', 'verizon', 'tmobile'],
   'Cash withdrawals': ['atm', 'atw', 'nwd', 'cwdr'],
   Salary: ['salary', 'payroll'],
   'GST and taxes': ['gst', 'cbic', 'gstn', 'tds', 'cbdt', 'incometax', 'advtax'],
   Rent: ['rent'],
   Investments: ['zerodha', 'groww', 'mutual', 'sip', 'upstox', 'kuvera', 'nps', 'ppf'],
-  Fuel: ['petrol', 'fuel', 'hpcl', 'bpcl', 'iocl', 'indianoil', 'shell'],
+  Fuel: ['petrol', 'fuel', 'hpcl', 'bpcl', 'iocl', 'indianoil', 'shell', 'chevron', 'exxon', 'exxonmobil'],
   Health: ['pharmacy', 'apollo', 'medplus', 'hospital', 'clinic', 'netmeds', 'pharmeasy', 'practo'],
-  Subscriptions: ['netflix', 'spotify', 'hotstar', 'youtube'],
+  Subscriptions: ['netflix', 'spotify', 'hotstar', 'youtube', 'hulu', 'disneyplus'],
   Interest: ['interest'],
 }
 

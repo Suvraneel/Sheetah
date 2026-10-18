@@ -268,6 +268,22 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   says to tap for exact values.
 
 ### Fixed
+- Dates that read both ways, read the reader's way at load, are offered the other way as one click (*Read paid_on
+  day first*): nothing in the file said which was meant.
+- A table opened again keeps its steps only while it has the same rows and columns and the steps still read it; one
+  made again under its name opens as it is.
+- After a filter or search, leaving lines out no longer looks the columns over again on the filtered rows.
+- *Add signed amount* clicked before the look-over had finished on a QuickBooks or Xero register signed it the bank's
+  way round: it now asks the running balance first.
+- A CSV whose rows end in a trailing separator was taken for a report with title lines; one that failed to read after
+  its title lines were found kept the file registered.
+- Checks are said to screen readers once, as they arrive, not again as they fold and open. On a touch screen the
+  column menu takes focus itself, so the keyboard doesn't open.
+- Columns named for money (Taxable Value, Cost, Fees, Salary…) show two decimals; a count of things doesn't, even
+  when named Total or Net (*Total Units*, *Net Qty*).
+- Ageing took a payment's date (*Paid On*, *Receipt Date*) for the bill's own when leaving out bills after the day.
+- A Customer column with a few people among the companies is personal data again; US card and merchant words
+  (Walmart, Lyft, Comcast; *PURCHASE*, *AUTOPAY*) are read for categories.
 - Tie-outs counted a Tally ledger's closing balance line (and not its opening, which its Current Total includes):
   a correct ledger was flagged. "Total for Acme Corp" lines weren't seen as totals.
 - Ageing as of a past day counted bills raised after it.

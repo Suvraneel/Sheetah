@@ -39,3 +39,9 @@ test('a report’s title lines without separators are found above its table', as
   expect(titleLines('a,b\n1,2\n3,4\n')).toBe(null)
   expect(titleLines('just one line of text\nand another\n')).toBe(null)
 })
+
+test('rows ending in a trailing separator aren’t a header with title lines above it', async () => {
+  const { titleLines } = await import('../../src/engine/sniff')
+  const trailing = ['Date,Narration,Amount', '2024-01-01,Item 0,0,', '2024-01-02,Item 1,1,', '2024-01-03,Item 2,2,'].join('\n')
+  expect(titleLines(trailing)).toBe(null)
+})

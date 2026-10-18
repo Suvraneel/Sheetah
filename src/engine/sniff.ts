@@ -86,8 +86,9 @@ export function titleLines(text: string): { sep: string; skip: number } | null {
     for (const c of counts) if (c > 1) tally.set(c, (tally.get(c) ?? 0) + 1)
     const [common, times] = [...tally].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0] ?? [0, 0]
     if (common < 2 || times < 2) continue
-    const skip = counts.findIndex((c) => c === common)
-    if (skip > 0 && counts.slice(0, skip).every((c) => c < common)) return { sep, skip }
+    // Title lines have no separator at all; the column names are the first line with them, as many as most.
+    const skip = counts.findIndex((c) => c > 1)
+    if (skip > 0 && counts[skip] === common && counts.slice(0, skip).every((c) => c <= 1)) return { sep, skip }
   }
   return null
 }

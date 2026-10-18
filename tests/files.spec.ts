@@ -297,6 +297,8 @@ test.describe('dates that read both ways', () => {
     await expect(page.locator('.result-meta')).toContainText('3 rows')
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2024-01-02')
     await expect(page.getByRole('button', { name: /month first/ })).toHaveCount(0)
+    // Read that way only because nothing said otherwise: the other way is a click away.
+    await expect(page.getByRole('button', { name: 'Read paid_on day first' })).toBeVisible()
     // A day past the 12th settles it: 25/12/2024 is day first, whoever reads it.
     await page.locator('input[type=file]').setInputFiles([buf('paid_uk.csv', 'id,paid_on\n1,01/02/2024\n2,25/12/2024\n')])
     await expect(page.locator('.result-meta')).toContainText('2 rows')

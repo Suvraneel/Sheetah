@@ -16,12 +16,14 @@ test.describe('grid number formatting', () => {
     const price = makeFormatter(col('price', 'DOUBLE'), ['12.5', '3.25', '8820.0'])
     expect(price('8820.0')).toBe('8,820.00')
     expect(price('12.5')).toBe('12.50')
-    const whole = makeFormatter(col('total', 'DOUBLE'), ['8820.0', '12.0'])
+    const whole = makeFormatter(col('units', 'DOUBLE'), ['8820.0', '12.0'])
     expect(whole('8820.0')).toBe('8,820')
     expect(whole('0.0012')).toBe('0.0012') // small fractions stay readable
     expect(whole('inf')).toBe('inf')
     // Named for money: two decimals even when this column's are whole (beside one with paise).
     expect(makeFormatter(col('Withdrawal Amt.', 'DOUBLE'), ['118000.0'])('118000.0')).toBe('118,000.00')
+    expect(makeFormatter(col('Sum of Taxable Value', 'DOUBLE'), ['28800.0'])('28800.0')).toBe('28,800.00')
+    expect(makeFormatter(col('Net Qty', 'DOUBLE'), ['150.0'])('150.0')).toBe('150')
   })
 
   test('midnight-only timestamps show as dates; text is untouched', () => {

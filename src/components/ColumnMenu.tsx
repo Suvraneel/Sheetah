@@ -166,6 +166,10 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
   }, [anchor, profile, hist, cleanings])
 
   useEffect(() => {
+    if (coarse) ref.current?.focus({ preventScroll: true })
+  }, [])
+
+  useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose()
     }
@@ -225,7 +229,15 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
   const maxTop = Math.max(1, ...top.map((t) => t.count))
 
   return (
-    <div className="popover colmenu" ref={ref} style={{ left: pos.left, top: pos.top, maxHeight: window.innerHeight - pos.top - 12 }} role="dialog" aria-label={`Column ${column.name}`}>
+    <div
+      className="popover colmenu"
+      ref={ref}
+      style={{ left: pos.left, top: pos.top, maxHeight: window.innerHeight - pos.top - 12 }}
+      role="dialog"
+      aria-label={`Column ${column.name}`}
+      // On a touch screen the menu itself takes focus (a screen reader is in it), not the filter's text box.
+      tabIndex={-1}
+    >
       <div className="colmenu-head">
         <strong>{column.name}</strong>
         <span className="type-tag">{column.type.toLowerCase()}</span>

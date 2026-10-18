@@ -10,6 +10,9 @@ export const ACCEPTED = '.csv,.tsv,.txt,.gz,.json,.jsonl,.ndjson,.parquet,.xlsx,
 /** Tables whose dates were read day-first or month-first from text (by the CSV reader's guess). */
 export const dateOrders = new Map<string, 'dmy' | 'mdy'>()
 
+/** Tables whose dates read both ways (no day past the 12th), read the reader's way: offered the other way too. */
+export const datesGuessed = new Set<string>()
+
 export interface TableMeta {
   name: string
   kind: 'table' | 'view'

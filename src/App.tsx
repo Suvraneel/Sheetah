@@ -2,7 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type
 import { getEngine, sqlName } from './engine/db'
 import { ageingColumns, ledgerColumn, type AgeingColumns, monthlySql, signedAmount, signedNote, statementColumns } from './engine/statement'
 import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent, WORDS } from './engine/sql'
-import { ACCEPTED, dateOrders, listTables, type TableMeta } from './engine/tables'
+import { ACCEPTED, dateOrders, datesGuessed, listTables, type TableMeta } from './engine/tables'
 import { FileKindError } from './engine/load-errors'
 // Reading a file (CSV, Excel, Tally…) is loaded when one is opened, or when the page is idle.
 const ingest = () => import('./engine/ingest')
@@ -151,6 +151,14 @@ const store = {
 }
 /** A hint found by scanning a table, with the table's shape at the time (rows and columns). */
 type Hint<T> = { sig: string; value: T }
+/** Whether a table's kept steps still read it (its columns as they were): asked of the engine, cheaply. */
+const stepsFit = (sql: string) =>
+  getEngine()
+    .then(({ conn }) => conn.query(`DESCRIBE SELECT * FROM (\n${sql}\n)`))
+    .then(
+      () => true,
+      () => false,
+    )
 const tableSig = (t?: TableMeta) => (t ? `${t.rows ?? ''}|${t.columns.map((c) => `${c.name}:${c.type}`).join(',')}` : '')
 
 const loadHistory = (): HistoryItem[] => {
@@ -211,7 +219,7 @@ export default function App() {
   const tidiedRef = useRef(new Map<string, { table: string; sql: string; steps: number; marks: string[] }>())
   // Each table's steps, as last left (by its name, lower case): opened again from the list, it comes back
   // with them (Clear all shows it as in the file). New data under its name starts afresh.
-  const stepsByTable = useRef(new Map<string, Ops>())
+  const stepsByTable = useRef(new Map<string, { ops: Ops; sig: string }>())
   // Results made from other rows (counted, unpivoted, column names from a row): what they came from.
   const [origins, setOrigins] = useState<Record<string, { label: string; from: Step }>>({})
   const [future, setFuture] = useState<Step[]>([])
@@ -475,7 +483,7 @@ export default function App() {
   }, [])
 
   const execute = useCallback(
-    async (sql: string, opts: { base?: string; ops?: Ops; remember?: boolean; history?: 'keep' } = {}) => {
+    async (sql: string, opts: { base?: string; ops?: Ops; remember?: boolean; history?: 'keep'; baseRows?: number } = {}) => {
       const seq = ++runSeq.current
       lastRun.current = sql
       setPendingOps(null)
@@ -512,6 +520,7 @@ export default function App() {
           const read = plainTable(b)
           if (read) setStarterTable(read)
           if (!opts.ops || !hasOps(opts.ops)) setBaseRows({ base: b, rows: res.rowCount })
+          else if (opts.baseRows !== undefined) setBaseRows({ base: b, rows: opts.baseRows })
           if (opts.history !== 'keep') {
             // A new query (typed, a table, a starter…): its own undo history, starting from here.
             setPast([])
@@ -529,7 +538,8 @@ export default function App() {
             const tidy = tidySteps(opts.ops)
             if (tidy.count) tidiedRef.current.set(t.toLowerCase(), { table: t, sql: compose(shownBase, tidy.ops), steps: tidy.count, marks: stepMarks(tidy.ops) })
             else tidiedRef.current.delete(t.toLowerCase())
-            if (hasOps(opts.ops)) stepsByTable.current.set(t.toLowerCase(), opts.ops)
+            // With the table's shape then: made again under its name (other columns or rows), it starts afresh.
+            if (hasOps(opts.ops)) stepsByTable.current.set(t.toLowerCase(), { ops: opts.ops, sig: tableSig(tablesRef.current.find((x) => x.name.toLowerCase() === t.toLowerCase())) })
             else stepsByTable.current.delete(t.toLowerCase())
           }
         }
@@ -582,18 +592,19 @@ export default function App() {
   const openTable = useCallback(
     async (name: string) => {
       const sql = `SELECT * FROM ${sqlName(name)}`
-      // Back to a table tidied before: with its steps (each a chip; Clear all shows the file as it is).
-      const kept = stepsByTable.current.get(name.toLowerCase())
-      const run = kept ? compose(sql, kept) : sql
+      // Back to a table tidied before: with its steps (each a chip; Clear all shows the file as it is), while the
+      // table is as it was then and the steps still read it (not one made again under its name).
+      const meta = tablesRef.current.find((t) => t.name.toLowerCase() === name.toLowerCase())
+      let kept = stepsByTable.current.get(name.toLowerCase())
+      if (kept && (kept.sig !== tableSig(meta) || !(await stepsFit(compose(sql, kept.ops))))) {
+        stepsByTable.current.delete(name.toLowerCase())
+        kept = undefined
+      }
+      const run = kept ? compose(sql, kept.ops) : sql
       setEditor(run)
       // Opened afresh, its rows as in the file: what the file and its scan found stays, the steps' checks go.
       if (!kept) forgetChecks(sql, true)
-      const res = await execute(run, { base: sql, ops: kept ?? emptyOps(), remember: false })
-      if (res || !kept) return res
-      // Steps that no longer fit (the table was made again under its name): the table as it is.
-      stepsByTable.current.delete(name.toLowerCase())
-      setEditor(sql)
-      return execute(sql, { base: sql, ops: emptyOps(), remember: false })
+      return execute(run, { base: sql, ops: kept?.ops ?? emptyOps(), remember: false, ...(kept && meta?.rows != null ? { baseRows: meta.rows } : {}) })
     },
     [execute, forgetChecks],
   )
@@ -652,7 +663,8 @@ export default function App() {
               .then((o) => setOrientHints((m) => ({ ...m, [key]: { sig, value: o ? [o] : [] } }))),
             emptyTextColumns(res).then((cols) => setEmptyHints((m) => ({ ...m, [key]: { sig, value: cols } }))),
             // Dates the file reader read the other way round from how this reader writes them (01/02: 1 Feb or Jan 2).
-            read && dateOrders.has(read) && dateOrders.get(read) !== DATE_HABIT
+            // (Or read the reader's way only because nothing said otherwise: the other way is offered too.)
+            read && dateOrders.has(read) && (dateOrders.get(read) !== DATE_HABIT || datesGuessed.has(read))
               ? ambiguousDates(res).then((cols) => setDateHints((m) => ({ ...m, [key]: { sig, value: cols } })))
               : Promise.resolve(),
           )
@@ -930,7 +942,9 @@ export default function App() {
       setOps(next)
       // Lines left out (a summary below the transactions, total lines): its columns are looked over again
       // without them, so text that's all dates or amounts now is offered for converting.
-      const dropped = !!next.drop?.length && JSON.stringify(next.drop) !== JSON.stringify(ops.drop ?? [])
+      // Only while nothing else narrows or hides the rows (a filter's rows aren't the table's).
+      const onlyTidy = !next.filters.length && !next.search && !next.dedupe && !next.hidden?.length && !next.lookups?.length && !next.computed.length
+      const dropped = onlyTidy && !!next.drop?.length && JSON.stringify(next.drop) !== JSON.stringify(ops.drop ?? [])
       void execute(sql, { ops: next, remember: false, history: 'keep' }).then((res) => {
         if (res && dropped && plainTable(base)) scanHints(res, 'text', undefined, base)
         if (res !== null || wantedOps.current !== null) return
@@ -1018,20 +1032,28 @@ export default function App() {
    * the rows are in their own order, a check that each balance follows from the one before.
    */
   const addSignedAmount = async () => {
-    if (!result || !statement || !amountExpr) return
+    if (!result || !named || !statement || !amountExpr) return
     const taken = new Set(result.columns.map((c) => c.name.toLowerCase()))
     const name = ['amount', 'net_amount', 'signed_amount'].find((n) => !taken.has(n)) ?? `amount_${result.columns.length}`
     const rows = result
     const on = base
     const inOrder = !ops.sort && !ops.filters.length && !ops.search && !ops.dedupe
+    // Which way round Debit and Credit go, if the look-over hasn't said yet (clicked at once, or stacked rows):
+    // asked now, by the running balance.
+    let st = statement
+    if (st === named && !named.books && rows.table && hintFor(orientHints) === null) {
+      const o = await (await import('./engine/month-end')).orientation(rows.table, rows.columns).catch(() => null)
+      if (o === 'books') st = { ...named, credit: named.debit, debit: named.credit, books: true }
+    }
+    const expr = st === statement ? amountExpr : signedAmount(st, isNum)
     reveal.current = name
-    const note = signedNote(statement)
-    applyOps({ ...ops, computed: [...ops.computed.filter((c) => c.name !== name), { name, expr: amountExpr, note }] })
+    const note = signedNote(st)
+    applyOps({ ...ops, computed: [...ops.computed.filter((c) => c.name !== name), { name, expr, note }] })
     say(`Added ${name}: ${note}`)
-    if (!statement.balance || !inOrder || !rows.table) return
+    if (!st.balance || !inOrder || !rows.table) return
     const release = holdResult(rows)
     try {
-      const found = await (await import('./engine/month-end')).balanceOf(rows, { ...statement, balance: statement.balance })
+      const found = await (await import('./engine/month-end')).balanceOf(rows, { ...st, balance: st.balance })
       addChecks(on, [found && { ...found, step: name }])
     } catch {
       /* the column is added; the check is a bonus */
@@ -1699,7 +1721,11 @@ export default function App() {
   const isNum = (name: string) => !!result?.columns.find((c) => c.name === name)?.numeric
   const amountExpr = statement ? signedAmount(statement, isNum) : null
   // Added already, even if its formula has changed since (the columns were converted after): not offered twice.
-  const amountHere = statement && !ops.computed.some((c) => c.expr === amountExpr || c.note === signedNote(statement)) ? statement : null
+  // (Either way round: a register turned round once the look-over said so has its amount already.)
+  const amountHere =
+    statement && named && !ops.computed.some((c) => c.expr === amountExpr || c.note === signedNote(statement) || c.note === signedNote({ ...named, credit: named.debit, debit: named.credit }))
+      ? statement
+      : null
   // Once a statement's amount is signed: its month-by-month summary (by its date column), and its narrations
   // grouped into categories (for a pivot by month).
   const monthlyHere = statement && !amountHere ? (result?.columns.find(isTemporal)?.name ?? null) : null
@@ -2122,7 +2148,7 @@ export default function App() {
                 fill={fillHere.length ? fillHere : null}
                 empty={emptyHere.length ? emptyHere : null}
                 spaces={spacesHere.length ? spacesHere : null}
-                dates={datesHere.length ? { columns: datesHere, read: DATE_HABIT === 'mdy' ? 'dmy' : 'mdy' } : null}
+                dates={datesHere.length ? { columns: datesHere, read: (openName && dateOrders.get(openName)) || (DATE_HABIT === 'mdy' ? 'dmy' : 'mdy') } : null}
                 onSwapDates={(cols) => applyOps(withCleans(cols.map((column): Clean => ({ column, kind: 'swapdm' })).reduce(addClean, ops.clean ?? [])))}
                 onTrim={(cols) => applyOps(withCleans(cols.map((column): Clean => ({ column, kind: 'trim' })).reduce(addClean, ops.clean ?? [])))}
                 onHideEmpty={(cols) => applyOps({ ...ops, hidden: [...new Set([...(ops.hidden ?? []), ...cols])] })}
