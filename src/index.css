@@ -955,6 +955,11 @@ kbd {
 .result-meta { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .result-meta strong { color: var(--text); font-weight: 700; }
 .op-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.op-actions { display: inline-flex; align-items: center; gap: 6px; }
+/* A view's steps in the save dialog, the SQL they make folded under them. */
+.view-steps { margin: 4px 0 10px; padding-left: 22px; font-size: 13.5px; line-height: 1.6; }
+.view-sql summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.view-sql[open] summary { margin-bottom: 6px; }
 .op-group-toggle { font-size: 12.5px; }
 /* A chip for several steps: its label opens it, its × removes them all. */
 .op-chip-split { padding: 0; gap: 0; cursor: default; }
@@ -1472,6 +1477,9 @@ body:has(.modal-backdrop) .toast-stack { z-index: 29; }
   }
   .hint-chips::-webkit-scrollbar, .op-chips::-webkit-scrollbar { display: none; }
   .hint-chips > *, .op-chips > * { flex: none; white-space: nowrap; }
+  /* Undo and Clear all stay at the row's right edge while the steps scroll under them. */
+  .op-chips:has(.op-actions) { mask-image: none; padding-right: 0; margin-right: 0; }
+  .op-actions { position: sticky; right: 0; padding-left: 14px; background: linear-gradient(90deg, transparent, var(--surface) 12px); }
   .status-stats span:nth-child(n + 4) { display: none; }
   .popover { width: calc(100% - 24px); }
 }

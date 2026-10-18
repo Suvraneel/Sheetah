@@ -140,7 +140,11 @@ const CODE_NAME = /(^|_)(id|code|zip|zipcode|pin|pincode|postcode|post_code|post
 
 /** Conversions safe to offer for a whole table at once: every sampled value converts, one way only. */
 export function confidentConversion(suggestions: CleanSuggestion[]): Clean | null {
-  const convert = suggestions.filter((s) => isConversion(s.clean))
+  let convert = suggestions.filter((s) => isConversion(s.clean))
+  // Dates that read both ways (01/04/24, no day past the 12th): the reader's way, offered first, as the file
+  // reader does (the column menu has the other).
+  const swap = (f = '') => f.replace(/%d|%m/g, (x) => (x === '%d' ? '%m' : '%d'))
+  if (convert.length === 2 && convert.every((s) => s.clean.kind === 'date') && convert[0].clean.format === swap(convert[1].clean.format)) convert = [convert[0]]
   if (convert.length !== 1 || convert[0].note || CODE_NAME.test(nameKey(convert[0].clean.column))) return null
   return convert[0].clean
 }
@@ -168,19 +172,33 @@ export interface CleanStats {
   debits: number
 }
 
+/**
+ * Values only a decimal point (or only a decimal comma) explains: 12.5, 0.750 (no one writes 750 so),
+ * 1.2345 (not a group of three), 1234.567, 1,234.5; and the same the other way round.
+ */
+function decimalItems(ref: string, p: string): string[] {
+  // The value without currency signs and spaces.
+  const bare = `regexp_replace(${textOf(ref)}, '[₹$€£¥\\s]', '', 'g')`
+  const only = (dec: string, group: string) => {
+    const [d, g] = [dec === '.' ? '\\.' : dec, group === '.' ? '\\.' : group]
+    return `'[-+(]?(([0-9]*${d}[0-9]{1,2})|(0?${d}[0-9]+)|([0-9]*${d}[0-9]{4,})|([0-9]{4,}${d}[0-9]+)|([0-9]{1,3}(${g}[0-9]${group === ',' ? '{2,3}' : '{3}'})+${d}[0-9]+))%?\\)?'`
+  }
+  return [
+    `count(*) FILTER (WHERE regexp_full_match(${bare}, ${only('.', ',')}))::DOUBLE AS ${p}point_only`,
+    `count(*) FILTER (WHERE regexp_full_match(${bare}, ${only(',', '.')}))::DOUBLE AS ${p}comma_only`,
+  ]
+}
+
 /** The counts for one column (refs are SQL for the column), as select-list items prefixed `p`. */
 function statsItems(ref: string, p: string): string[] {
   const v = textOf(ref)
   const parses = (expr: string) => `count(TRY_CAST(${expr} AS DOUBLE))::DOUBLE`
   const pct = `rtrim(${v}, '%')`
-  // For telling 12.5 from 12,5: the value without currency signs and spaces.
-  const bare = `regexp_replace(${v}, '[₹$€£¥\\s]', '', 'g')`
   return [
     `count(nullif(${v}, ''))::DOUBLE AS ${p}values`,
     `${parses(numberText(v, false))} AS ${p}numbers`,
     `${parses(numberText(v, true))} AS ${p}comma_numbers`,
-    `count(*) FILTER (WHERE regexp_full_match(${bare}, '[-+(]?[0-9]*\\.[0-9]{1,2}%?\\)?|[-+(]?[0-9]{1,3}(,[0-9]{2,3})+\\.[0-9]+%?\\)?'))::DOUBLE AS ${p}point_only`,
-    `count(*) FILTER (WHERE regexp_full_match(${bare}, '[-+(]?[0-9]*,[0-9]{1,2}%?\\)?|[-+(]?[0-9]{1,3}(\\.[0-9]{3})+,[0-9]+%?\\)?'))::DOUBLE AS ${p}comma_only`,
+    ...decimalItems(ref, p),
     `count(*) FILTER (WHERE ${v} LIKE '%\\%' ESCAPE '\\' AND TRY_CAST(${numberText(pct, false)} AS DOUBLE) IS NOT NULL)::DOUBLE AS ${p}percents`,
     `count(*) FILTER (WHERE ${v} LIKE '%\\%' ESCAPE '\\' AND TRY_CAST(${numberText(pct, true)} AS DOUBLE) IS NOT NULL)::DOUBLE AS ${p}comma_percents`,
     ...DATE_FORMATS.map((f, i) => {
@@ -203,6 +221,21 @@ function statsItems(ref: string, p: string): string[] {
 export function statsSql(table: string, refs: string[], sampleRows = 5000): string {
   const items = refs.flatMap((ref, i) => statsItems(ref, `c${i}_`))
   return `SELECT\n  ${items.join(',\n  ')}\nFROM (SELECT * FROM ${table} USING SAMPLE ${sampleRows} ROWS)`
+}
+
+/** Just the decimal point / comma counts of each column (read with readStats: only pointOnly, commaOnly). */
+export function decimalsSql(table: string, refs: string[], sampleRows = 5000): string {
+  return `SELECT\n  ${refs.flatMap((ref, i) => decimalItems(ref, `c${i}_`)).join(',\n  ')}\nFROM (SELECT * FROM ${table} USING SAMPLE ${sampleRows} ROWS)`
+}
+
+/**
+ * How the file writes decimals, from the columns that say (12,5 or 3.25): a comma, a point, or undefined
+ * when none says or they disagree. A column of 1,500 and 10,125 alone can't tell; the price beside it can.
+ */
+export function fileDecimalComma(stats: Pick<CleanStats, 'pointOnly' | 'commaOnly'>[]): boolean | undefined {
+  const comma = stats.some((s) => s.commaOnly > 0 && s.pointOnly === 0)
+  const point = stats.some((s) => s.pointOnly > 0 && s.commaOnly === 0)
+  return comma === point ? undefined : comma
 }
 
 export function readStats(row: Record<string, unknown>, i = 0): CleanStats {
@@ -248,10 +281,11 @@ export const usesDecimalComma = (locale: string) => {
 /**
  * What to offer for a text column. Numbers and dates need at least 90% of values to parse (the rest
  * become empty, and the note says how many). Whether "1,234" is a thousand or one-point-something is
- * settled by values only one reading explains ("12,5", "3.25"), then by the reader's locale. When a
- * date could be DD/MM or MM/DD (no day above 12), the locale decides which is offered first.
+ * settled by values only one reading explains ("12,5", "0,750", "3.25"), then by how the file's other
+ * columns write decimals (`fileComma`), then by the reader's locale. When a date could be DD/MM or MM/DD
+ * (no day above 12), the locale decides which is offered first.
  */
-export function suggestCleaning(column: string, s: CleanStats, locale = 'en-IN', whole = true): CleanSuggestion[] {
+export function suggestCleaning(column: string, s: CleanStats, locale = 'en-IN', whole = true, fileComma?: boolean): CleanSuggestion[] {
   const out: CleanSuggestion[] = []
   if (!s.values) return s.blanks ? [{ clean: { column, kind: 'blank' }, label: 'Treat blanks as empty' }] : []
   const nf = (n: number) => n.toLocaleString(LOCALE)
@@ -263,7 +297,7 @@ export function suggestCleaning(column: string, s: CleanStats, locale = 'en-IN',
   }
   /** "1 value has" / "3 values have" (or "3 of 5,000 values checked have"). */
   const sampled = (n: number, one: string, many: string) => `${nf(n)}${whole ? '' : ` of ${nf(s.values)}`} ${n === 1 && whole ? 'value' : 'values'}${of} ${n === 1 ? one : many}`
-  const comma = s.commaOnly > 0 && s.pointOnly === 0 ? true : s.pointOnly > 0 ? false : usesDecimalComma(locale)
+  const comma = s.commaOnly > 0 && s.pointOnly === 0 ? true : s.pointOnly > 0 ? false : (fileComma ?? usesDecimalComma(locale))
   const mixed = s.commaOnly > 0 && s.pointOnly > 0
   const numbers = comma ? s.commaNumbers : s.numbers
   const percents = comma ? s.commaPercents : s.percents

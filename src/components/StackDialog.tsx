@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { getEngine } from '../engine/db'
 import { LOCALE } from '../engine/sql'
 import type { TableColumns } from '../engine/compare-sql'
-import { sourceName, stackCandidates, stackReport, stackSql } from '../engine/stack'
+import { sourceName, stackCandidates, stackLossSql, stackOverlapSql, stackReport, stackSql } from '../engine/stack'
 import { BtnIcon } from './Icon'
 import { useDialog } from './useDialog'
 
@@ -15,6 +16,16 @@ interface Props {
 
 const nf = new Intl.NumberFormat(LOCALE)
 const list = (names: string[]) => (names.length > 4 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', '))
+/** Rows looked over for ones in two tables, at most: past this, the check would hold the stack up. */
+const OVERLAP_ROWS = 3_000_000
+
+interface Found {
+  key: string
+  /** Text read as numbers that isn't one: becomes empty. */
+  lost: { table: string; column: string; n: number; example: string }[]
+  /** Pairs of tables sharing whole rows. */
+  twice: { tables: string[]; n: number }[]
+}
 
 /** Several exports of the same kind (one per month, per branch…) into one table. */
 export function StackDialog({ tables, around, onStack, onClose }: Props) {
@@ -29,6 +40,42 @@ export function StackDialog({ tables, around, onStack, onClose }: Props) {
   // Views (Parquet read in place) have no stored row count.
   const rows = picked.some((t) => t.rows === null) ? null : picked.reduce((n, t) => n + (t.rows ?? 0), 0)
   const ready = picked.length >= 2
+  // Before stacking: what reading text as numbers would leave empty, and rows in two tables (a month and
+  // its revision both ticked), so neither is found only in the totals.
+  const key = picked.map((t) => t.name).join('\u0000')
+  const [found, setFound] = useState<Found | null>(null)
+  useEffect(() => {
+    if (!ready) return
+    let live = true
+    const t = window.setTimeout(async () => {
+      try {
+        const { conn } = await getEngine()
+        const lossSql = stackLossSql(picked)
+        const lost = lossSql
+          ? (await conn.query(lossSql)).toArray().map((r) => {
+              const o = r.toJSON() as { tbl: string; col: string; lost: number; example: string }
+              return { table: o.tbl, column: o.col, n: Number(o.lost), example: String(o.example) }
+            })
+          : []
+        if (!live) return
+        setFound({ key, lost, twice: [] })
+        if (rows === null || rows > OVERLAP_ROWS) return
+        const twice = (await conn.query(stackOverlapSql({ tables: picked.map((p) => p.name), source: null }, picked))).toArray().map((r) => {
+          const o = r.toJSON() as { tables: { toArray: () => string[] }; n: number }
+          return { tables: [...o.tables.toArray()], n: Number(o.n) }
+        })
+        if (live) setFound({ key, lost, twice })
+      } catch {
+        /* a check, not the stack: it stacks either way */
+      }
+    }, 400)
+    return () => {
+      live = false
+      window.clearTimeout(t)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- key captures the tables picked
+  }, [key])
+  const shown = found?.key === key ? found : null
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -72,6 +119,14 @@ export function StackDialog({ tables, around, onStack, onClose }: Props) {
                   {report.columns + (withSource ? 1 : 0)} columns.
                   {report.partial.length > 0 && ` Not in every table (empty where missing): ${list(report.partial)}.`}
                   {report.asText.length > 0 && ` Stacked as text because the type differs: ${list(report.asText)}.`}
+                  {report.asNumbers.map((a) => ` ${a.column} is text in ${list(a.tables)}: read as numbers.`).join('')}
+                  {shown?.lost.map((l) => ` ${nf.format(l.n)} ${l.n === 1 ? 'value' : 'values'} of ${l.column} in ${l.table} ${l.n === 1 ? 'isn’t a number and becomes' : 'aren’t numbers and become'} empty (“${l.example}”).`).join('')}
+                  {shown?.twice.map((d) => (
+                    <strong key={d.tables.join()} className="stack-twice">
+                      {' '}
+                      {nf.format(d.n)} {d.n === 1 ? 'row is' : 'rows are'} in {d.tables.length === 2 ? `both ${d.tables[0]} and ${d.tables[1]}` : list(d.tables)}: stacked, {d.n === 1 ? 'it would' : 'they would'} count twice.
+                    </strong>
+                  ))}
                 </>
               )}
             </p>

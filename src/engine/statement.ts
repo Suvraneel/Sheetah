@@ -57,11 +57,11 @@ export const isBalanceName = (name: string) => BALANCE.test(nameKey(name))
 /** A column's values as numbers, whether they're numbers already or "1,200.00" text. */
 const num = (name: string, numeric: boolean, ref: (name: string) => string = sqlName) => (numeric ? `${ref(name)}::DOUBLE` : `number_from_text(${ref(name)})`)
 
-/** "Opening Balance", "Closing Balance", "Balance b/f", "Brought forward": a statement's lines about its balance. */
-const BALANCE_LINE = `'^\\s*((opening|closing)\\s+bal|bal(ance)?\\s+(b/?f|c/?f|brought|carried)|(brought|carried)\\s+(forward|fwd|over)\\b)'`
+/** "Opening Balance", "Closing Balance", "Balance b/f", "Brought forward" (a US bank's "Beginning Balance", "Ending Balance"): a statement's lines about its balance. */
+const BALANCE_LINE = `'^\\s*((opening|closing|beginning|starting|ending)\\s+bal|bal(ance)?\\s+(b/?f|c/?f|brought|carried)|(brought|carried)\\s+(forward|fwd|over)\\b)'`
 
 /** A cell that says only that its line is a balance ("Opening Balance", "Balance b/f:"), however its amounts are written. */
-const BALANCE_ONLY = `'^\\s*((opening|closing)\\s+balance|bal(ance)?\\s+(b/?f|c/?f|brought\\s+forward|carried\\s+forward)|(brought|carried)\\s+(forward|fwd|over))\\s*:?\\s*$'`
+const BALANCE_ONLY = `'^\\s*((opening|closing|beginning|starting|ending)\\s+balance|bal(ance)?\\s+(b/?f|c/?f|brought\\s+forward|carried\\s+forward)|(brought|carried)\\s+(forward|fwd|over))\\s*:?\\s*$'`
 
 /**
  * A statement's balance lines, as SQL true for them: a label (in one of the text columns) saying it's the
@@ -118,14 +118,20 @@ const PARTY = /(^|_)(party|customer|debtor|client|vendor|supplier|creditor|ledge
 
 /**
  * A list of open bills, by its columns: an amount still open ("Pending Amount", "Balance Due"), a party,
- * and a date (a due date by preference). Not a bank statement (its balance is a running one).
+ * and a date (a due date by preference). Not a bank statement (its balance is a running one). A plain
+ * Amount counts when the bills have a due date and nothing says some are paid (a Status, a Paid column):
+ * an open items list.
  */
 export function ageingColumns(columns: { name: string; type: string }[]): AgeingColumns | null {
   if (statementColumns(columns)) return null
-  const amount = columns.find((c) => !isTemporal(c) && OPEN.test(nameKey(c.name)) && (isNumericType(c.type) || /^VARCHAR/i.test(c.type)) && !/(^|_)(days?|date|on|by)$/.test(nameKey(c.name)))
+  const money = (c: { name: string; type: string }) => !isTemporal(c) && (isNumericType(c.type) || /^VARCHAR/i.test(c.type)) && !/(^|_)(days?|date|on|by)$/.test(nameKey(c.name))
   const party = columns.find((c) => /^VARCHAR/i.test(c.type) && PARTY.test(nameKey(c.name)))
   const dates = columns.filter(isTemporal)
   const due = dates.find((c) => /(^|_)due(_|$)/.test(nameKey(c.name)))
+  const settled = columns.some((c) => /(^|_)(status|paid|payment|received|cleared|settled)(_|$)/.test(nameKey(c.name)))
+  const amount =
+    columns.find((c) => money(c) && OPEN.test(nameKey(c.name))) ??
+    (due && !settled ? columns.find((c) => money(c) && /^(amount|amt|invoice_amount|bill_amount|total|value)$/.test(nameKey(c.name))) : undefined)
   // The bill's own date: not the day it was paid or received.
   const bill = dates.find((c) => c !== due && !/(^|_)(paid|payment|receipt|received|cleared|realised|realized)(_|$)/.test(nameKey(c.name)))
   const date = due ?? dates[0]

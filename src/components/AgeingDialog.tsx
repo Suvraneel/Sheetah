@@ -7,16 +7,19 @@ import { useDialog } from './useDialog'
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 /** Today in the reader's own calendar, as YYYY-MM-DD. */
 const today = () => iso(new Date())
-/** The days a month-end asks about: today, the last day of last month, the last 31 March (a financial year's end). */
+/**
+ * The days a month-end asks about: today, the last day of last month, and the year's end just gone: 31 March
+ * in India (its financial year), 31 December elsewhere.
+ */
 function quickDays(): { label: string; day: string }[] {
   const now = new Date()
   const monthEnd = new Date(now.getFullYear(), now.getMonth(), 0)
-  const march = new Date(now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1, 2, 31)
+  const year = /-IN$/i.test(LOCALE) ? new Date(now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1, 2, 31) : new Date(now.getFullYear() - 1, 11, 31)
   const name = (d: Date) => d.toLocaleDateString(LOCALE, { day: 'numeric', month: 'short', year: 'numeric' })
   return [
     { label: 'Today', day: today() },
     { label: `Month end (${name(monthEnd)})`, day: iso(monthEnd) },
-    { label: `Year end (${name(march)})`, day: iso(march) },
+    { label: `Year end (${name(year)})`, day: iso(year) },
   ]
 }
 

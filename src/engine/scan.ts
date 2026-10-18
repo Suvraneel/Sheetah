@@ -5,7 +5,7 @@
  */
 import { getEngine, quoteIdent, quoteLiteral } from './db'
 import type { Clean, DropRows } from './clean'
-import { confidentConversion, dataSumsSql, eitherJunk, fillDownSql, isTextColumn, looksFilledDown, junkPredicates, labelSumsSql, readTieOut, totalsAgree, readStats, statsSql, suggestCleaning, type CleanSuggestion } from './clean-scan'
+import { confidentConversion, dataSumsSql, eitherJunk, fillDownSql, isTextColumn, looksFilledDown, junkPredicates, labelSumsSql, readTieOut, totalsAgree, readStats, statsSql, suggestCleaning, decimalsSql, fileDecimalComma, type CleanStats, type CleanSuggestion } from './clean-scan'
 import { LOCALE, nameKey } from './sql'
 import { balanceLineSql, isBalanceName, statementColumns } from './statement'
 import { closingLineSql } from './checks'
@@ -179,9 +179,21 @@ export async function junkRows(result: ResultSet): Promise<DropRows[]> {
       }
     }
   }
-  // Plain "Total" lines are trusted when they add up, or while they're a few; a lot of them that don't add
-  // up is a real value (a category called Total).
-  const weakOk = verified || total - strong <= Math.max(3, result.rowCount * 0.1)
+  // Plain "Total" lines are trusted while they're a few, or when they add up (a QuickBooks report's "Total
+  // for Acme Corp" under each customer, however many); a lot of them that don't add up is a real value (a
+  // category called Total).
+  let weakOk = verified || total - strong <= Math.max(3, result.rowCount * 0.1)
+  if (!weakOk && totalsHere && p.first && total <= result.rowCount * 0.5) {
+    const sums = labelSumsSql(result.table, refs, totalsHere, p.first)
+    const t = sums ? ((await conn.query(sums)).toArray()[0]?.toJSON() as Record<string, number | null> | undefined) : undefined
+    const which = Object.keys(t ?? {}).filter((k) => typeof t![k] === 'number').map((k) => Number(k.slice(1)))
+    if (t && which.length) {
+      const d = (await conn.query(dataSumsSql(result.table, refs, p.first, which, `${totalsHere.keep} AND ${p.blank.keep}`))).toArray()[0]?.toJSON() as
+        | Record<string, number | null>
+        | undefined
+      weakOk = totalsAgree(which.filter((i) => typeof d?.[`d${i}`] === 'number').map((i) => ({ t: t[`t${i}`] as number, d: d![`d${i}`] as number })))
+    }
+  }
   if (totals && named.strong && (weakOk ? total : strong)) {
     // Tie-out: the total lines' numbers against the rows they'd leave (sub-totals and a grand total
     // come to twice them). Said on the suggestion, so leaving them out is a checked step, not a guess.
@@ -224,8 +236,9 @@ export async function junkRows(result: ResultSet): Promise<DropRows[]> {
       `SELECT count(*) FILTER (WHERE has_value(${colRef(dateCol)}))::DOUBLE AS filled, count(*) FILTER (WHERE has_value(${colRef(dateCol)}) AND NOT ${looks(colRef(dateCol))})::DOUBLE AS other FROM ${result.table}`,
     )).toArray()[0]?.toJSON() as { filled: number; other: number } | undefined
     const [filled, other] = [Number(u?.filled ?? 0), Number(u?.other ?? 0)]
-    // A few such lines among many dated ones (a date column that's mostly something else isn't one).
-    if (other >= 1 && other <= 20 && filled - other >= 3 && filled - other >= 2 * other) {
+    // A few such lines among more dated ones (a date column that's mostly something else isn't one; a short
+    // statement's summary can be nearly as long as its transactions).
+    if (other >= 1 && other <= 20 && filled - other >= 3 && filled - other > other) {
       const q = quoteIdent(dateCol.name)
       out.push({ label: n(other, 'undated line'), keep: `(NOT has_value(${q}) OR ${looks(q)})`, kind: 'undated' })
     }
@@ -308,7 +321,14 @@ export async function cleaningFor(result: ResultSet, column: ColumnInfo, locale 
   if (!result.table || !isTextColumn(column.type)) return []
   const { conn } = await getEngine()
   const row = (await conn.query(statsSql(result.table, [colRef(column)]))).toArray()[0]?.toJSON() as Record<string, unknown> | undefined
-  return row ? suggestCleaning(column.name, readStats(row, 0), locale, result.rowCount <= 5000) : []
+  if (!row) return []
+  // How the other columns write decimals, for values this one can't settle (1,500: a thousand and a half, or 1.5).
+  const others = result.columns.filter((c) => isTextColumn(c.type) && c.name !== column.name).slice(0, 40)
+  const decimals = others.length
+    ? ((await conn.query(decimalsSql(result.table, others.map(colRef)))).toArray()[0]?.toJSON() as Record<string, unknown> | undefined)
+    : undefined
+  const fileComma = decimals ? fileDecimalComma(others.map((_, i) => readStats(decimals, i))) : undefined
+  return suggestCleaning(column.name, readStats(row, 0), locale, result.rowCount <= 5000, fileComma)
 }
 
 /**
@@ -320,10 +340,18 @@ export async function textFindings(result: ResultSet, locale = LOCALE): Promise<
   const cols = result.columns.filter((c) => isTextColumn(c.type)).slice(0, 40)
   if (!result.table || !cols.length) return { convert: [], spaces: [] }
   const { conn } = await getEngine()
-  const row = (await conn.query(statsSql(result.table, cols.map(colRef)))).toArray()[0]?.toJSON() as Record<string, unknown> | undefined
-  if (!row) return { convert: [], spaces: [] }
-  const stats = cols.map((c, i) => ({ c, s: readStats(row, i) }))
-  const convert = stats.map(({ c, s }) => confidentConversion(suggestCleaning(c.name, s, locale))).filter((c): c is Clean => !!c)
+  // Ten columns a query: each column's counts are a few KB of SQL, and a wide table's in one would run the
+  // engine out of memory.
+  const stats: { c: ColumnInfo; s: CleanStats }[] = []
+  for (let i = 0; i < cols.length; i += 10) {
+    const part = cols.slice(i, i + 10)
+    const row = (await conn.query(statsSql(result.table, part.map(colRef)))).toArray()[0]?.toJSON() as Record<string, unknown> | undefined
+    if (!row) return { convert: [], spaces: [] }
+    part.forEach((c, j) => stats.push({ c, s: readStats(row, j) }))
+  }
+  // A column of 1,500 and 0,750 beside a price of 2,49: read the way the file writes decimals.
+  const fileComma = fileDecimalComma(stats.map(({ s }) => s))
+  const convert = stats.map(({ c, s }) => confidentConversion(suggestCleaning(c.name, s, locale, true, fileComma))).filter((c): c is Clean => !!c)
   const converted = new Set(convert.map((c) => c.column))
   const spaces = stats.filter(({ c, s }) => s.untrimmed > 0 && !converted.has(c.name)).map(({ c }) => c.name)
   return { convert, spaces }

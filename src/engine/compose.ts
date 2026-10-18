@@ -1,6 +1,6 @@
 import type { Categorize } from './categorize'
-import { cleanExpr, cleanSql, type Clean, type DropRows } from './clean'
-import { lookupSql, type Lookup } from './lookup'
+import { cleanExpr, cleanSql, describeClean, type Clean, type DropRows } from './clean'
+import { describeLookup, lookupSql, type Lookup } from './lookup'
 import { LOCALE, quoteIdent, quoteLiteral, splitStatements, sqlName } from './sql'
 
 /**
@@ -302,6 +302,21 @@ export function tidySteps(o: Ops): { ops: Ops; count: number } {
   const ops: Ops = { ...emptyOps(), drop: o.drop, clean: o.clean, lookups: o.lookups, computed: o.computed, dedupe: o.dedupe?.mode === 'remove' ? o.dedupe : undefined }
   const count = (o.drop?.length ?? 0) + (o.clean?.length ?? 0) + (o.lookups?.length ?? 0) + o.computed.length + (ops.dedupe ? 1 : 0)
   return { ops, count }
+}
+
+/** Each step in words, as its chip says it (Without 1 total line, amount as number…): a view's steps, not its SQL. */
+export function stepLabels(o: Ops): string[] {
+  return [
+    ...(o.drop ?? []).map((d) => `Without ${d.label}`),
+    ...(o.clean ?? []).map(describeClean),
+    ...(o.lookups ?? []).map(describeLookup),
+    ...o.computed.map((c) => `${c.name}${c.note ? ` (${c.note})` : ''}`),
+    ...o.filters.map(describeFilter),
+    ...(o.search ? [`Contains “${o.search}”`] : []),
+    ...(o.dedupe ? [o.dedupe.mode === 'show' ? `Duplicates in ${o.dedupe.column}` : `First of each ${o.dedupe.column}`] : []),
+    ...(o.hidden ?? []).map((h) => `Hidden: ${h}`),
+    ...(o.sort ? [`${o.sort.column}, ${o.sort.dir === 'asc' ? 'ascending' : 'descending'}`] : []),
+  ]
 }
 
 /** How many steps (chips) there are: each filter, clean-up, look-up, added or hidden column, and the rest. */

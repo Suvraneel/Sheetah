@@ -6,12 +6,15 @@ import { useDialog } from './useDialog'
 
 export function SaveViewDialog({
   sql,
+  steps = [],
   tables,
   initialName,
   onSave,
   onClose,
 }: {
   sql: string
+  /** The steps in words (as their chips say them): shown instead of the SQL they make, which folds away. */
+  steps?: string[]
   tables: string[]
   initialName: string
   onSave: (name: string) => void
@@ -41,7 +44,22 @@ export function SaveViewDialog({
           <div className="chips">
             {tables.length ? tables.map((t) => <span key={t} className="chip static">{t}</span>) : <span className="muted small">No tables detected</span>}
           </div>
-          <pre className="sql-preview">{sql}</pre>
+          {steps.length > 0 ? (
+            <>
+              <p className="field-label">Steps</p>
+              <ol className="view-steps">
+                {steps.map((s, i) => (
+                  <li key={i}>{s}</li>
+                ))}
+              </ol>
+              <details className="view-sql">
+                <summary>The SQL they make</summary>
+                <pre className="sql-preview">{sql}</pre>
+              </details>
+            </>
+          ) : (
+            <pre className="sql-preview">{sql}</pre>
+          )}
           <div className="modal-actions">
             <button type="button" className="btn btn-ghost" onClick={onClose}>
               Cancel

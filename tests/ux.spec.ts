@@ -35,7 +35,7 @@ test.describe('workspace conveniences', () => {
     await openDemo(page)
     const html = page.locator('html')
     await expect(html).toHaveAttribute('data-theme', 'light')
-    const toggle = page.getByRole('button', { name: /Colour theme/ })
+    const toggle = page.getByRole('button', { name: /^Theme: / })
     await toggle.click() // System → Light
     await toggle.click() // Light → Dark
     await expect(html).toHaveAttribute('data-theme', 'dark')

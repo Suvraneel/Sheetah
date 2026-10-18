@@ -52,7 +52,7 @@ test.describe('saved views and local data', () => {
 
     await page.reload()
     await expect(page.locator('.engine-pill.is-ready')).toBeVisible({ timeout: 90_000 })
-    await page.locator('input[type=file]').setInputFiles([{ name: 'sales_register_may.csv', mimeType: 'text/csv', buffer: Buffer.from(messyCsv()) }])
+    await page.locator('input[type=file]').setInputFiles([{ name: 'sales_register_may.csv', mimeType: 'text/csv', buffer: Buffer.from(messyCsv(true)) }])
     await expect(page.locator('.result-meta')).toContainText('23 rows')
     const offer = page.locator('.toast', { hasText: 'Your view “Tidy sales register” fits sales_register_may' })
     await offer.getByRole('button', { name: 'Run it' }).click()

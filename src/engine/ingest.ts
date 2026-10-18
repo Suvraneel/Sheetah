@@ -64,7 +64,21 @@ async function readDates(name: string, path: string, read: (opts: string) => str
     const c = quoteIdent(plain[0].name)
     const raw = String((await one(`SELECT ${c} AS v FROM ${read('all_varchar = true')} WHERE ${c} IS NOT NULL AND trim(${c}) <> '' LIMIT 1`).catch(() => ({}) as Record<string, unknown>)).v ?? '')
     const m = /^\d{1,2}([/.-])\d{1,2}\1\d{2}$/.exec(raw.trim())
+    const full = /^\d{1,2}([/.-])\d{1,2}\1\d{4}$/.exec(raw.trim())
     if (m) date = `%y${m[1]}%m${m[1]}%d`
+    else if (full) {
+      // 10/02/2026: which way round the reader took it, from the dates it made of values whose day and
+      // month differ (each read both ways: the way it read them is the one in the table).
+      const [dmy, mdy] = [`%d${full[1]}%m${full[1]}%Y`, `%m${full[1]}%d${full[1]}%Y`]
+      const r = await one(
+        `WITH raw AS (SELECT DISTINCT trim(${c}) AS v FROM ${read('all_varchar = true')} WHERE regexp_full_match(trim(${c}), '[0-9]{1,2}[/.-][0-9]{1,2}[/.-][0-9]{4}') AND regexp_extract(trim(${c}), '^[0-9]+') <> regexp_extract(trim(${c}), '^[0-9]+[/.-]([0-9]+)', 1) LIMIT 200),
+        typed AS (SELECT DISTINCT ${c} AS d FROM ${quoteIdent(name)})
+        SELECT count(*) FILTER (WHERE try_strptime(v, ${quoteLiteral(dmy)})::DATE IN (SELECT d FROM typed))::DOUBLE AS dmy,
+          count(*) FILTER (WHERE try_strptime(v, ${quoteLiteral(mdy)})::DATE IN (SELECT d FROM typed))::DOUBLE AS mdy FROM raw`,
+      ).catch(() => ({}) as Record<string, unknown>)
+      const [d, mo] = [Number(r.dmy ?? 0), Number(r.mdy ?? 0)]
+      if (d !== mo) date = d > mo ? dmy : mdy
+    }
   }
   let order: 'dmy' | 'mdy' | undefined = /^%d\W%m/.test(date) ? 'dmy' : /^%m\W%d/.test(date) ? 'mdy' : undefined
   // Times read as the year 1 (no seconds, so no format found): how they're written, from the text itself.
@@ -159,10 +173,17 @@ async function readDates(name: string, path: string, read: (opts: string) => str
  */
 export async function ingestFile(file: File, taken: Set<string> = new Set(), onNote?: Noted): Promise<string[]> {
   if (!file.size) throw new FileKindError(`${file.name} is empty.`)
-  const { sniff, notATable } = await import('./sniff')
+  const { sniff, notATable, zipInside, isUtf8 } = await import('./sniff')
   const kind = sniff(new Uint8Array(await file.slice(0, 1024).arrayBuffer()))
-  const wrong = notATable(kind, file.name)
+  // A zip: what it holds, by the names in it (its first entry, and its directory at the end).
+  const inside = kind === 'zip' ? zipInside(new Uint8Array(await new Blob([file.slice(0, 4096), file.slice(Math.max(4096, file.size - 65536))]).arrayBuffer())) : null
+  const wrong = notATable(kind, file.name, inside)
   if (wrong) throw new FileKindError(wrong)
+  // A workbook named .csv or .xls (some portals' downloads): opened as the workbook it is.
+  if (inside === 'xlsx' && !/\.xls[xm]$/i.test(file.name)) {
+    onNote?.(`${file.name} is an Excel workbook, whatever its name says: opened as one.`)
+    return ingestExcel(file, taken, onNote)
+  }
   // Tally's own XML (its vouchers, or a report, in an ENVELOPE), in UTF-8: its <BODY> isn't a web page's.
   if ((kind === 'html' || kind === 'text') && /^\s*</.test((await file.slice(0, 1024).text()).replace(/^\uFEFF/, '')) && TALLY.test(await file.slice(0, 8192).text()))
     return ingestTally(file, await textOf(file), taken, onNote)
@@ -189,7 +210,24 @@ export async function ingestFile(file: File, taken: Set<string> = new Set(), onN
     }
     return ingestRead(new File([text], file.name, { type: 'text/plain' }), taken, onNote)
   }
-  return ingestRead(file, taken, onNote)
+  // Excel's "CSV (Comma delimited)" on Windows, and most older systems, write Windows-1252, not UTF-8: £, é
+  // and ü are single bytes DuckDB refuses. Read as that (said so), from the start or when the reader trips.
+  const text = kind === 'text' && readerFor(file.name).fn === 'read_csv_auto' && !/\.(gz|gzip|zst)$/i.test(file.name)
+  if (text && !isUtf8(new Uint8Array(await file.slice(0, 1 << 20).arrayBuffer()))) return ingestRead(await western(file, onNote), taken, onNote)
+  try {
+    return await ingestRead(file, taken, onNote)
+  } catch (e) {
+    if (!text || isCancel(e) || !/utf-?8|unicode/i.test(e instanceof Error ? e.message : String(e))) throw e
+    return ingestRead(await western(file, onNote), taken, onNote)
+  }
+}
+
+/** A file in Windows-1252 (Western European) as UTF-8, saying so. */
+async function western(file: File, onNote?: Noted): Promise<File> {
+  if (file.size > 512 * 1024 ** 2) throw new FileKindError(`${file.name} isn’t UTF-8 and is over 512 MB. Save it as “CSV UTF-8” and open that.`)
+  const text = new TextDecoder('windows-1252').decode(await file.arrayBuffer())
+  onNote?.(`${file.name} isn’t UTF-8: read as Windows-1252 (Western European: £, é, ü). If letters look wrong, save it as “CSV UTF-8” and open that.`)
+  return new File([text], file.name, { type: 'text/plain' })
 }
 
 
@@ -208,6 +246,7 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
     // A report's title lines above its table, with no separators (QuickBooks' "Sales by Customer Detail"),
     // its group names too: the file reader gives up, or reads it all as one column. Read from the names on.
     let titled: { sep: string; skip: number } | null | undefined
+    let ragged: { sep: string; skip: number } | null = null
     const titles = async () => (titled === undefined ? (titled = (await import('./sniff')).titleLines(await file.slice(0, 64 * 1024).text())) : titled)
     const fromNames = (t: { sep: string; skip: number }, opts = '') =>
       `read_csv(${quoteLiteral(virtualPath)}, delim = ${quoteLiteral(t.sep)}, header = true, skip = ${t.skip}, null_padding = true, strict_mode = false${opts ? `, ${opts}` : ''})`
@@ -218,7 +257,11 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
           : `CREATE VIEW ${quoteIdent(name)} AS SELECT * FROM ${source}`,
       )
     } catch (e) {
-      const t = !isCancel(e) && fn === 'read_csv_auto' ? await titles().catch(() => null) : null
+      const sniffed = !isCancel(e) && fn === 'read_csv_auto' ? await import('./sniff').catch(() => null) : null
+      const head = sniffed ? await file.slice(0, 64 * 1024).text() : ''
+      // Title lines above the names; or none, the names first, and lines of other lengths among the rows.
+      const t = sniffed ? ((await titles().catch(() => null)) ?? sniffed.titleLines(head, true)) : null
+      if (t && t.skip === 0) ragged = t
       const read = t && (await sendAll(`CREATE TABLE ${quoteIdent(name)} AS SELECT * FROM ${fromNames(t)}`).then(() => null, (again: unknown) => again))
       if (!t || read) {
         await db.dropFile(virtualPath).catch(() => {})
@@ -233,7 +276,11 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
         const cols = (await columnTypes(name)).map((c) => c.name)
         const sep = cols.length === 1 ? [',', ';', '\t', '|'].find((d) => cols[0].includes(d)) : undefined
         let read = (opts: string) => `read_csv_auto(${quoteLiteral(virtualPath)}${opts ? `, ${opts}` : ''})`
-        if (sep) {
+        if (ragged) {
+          const r = ragged
+          read = (opts) => fromNames(r, opts)
+          onNote?.(`Some rows of ${file.name} have more or fewer fields than its header: missing ones are left empty.`)
+        } else if (sep) {
           read = (opts) =>
             `read_csv(${quoteLiteral(virtualPath)}, delim = ${quoteLiteral(sep)}, header = true, null_padding = true, strict_mode = false${opts ? `, ${opts}` : ''})`
           await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(name)} AS SELECT * FROM ${read('')}`)

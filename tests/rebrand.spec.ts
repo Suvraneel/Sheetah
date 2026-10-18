@@ -45,7 +45,7 @@ test('saved views, history, theme and kept tables carry over from the Quarry nam
       ),
     )
     .toBe(true)
-  const toggle = page.getByRole('button', { name: /Colour theme/ })
+  const toggle = page.getByRole('button', { name: /^Theme: / })
   await toggle.click() // Light
   await toggle.click() // Dark
 

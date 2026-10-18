@@ -1,13 +1,13 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getEngine, sqlName } from './engine/db'
 import { ageingColumns, ledgerColumn, type AgeingColumns, monthlySql, signedAmount, signedNote, statementColumns } from './engine/statement'
-import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent, WORDS } from './engine/sql'
+import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent, stackLabel, WORDS } from './engine/sql'
 import { ACCEPTED, dateOrders, datesGuessed, listTables, type TableMeta } from './engine/tables'
 import { FileKindError } from './engine/load-errors'
 // Reading a file (CSV, Excel, Tally…) is loaded when one is opened, or when the page is idle.
 const ingest = () => import('./engine/ingest')
 import { CancelledError, cancelRunning, exportResult, holdResult, rangeStats, rowOf, runSql, splitStatements, type RangeStats, type ResultSet } from './engine/result'
-import { addFilter, compose, describeFilter, emptyOps, hasOps, onTidiedRows, pickedValues, plainTable, removePick, removePickAll, stepCount, stepMarks, tidySteps, type Filter, type Ops } from './engine/compose'
+import { addFilter, compose, describeFilter, emptyOps, hasOps, onTidiedRows, pickedValues, plainTable, removePick, removePickAll, stepCount, stepLabels, stepMarks, tidySteps, type Filter, type Ops } from './engine/compose'
 import { addClean, isConversion, percentColumns, type Clean, type DropRows } from './engine/clean'
 import { isLoadFailure } from './engine/load-errors'
 import { Grid, type DiffTones, type GridHandle, type SelectionInfo } from './grid/Grid'
@@ -52,7 +52,7 @@ import { StarterQueries } from './components/StarterQueries'
 import { Toasts, type Offer } from './components/Toasts'
 import { Lazy } from './components/Lazy'
 import { keepFocusIn } from './components/focus'
-import { UPDATE_EVENT, applyUpdate, setHasWork, updateReady } from './sw-client'
+import { UPDATE_EVENT, applyUpdate, leaving, setHasWork, updateReady } from './sw-client'
 import type { Starter } from './components/starters'
 import { HintChips } from './components/HintChips'
 import { StepChips } from './components/StepChips'
@@ -639,6 +639,8 @@ export default function App() {
         ]
         if (which === 'all') {
           setJunkPending((p) => new Set(p).add(key))
+          // Which way round a register goes is being read: the amount chip waits to say it.
+          setOrientHints((m) => ({ ...m, [key]: { sig: 'pending', value: [] } }))
           const junkDone = () =>
             setJunkPending((p) => {
               const next = new Set(p)
@@ -660,7 +662,13 @@ export default function App() {
               .then((check) => check && addChecks(res.sql, [check])),
             import('./engine/month-end')
               .then((m) => m.orientation(res.table!, res.columns))
-              .then((o) => setOrientHints((m) => ({ ...m, [key]: { sig, value: o ? [o] : [] } }))),
+              .then(
+                (o) => setOrientHints((m) => ({ ...m, [key]: { sig, value: o ? [o] : [] } })),
+                (e: unknown) => {
+                  setOrientHints((m) => ({ ...m, [key]: { sig, value: [] } }))
+                  throw e
+                },
+              ),
             emptyTextColumns(res).then((cols) => setEmptyHints((m) => ({ ...m, [key]: { sig, value: cols } }))),
             // Dates the file reader read the other way round from how this reader writes them (01/02: 1 Feb or Jan 2).
             // (Or read the reader's way only because nothing said otherwise: the other way is offered too.)
@@ -739,7 +747,7 @@ export default function App() {
         const family = last ? stackCandidates(last, metas) : []
         // Next month's export: a saved view made on last month's, with the same columns, can run on it.
         const opened = files.length === 1 ? metas.find((t) => t.name === first) : undefined
-        const fit = opened ? viewsThatFit(viewsRef.current, opened)[0] : undefined
+        const fit = opened ? viewsThatFit(viewsRef.current, opened, metas.map((t) => t.name))[0] : undefined
         if (fit && first) {
           const label = `Your view “${fit.view.name}” fits ${first}.`
           setNudge({ label, action: 'Run it', run: () => runViewOn.current(fit.view, fit.from, first) })
@@ -895,6 +903,20 @@ export default function App() {
       }
     })
   }, [tables, keepTables, say])
+
+  // Tables live in this tab: leaving (a reload, closing it) loses the ones not kept in this browser, so the
+  // browser asks first. Not for the sample data, nor when Sheetah reloads for a new version itself.
+  useEffect(() => {
+    const lost = tables.some((t) => !demoTables.current.has(t.name) && (!keepTables || t.kind !== 'table' || (t.rows ?? 0) > MAX_PERSIST_ROWS))
+    if (!lost) return
+    const ask = (e: BeforeUnloadEvent) => {
+      if (leaving.now) return
+      e.preventDefault()
+      e.returnValue = '' // older browsers ask only when this is set
+    }
+    window.addEventListener('beforeunload', ask)
+    return () => window.removeEventListener('beforeunload', ask)
+  }, [tables, keepTables])
 
   const toggleKeep = async (on: boolean) => {
     setKeepTables(on)
@@ -1726,6 +1748,9 @@ export default function App() {
     statement && named && !ops.computed.some((c) => c.expr === amountExpr || c.note === signedNote(statement) || c.note === signedNote({ ...named, credit: named.debit, debit: named.credit }))
       ? statement
       : null
+  // A register's Debit and Credit (by those names, with a balance) go one way or the other: until its balance
+  // has been read, the chip doesn't say which (rather than say one and turn round).
+  const wayKnown = !named || !!named.books || !named.balance || !/^(debits?|dr)$/i.test(named.debit.trim()) || !/^(credits?|cr)$/i.test(named.credit.trim()) || orientHints[base.trim()]?.sig !== 'pending'
   // Once a statement's amount is signed: its month-by-month summary (by its date column), and its narrations
   // grouped into categories (for a pivot by month).
   const monthlyHere = statement && !amountHere ? (result?.columns.find(isTemporal)?.name ?? null) : null
@@ -1743,7 +1768,9 @@ export default function App() {
   /** What the current result is about, for SQL comments and file names: "customers", "oct-vs-nov". */
   function resultLabel() {
     if (editingCompare) return `${compareOrigin!.spec.before}-vs-${compareOrigin!.spec.after}`
-    return referencedTables(base, tableNames)[0] ?? 'result'
+    const from = referencedTables(base, tableNames)
+    // Stacked months are named for all of them (sales_2024_01-12), not the first.
+    return (/\bUNION\b/i.test(base) && from.length > 1 ? stackLabel(from) : from[0]) ?? 'result'
   }
   /** customers-anonymized-2026-10-17.csv, orders-pivot-filtered-….parquet */
   function exportName(ext: string) {
@@ -1898,7 +1925,7 @@ export default function App() {
               onDelete={deleteView}
               fitsOn={(v) => {
                 const open = tables.find((t) => t.name.toLowerCase() === openName)
-                return open && viewsThatFit([v], open).length ? open.name : null
+                return open && viewsThatFit([v], open, tableNames).length ? open.name : null
               }}
               onExport={async () => {
                 const { exportViews } = await import('./engine/views-file')
@@ -1925,7 +1952,7 @@ export default function App() {
                     )
                     // A colleague's tidy-up for this very export: offer it on the table that's open.
                     const open = tables.find((t) => t.name.toLowerCase() === openName)
-                    const fit = open ? viewsThatFit(added, open)[0] : undefined
+                    const fit = open ? viewsThatFit(added, open, tableNames)[0] : undefined
                     if (fit && open) {
                       const label = `“${fit.view.name}” fits ${open.name}.`
                       setNudge({ label, action: 'Review it', run: () => runViewOn.current(fit.view, fit.from, open.name) })
@@ -1997,7 +2024,15 @@ export default function App() {
                   requestAnimationFrame(focusEditor)
                 }}
               >
-                <code>{editor.trim().split('\n')[0] || 'Write a query'}</code>
+                {/* The query on one line (SELECT * FROM report WHERE …), not just its first: the table shows. */}
+                <code>
+                  {editor
+                    .split('\n')
+                    .filter((l) => !l.trim().startsWith('--'))
+                    .join(' ')
+                    .replace(/\s+/g, ' ')
+                    .trim() || 'Write a query'}
+                </code>
                 <span className="sql-peek-cta">
                   Edit SQL <Icon name="chevronDown" size={14} />
                 </span>
@@ -2153,7 +2188,7 @@ export default function App() {
                 onTrim={(cols) => applyOps(withCleans(cols.map((column): Clean => ({ column, kind: 'trim' })).reduce(addClean, ops.clean ?? [])))}
                 onHideEmpty={(cols) => applyOps({ ...ops, hidden: [...new Set([...(ops.hidden ?? []), ...cols])] })}
                 onFill={(cols) => applyOps(withCleans(cols.map((column): Clean => ({ column, kind: 'filldown' })).reduce(addClean, ops.clean ?? [])))}
-                amount={amountHere}
+                amount={amountHere && { ...amountHere, way: wayKnown }}
                 onAmount={() => void addSignedAmount()}
                 categorize={narrationHere}
                 onCategorize={(column) => setCategorizing({ column })}
@@ -2771,6 +2806,8 @@ export default function App() {
         <Lazy onFail={(e) => partFailed(e, () => setSaving(false))}>
           <SaveViewDialog
             sql={editor.trim()}
+            // The steps in words while the editor shows what they made (not a query typed since).
+            steps={editor.trim() === lastRun.current.trim() ? stepLabels(ops) : []}
             tables={editorTables}
             initialName={editorTables[0] ? viewNameFor(editorTables[0]) : 'My view'}
             onSave={saveView}

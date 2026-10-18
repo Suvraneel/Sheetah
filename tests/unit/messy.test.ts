@@ -43,3 +43,11 @@ test('the messy sample cleans up into numbers that match its own grand total', a
   const [grand] = await q(`SELECT number_from_text("Taxable Value") AS taxable FROM messy WHERE "Region" = 'Grand Total'`)
   expect(sums).toEqual({ n: 16, taxable: grand.taxable, regions: 3, first: '2024-04-01' })
 })
+
+test('a reader in the US gets the same register in dollars and sales tax, adding up the same way', async () => {
+  const us = messyCsv(true)
+  expect(us).toContain('Tax %')
+  expect(us).toContain('"$112,500.00"'.replace('$', '')) // grouped the US way, some without the sign
+  expect(us).not.toMatch(/₹|GST/)
+  expect(us.split('\n').at(-2)).toBe('Grand Total,,,,,"$613,950.00",,"$662,184.00"')
+})

@@ -288,13 +288,20 @@ export async function exportResult(result: ResultSet, format: 'csv' | 'parquet',
   if (format === 'parquet') await ensureExtension('parquet')
   const file = sandboxPath(`export_${result.id}.${format}`)
   const copyOpts = format === 'csv' ? '(HEADER, DELIMITER \',\')' : '(FORMAT PARQUET, COMPRESSION ZSTD)'
-  // Text-like columns (VARCHAR, ENUM, JSON) are cleaned in Excel-safe mode; everything keeps its own name.
+  // In Excel-safe mode, text-like columns (VARCHAR, ENUM, JSON) that would start a formula get a quote in
+  // front (not a plain number: a refund of -12.50 stays a number), and doubles are written to the 15
+  // significant digits Excel keeps (519314.16, not a sum's 519314.16000000003). Everything keeps its own name.
+  const safe = format === 'csv' && opts.excelSafe
   const cols = result.columns
     .map((c) => {
       const ref = colRef(c)
       const out = quoteIdent(c.name)
-      if (format === 'csv' && opts.excelSafe && /^(VARCHAR|ENUM|JSON)/i.test(c.type)) {
-        return `CASE WHEN regexp_matches(${ref}::VARCHAR, ${FORMULA_START}) THEN '''' || ${ref}::VARCHAR ELSE ${ref}::VARCHAR END AS ${out}`
+      if (safe && /^(VARCHAR|ENUM|JSON)/i.test(c.type)) {
+        const v = `${ref}::VARCHAR`
+        return `CASE WHEN regexp_matches(${v}, ${FORMULA_START}) AND NOT regexp_full_match(${v}, '[-+]?[0-9]{1,3}(,?[0-9]{3})*(\\.[0-9]+)?') THEN '''' || ${v} ELSE ${v} END AS ${out}`
+      }
+      if (safe && /^(DOUBLE|FLOAT|REAL)$/i.test(c.type)) {
+        return `CASE WHEN ${ref} = 0 OR NOT isfinite(${ref}) THEN ${ref} ELSE round(${ref}, 14 - floor(log10(abs(${ref})))::INTEGER) END AS ${out}`
       }
       return ref === out ? ref : `${ref} AS ${out}`
     })
@@ -306,5 +313,7 @@ export async function exportResult(result: ResultSet, format: 'csv' | 'parquet',
   } finally {
     await db.dropFile(file).catch(() => {})
   }
-  return new Blob([buf as Uint8Array<ArrayBuffer>], { type: format === 'csv' ? 'text/csv' : 'application/vnd.apache.parquet' })
+  // A byte-order mark, so Excel reads the file as UTF-8 (René, £12.50) rather than its own code page.
+  const parts: BlobPart[] = safe ? [new Uint8Array([0xef, 0xbb, 0xbf]), buf as Uint8Array<ArrayBuffer>] : [buf as Uint8Array<ArrayBuffer>]
+  return new Blob(parts, { type: format === 'csv' ? 'text/csv' : 'application/vnd.apache.parquet' })
 }

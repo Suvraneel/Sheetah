@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { makeFormatter } from '../../src/grid/format'
+import { makeFormatter, share } from '../../src/grid/format'
 
 const col = (name: string, type: string) => ({ name, type, numeric: true })
 
@@ -9,6 +9,10 @@ test.describe('grid number formatting', () => {
     expect(makeFormatter(col('n', 'UBIGINT'), [])('18446744073709551615')).toBe('18,446,744,073,709,551,615')
     expect(makeFormatter(col('order_id', 'BIGINT'), [])('1234567')).toBe('1234567')
     expect(makeFormatter(col('year', 'INTEGER'), [])('2024')).toBe('2024')
+    // Whole amounts are money all the same; a count named Total isn't.
+    expect(makeFormatter(col('Amount', 'BIGINT'), [])('1200')).toBe('1,200.00')
+    expect(makeFormatter(col('Taxable Value', 'INTEGER'), [])('-450')).toBe('-450.00')
+    expect(makeFormatter(col('Total Units', 'BIGINT'), [])('1200')).toBe('1,200')
   })
 
   test('decimals keep their scale; doubles show the decimals the data uses', () => {
@@ -49,4 +53,13 @@ test('columns converted from percentages show as percentages; nothing else does'
   // A share computed by a query (0.42 meaning 0.42%) or whole percentages are never multiplied.
   expect(makeFormatter(col('pct', 'DOUBLE'), ['0.42'])('0.42')).toBe('0.42')
   expect(makeFormatter(col('discount_pct', 'DOUBLE'), ['5.0', '12.0'])('12.0')).toBe('12')
+})
+
+test('a share is never said as all or none when it isn’t', () => {
+  expect(share(479308, 480673)).toBe('99.7%')
+  expect(share(480673, 480673)).toBe('100%')
+  expect(share(1, 480673)).toBe('0.1%')
+  expect(share(0, 10)).toBe('0%')
+  expect(share(1, 3)).toBe('33%')
+  expect(share(1, 0)).toBe('')
 })

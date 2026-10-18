@@ -11,8 +11,11 @@ interface Props {
   junk: DropRows[] | null
   /** Total lines still being looked for (a big file): their chip's place, held. */
   checkingTotals?: boolean
-  /** A bank statement's money in and out: to add the signed amount. */
-  amount?: { credit: string; debit: string } | null
+  /**
+   * A bank statement's money in and out: to add the signed amount. `way` false while it isn't known yet which
+   * way round a register's Debit and Credit go (its running balance is being read): said once it is.
+   */
+  amount?: { credit: string; debit: string; way?: boolean } | null
   onAmount?: () => void
   /** A statement's narration column, to group into categories by its words. */
   categorize?: string | null
@@ -119,9 +122,9 @@ export function HintChips({ namesRow, onNames, junk, checkingTotals, empty, onHi
         <button
           className="pii-chip"
           onClick={(e) => thenKeepFocus(e, '.hint-chips', () => onAmount?.())}
-          title={`Money in less money out (${amount.credit} − ${amount.debit}), one number that sums, charts and pivots. A running balance is checked too.`}
+          title={`Money in less money out${amount.way === false ? '' : ` (${amount.credit} − ${amount.debit})`}, one number that sums, charts and pivots. A running balance is checked too.`}
         >
-          <Icon name="plus" size={13} /> Add signed amount ({amount.credit} − {amount.debit})
+          <Icon name="plus" size={13} /> Add signed amount{amount.way === false ? '' : ` (${amount.credit} − ${amount.debit})`}
         </button>
       )}
       {categorize && (

@@ -12,6 +12,9 @@ export const test = base.extend<{ allowPageErrors: RegExp[]; pageErrors: void }>
       const errors: string[] = []
       const watch = (page: import('@playwright/test').Page) => {
         page.on('pageerror', (e) => errors.push(`${e.name}: ${e.message}`))
+        // "Leave this page?" (tables open, not kept): yes, as the test reloads on purpose. Other dialogs are
+        // dismissed, as Playwright does when nothing listens.
+        page.on('dialog', (d) => void (d.type() === 'beforeunload' ? d.accept() : d.dismiss()).catch(() => {}))
         // Errors React caught (the crash screen, a part that failed) are logged, not thrown: count them too.
         page.on('console', (m) => {
           if (/^Sheetah( crashed|: a part failed)/.test(m.text())) errors.push(m.text())

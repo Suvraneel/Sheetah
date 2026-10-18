@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { addClean, percentColumns, cleanExpr, describeClean, cleanSql, type Clean } from '../../src/engine/clean'
-import { dataSumsSql, fillDownSql, looksFilledDown, labelSumsSql, totalsAgree, eitherJunk, junkPredicates, confidentConversion, readStats, statsSql, suggestCleaning } from '../../src/engine/clean-scan'
+import { dataSumsSql, fillDownSql, looksFilledDown, labelSumsSql, totalsAgree, eitherJunk, junkPredicates, confidentConversion, readStats, statsSql, suggestCleaning, decimalsSql, fileDecimalComma } from '../../src/engine/clean-scan'
 import { compose, emptyOps } from '../../src/engine/compose'
 import { q } from './duck'
 
@@ -76,6 +76,22 @@ test.describe('clean a column (run on DuckDB)', () => {
     expect((await suggestionsFor(['1,234', '5,678'], 'de-DE'))[0].clean.comma).toBe(true)
     expect((await suggestionsFor(['1,234', '5,678'], 'en-IN'))[0].clean.comma).toBe(false)
     expect((await suggestionsFor(['1,234', '5.5'], 'de-DE'))[0].clean.comma).toBe(false)
+    // 0,750 and 1,2345 are never a thousands separator: kilograms to three places are decimals.
+    expect((await suggestionsFor(['1,500', '0,750', '10,125'], 'en-GB'))[0].clean.comma).toBe(true)
+    expect((await suggestionsFor(['1,500', '1,2345'], 'en-GB'))[0].clean.comma).toBe(true)
+    expect((await suggestionsFor(['1.500', '0.750'], 'de-DE'))[0].clean.comma).toBe(false)
+  })
+
+  test('a column that can’t tell is read the way the file’s other columns write decimals', async () => {
+    await q(`CREATE OR REPLACE TABLE eu AS SELECT * FROM (VALUES ('1,500', '2,49'), ('10,125', '1,99')) t(kg, preis)`)
+    const [row] = await q(decimalsSql('eu', ['"kg"', '"preis"']))
+    const file = fileDecimalComma([readStats(row, 0), readStats(row, 1)])
+    expect(file).toBe(true)
+    const [kg] = await q(statsSql('eu', ['"kg"']))
+    expect(suggestCleaning('kg', readStats(kg, 0), 'en-GB', true, file)[0].clean.comma).toBe(true)
+    expect(suggestCleaning('kg', readStats(kg, 0), 'en-GB')[0].clean.comma).toBe(false)
+    expect(fileDecimalComma([{ pointOnly: 2, commaOnly: 0 }, { pointOnly: 0, commaOnly: 3 }])).toBe(undefined)
+    expect(fileDecimalComma([{ pointOnly: 0, commaOnly: 0 }])).toBe(undefined)
   })
 
   test('cleaning composes first, so filters and sorting see the converted values', async () => {
@@ -135,6 +151,12 @@ test.describe('what counts as numbers stored as text', () => {
     for (const name of ['pin_code', 'Mobile No', 'Phone Number', 'Order ID', 'customerId']) {
       expect(confidentConversion(await suggestionsFor(['1200', '950'], 'en-IN', name)), name).toBeNull()
     }
+  })
+
+  test('dates that read both ways convert in one click the reader’s way; a column of other dates isn’t forced', async () => {
+    expect(confidentConversion(await suggestionsFor(['01/04/24', '05/04/24', '12/04/24'], 'en-IN'))).toMatchObject({ kind: 'date', format: '%d/%m/%y' })
+    expect(confidentConversion(await suggestionsFor(['01/04/2024', '05/04/2024'], 'en-US'))).toMatchObject({ kind: 'date', format: '%m/%d/%Y' })
+    expect(confidentConversion(await suggestionsFor(['25/04/24', '30/04/24'], 'en-US'))).toMatchObject({ kind: 'date', format: '%d/%m/%y' })
   })
 
   test('one query covers every column', async () => {

@@ -1,6 +1,7 @@
 import * as duckdb from '@duckdb/duckdb-wasm'
 import { Schema, Table, type RecordBatch } from 'apache-arrow'
 import { CLEAN_MACROS } from './clean'
+import { FileKindError } from './load-errors'
 // Self-hosted engine: Vite emits these as static assets, so nothing loads from a CDN.
 // Only the "eh" (wasm exceptions) build is shipped; every current browser supports it.
 import ehModuleUrl from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url'
@@ -140,7 +141,8 @@ export async function restorePseudonym(): Promise<void> {
 export async function ensureExtension(name: 'parquet' | 'json'): Promise<void> {
   const { extensions } = await getEngine()
   if (extensions[name]) return
-  throw new Error(
+  // The whole story (not "didn't read as any of them" beside it): a file kind this build can't open.
+  throw new FileKindError(
     `${name === 'parquet' ? 'Parquet' : 'JSON'} support isn’t included in this build. Sheetah only runs code served from its own site, so it won’t fetch it from elsewhere. CSV and Excel files work.`,
   )
 }

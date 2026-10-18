@@ -90,7 +90,7 @@ test.describe('anonymizing (run on DuckDB)', () => {
     expect(rows.map((r) => r.id)).toEqual([1, 2, 3])
     expect(rows[0].customer_name).toBe(rows[2].customer_name)
     expect(rows[0].customer_name).not.toBe(rows[1].customer_name)
-    expect(String(rows[1].customer_name)).toMatch(/^Person \d$/)
+    expect(String(rows[1].customer_name)).toMatch(/^Customer \d$/)
   })
 })
 

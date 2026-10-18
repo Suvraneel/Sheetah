@@ -45,3 +45,29 @@ test('rows ending in a trailing separator aren’t a header with title lines abo
   const trailing = ['Date,Narration,Amount', '2024-01-01,Item 0,0,', '2024-01-02,Item 1,1,', '2024-01-03,Item 2,2,'].join('\n')
   expect(titleLines(trailing)).toBe(null)
 })
+
+test('a zip says what it holds: a workbook named .csv opens, a Word file renamed is named as one', async () => {
+  const { zipInside, notATable } = await import('../../src/engine/sniff')
+  const zip = (...names: string[]) => new TextEncoder().encode(`PK\x03\x04....${names.join('....')}`)
+  expect(zipInside(zip('[Content_Types].xml', 'xl/workbook.xml'))).toBe('xlsx')
+  expect(zipInside(zip('[Content_Types].xml', 'word/document.xml'))).toBe('docx')
+  expect(zipInside(zip('mimetypeapplication/vnd.oasis.opendocument.spreadsheet'))).toBe('ods')
+  expect(zipInside(zip('data.csv'))).toBe(null)
+  expect(notATable('zip', 'budget export.csv', 'xlsx')).toBe(null)
+  expect(notATable('zip', 'report.csv', 'docx')).toContain('is a Word document')
+  expect(notATable('zip', 'archive.csv', null)).toContain('is a zip archive')
+})
+
+test('UTF-8 or not: a £ written by Excel on Windows is one byte, not two', async () => {
+  const { isUtf8 } = await import('../../src/engine/sniff')
+  expect(isUtf8(new TextEncoder().encode('name,price\nRené,£12.50\n'))).toBe(true)
+  expect(isUtf8(new Uint8Array([0x52, 0x65, 0x6e, 0xe9, 0x2c, 0xa3, 0x31]))).toBe(false) // René,£1 in Windows-1252
+  expect(isUtf8(new TextEncoder().encode('£').slice(0, 1))).toBe(true) // cut off at the end of the slice
+})
+
+test('a report whose names are its first line, with group lines among its rows, is read by its separator when asked', async () => {
+  const { titleLines } = await import('../../src/engine/sniff')
+  const qb = [',Date,Type,Num,Amount', 'Acme Corp', ',06/10/2024,Invoice,1000,100.00', 'Total for Acme Corp,,,,100.00', 'Globex LLC', ',06/11/2024,Invoice,1001,50.00'].join('\r\n')
+  expect(titleLines(qb)).toBe(null)
+  expect(titleLines(qb, true)).toEqual({ sep: ',', skip: 0 })
+})

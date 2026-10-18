@@ -30,19 +30,21 @@ export async function detectPii(result: ResultSet): Promise<Detection[]> {
   if (!cols.length) return []
 
   const patterned = RULES.filter((r) => r.pattern)
-  const parts: string[] = []
-  cols.forEach((c, i) => {
-    if (!TEXTY.test(c.type)) return
-    const v = `trim(${colRef(c)}::VARCHAR)`
-    parts.push(`count(nullif(${v}, ''))::DOUBLE AS "n${i}"`)
-    patterned.forEach((r, j) => parts.push(`count(*) FILTER (WHERE regexp_full_match(${v}, ${quoteLiteral(r.pattern!)}))::DOUBLE AS "m${i}_${j}"`))
-    // Companies, not people ("Wayne Enterprises", "Acme Pvt Ltd"): a Customer column of them isn't personal.
-    parts.push(`count(*) FILTER (WHERE regexp_matches(lower(${v}), ${quoteLiteral(COMPANY)}))::DOUBLE AS "co${i}"`)
-  })
-  const counts = parts.length
-    ? (((await conn.query(`WITH s AS (SELECT * FROM ${result.table} USING SAMPLE ${SAMPLE_ROWS} ROWS) SELECT ${parts.join(', ')} FROM s`)).toArray()[0]?.toJSON() ??
-        {}) as Record<string, number>)
-    : {}
+  const texty = [...cols.entries()].filter(([, c]) => TEXTY.test(c.type))
+  // Twenty columns a query: a wide table's patterns all at once would run the engine out of memory.
+  const counts: Record<string, number> = {}
+  for (let k = 0; k < texty.length; k += 20) {
+    const parts: string[] = []
+    for (const [i, c] of texty.slice(k, k + 20)) {
+      const v = `trim(${colRef(c)}::VARCHAR)`
+      parts.push(`count(nullif(${v}, ''))::DOUBLE AS "n${i}"`)
+      patterned.forEach((r, j) => parts.push(`count(*) FILTER (WHERE regexp_full_match(${v}, ${quoteLiteral(r.pattern!)}))::DOUBLE AS "m${i}_${j}"`))
+      // Companies, not people ("Wayne Enterprises", "Acme Pvt Ltd"): a Customer column of them isn't personal.
+      parts.push(`count(*) FILTER (WHERE regexp_matches(lower(${v}), ${quoteLiteral(COMPANY)}))::DOUBLE AS "co${i}"`)
+    }
+    const row = (await conn.query(`WITH s AS (SELECT * FROM ${result.table} USING SAMPLE ${SAMPLE_ROWS} ROWS) SELECT ${parts.join(', ')} FROM s`)).toArray()[0]?.toJSON()
+    Object.assign(counts, row ?? {})
+  }
 
   const out: Detection[] = []
   for (const [i, c] of cols.entries()) {

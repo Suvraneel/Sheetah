@@ -33,8 +33,29 @@ export function sniff(head: Uint8Array): FileKind {
   return 'text'
 }
 
+/** What a zip holds, by the names of the files in it (its first entry and its directory at the end). */
+export type ZipInside = 'xlsx' | 'docx' | 'pptx' | 'ods' | null
+export function zipInside(bytes: Uint8Array): ZipInside {
+  const s = new TextDecoder('latin1').decode(bytes)
+  if (/xl\/workbook\.xml|xl\/worksheets\//.test(s)) return 'xlsx'
+  if (/word\/document\.xml/.test(s)) return 'docx'
+  if (/ppt\/presentation\.xml/.test(s)) return 'pptx'
+  if (/application\/vnd\.oasis\.opendocument\.spreadsheet/.test(s)) return 'ods'
+  return null
+}
+
+/** Whether bytes read as UTF-8 (a character cut off at the end of the slice doesn't count against them). */
+export function isUtf8(bytes: Uint8Array): boolean {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes, { stream: true })
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Files that aren't tables at all, in plain words; null for the ones worth reading. */
-export function notATable(kind: FileKind, name: string): string | null {
+export function notATable(kind: FileKind, name: string, inside: ZipInside = null): string | null {
   const ext = /\.([a-z0-9]+)$/i.exec(name)?.[1].toLowerCase() ?? ''
   switch (kind) {
     case 'pdf':
@@ -42,10 +63,11 @@ export function notATable(kind: FileKind, name: string): string | null {
     case 'image':
       return `${name} is an image. Sheetah opens tables (CSV, Excel, JSON, Parquet), not pictures of them.`
     case 'zip':
-      if (ext === 'xlsx' || ext === 'xlsm') return null
-      if (ext === 'docx') return `${name} is a Word document. Copy its table into a spreadsheet and save that as .xlsx or CSV.`
-      if (ext === 'pptx') return `${name} is a PowerPoint file. Copy its table into a spreadsheet and save that as .xlsx or CSV.`
-      if (ext === 'ods') return `${name} is an OpenDocument spreadsheet. Save it as .xlsx or CSV and open that.`
+      // What's inside counts for more than the name: a portal's "report.xls" or "export.csv" that is a workbook.
+      if (inside === 'xlsx' || ext === 'xlsx' || ext === 'xlsm') return null
+      if (inside === 'docx' || ext === 'docx') return `${name} is a Word document. Copy its table into a spreadsheet and save that as .xlsx or CSV.`
+      if (inside === 'pptx' || ext === 'pptx') return `${name} is a PowerPoint file. Copy its table into a spreadsheet and save that as .xlsx or CSV.`
+      if (inside === 'ods' || ext === 'ods') return `${name} is an OpenDocument spreadsheet. Save it as .xlsx or CSV and open that.`
       if (ext === 'numbers') return `${name} is a Numbers spreadsheet. Export it as CSV or Excel and open that.`
       if (ext === 'xlsb') return `${name} is an Excel binary workbook (.xlsb). Save it as .xlsx or CSV in Excel and open that.`
       return `${name} is a zip archive. Unzip it and open the CSV or Excel file inside.`
@@ -78,7 +100,7 @@ function fields(line: string, sep: string): number {
  * Inc", "January 2024"): the file reader takes the first as the only column. The separator and how many
  * lines come before the column names (the first line with as many fields as most of the lines), or null.
  */
-export function titleLines(text: string): { sep: string; skip: number } | null {
+export function titleLines(text: string, headerFirst = false): { sep: string; skip: number } | null {
   const lines = text.split(/\r?\n/).slice(0, 60).filter((l, i, all) => l.trim() !== '' || i < all.length - 1)
   for (const sep of [',', ';', '\t', '|']) {
     const counts = lines.map((l) => (l.trim() ? fields(l, sep) : 0))
@@ -89,6 +111,9 @@ export function titleLines(text: string): { sep: string; skip: number } | null {
     // Title lines have no separator at all; the column names are the first line with them, as many as most.
     const skip = counts.findIndex((c) => c > 1)
     if (skip > 0 && counts[skip] === common && counts.slice(0, skip).every((c) => c <= 1)) return { sep, skip }
+    // (Or, asked for when the file reader gave up on a file whose names are its first line: group names
+    // without separators between its rows, a QuickBooks report exported without its titles.)
+    if (headerFirst && skip === 0 && counts[0] === common) return { sep, skip: 0 }
   }
   return null
 }

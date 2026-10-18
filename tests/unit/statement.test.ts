@@ -83,6 +83,12 @@ test('a statement’s opening and closing balance lines are known: no money in o
   const books = statementColumns([{ name: 'Date', type: 'VARCHAR' }, { name: 'Particulars', type: 'VARCHAR' }, { name: 'Vch No.', type: 'VARCHAR' }, { name: 'Debit', type: 'VARCHAR' }, { name: 'Credit', type: 'VARCHAR' }])!
   const lines = balanceLineSql(books, ['Date', 'Particulars'], () => false)!
   expect((await q(`SELECT "Particulars" FROM tl WHERE ${lines}`)).map((r) => r.Particulars)).toEqual(['Opening Balance', 'Closing Balance:'])
+  // A US bank's words for them.
+  await q(`CREATE OR REPLACE TABLE us AS SELECT * FROM (VALUES
+    ('Beginning Balance', NULL, NULL, '1,000.00'), ('01/03/2026', 'ACH deposit', '200.00', '1,200.00'), ('Ending Balance', NULL, NULL, '1,200.00')
+  ) t("Date", "Description", "Deposits", "Balance")`)
+  const us = balanceLineSql({ credit: 'Deposits', debit: 'Withdrawals', balance: 'Balance' }, ['Date', 'Description'], () => false)!
+  expect((await q(`SELECT "Date" FROM us WHERE ${us.replace(/"Withdrawals"/g, 'NULL')}`)).map((r) => r.Date)).toEqual(['Beginning Balance', 'Ending Balance'])
 })
 
 test('next month’s tie-out adds up the total lines only: not the balance lines or empty rows a view also leaves out', async () => {

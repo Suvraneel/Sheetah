@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { expect, test } from './fixtures'
 import readXlsxFile from 'read-excel-file/node'
 import { committedFixture, exportAs, fixture, metaText, openApp, openFiles, runSql } from './helpers'
+import { writeWorkbook } from '../src/engine/xlsx-write'
 
 test.describe('opening and exporting files', () => {
   test('CSV, gzipped CSV and TSV become tables with friendly names', async ({ page }) => {
@@ -35,6 +36,42 @@ test.describe('opening and exporting files', () => {
     await expect(page.locator('.sr-grid [role=columnheader]').first()).toContainText('Invoice')
   })
 
+  test('Excel: a header in two rows (a group merged over its columns) reads as one', async ({ page }) => {
+    await openApp(page)
+    // Saved as a merged header is: the group in its first cell, the cells it spans empty.
+    const cols = [{ name: 'Region', type: 'VARCHAR' }, ...['Sales', '', 'Returns', ''].map((name) => ({ name, type: 'DOUBLE' }))]
+    const rows = [
+      [null, 'Units', 'Price', 'Units', 'Price'],
+      ['North', '10', '2.5', '1', '2.5'],
+      ['South', '7', '3', '0', '3'],
+    ]
+    const book = await writeWorkbook([{ name: 'regions', src: { columns: cols, rowCount: rows.length, fetch: async (s, e) => rows.slice(s, e) } }])
+    const bytes = Buffer.from(await book.arrayBuffer())
+    await page.locator('input[type=file]').setInputFiles([{ name: 'returns.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: bytes }])
+    await expect(page.locator('.result-meta')).toContainText('2 rows · 5 columns')
+    await expect(page.locator('.sr-grid [role=columnheader]').nth(1)).toContainText('Sales Units')
+    await expect(page.locator('.sr-grid [role=columnheader]').nth(4)).toContainText('Returns Price')
+  })
+
+  test('a workbook a portal saved as .csv or .xls opens as the workbook it is', async ({ page }) => {
+    await openApp(page)
+    const book = readFileSync(committedFixture('budget 2024.xlsx'))
+    await page.locator('input[type=file]').setInputFiles([{ name: 'budget export.csv', mimeType: 'text/csv', buffer: book }])
+    await expect(page.locator('.toast', { hasText: 'budget export.csv is an Excel workbook, whatever its name says' })).toBeVisible()
+    await expect(page.locator('.side-table .side-name')).toHaveText(['budget_export_notes', 'budget_export_q1_sales'])
+  })
+
+  test('a CSV saved by Excel on Windows (not UTF-8) opens with its £ and é', async ({ page }) => {
+    await openApp(page)
+    // René,£12.50 in Windows-1252: é and £ are one byte each.
+    const latin = Buffer.concat([Buffer.from('name,note\n'), Buffer.from([0x52, 0x65, 0x6e, 0xe9]), Buffer.from(','), Buffer.from([0xa3]), Buffer.from('12.50 refund\n')])
+    await page.locator('input[type=file]').setInputFiles([{ name: 'latin1.csv', mimeType: 'text/csv', buffer: latin }])
+    await expect(page.locator('.result-meta')).toContainText('1 row')
+    await expect(page.locator('.sr-grid').last()).toContainText('René')
+    await expect(page.locator('.sr-grid').last()).toContainText('£12.50 refund')
+    await expect(page.locator('.toast', { hasText: 'read as Windows-1252' })).toBeVisible()
+  })
+
   test('legacy .xls gets a clear message', async ({ page }) => {
     await openApp(page)
     await openFiles(page, fixture('sales_oct.csv'))
@@ -54,9 +91,17 @@ test.describe('opening and exporting files', () => {
     expect(safe).toContain("'+cmd|calc,-5") // numbers untouched
     expect(safe).toContain("'@SUM(A1)")
     expect(safe).toContain('Dan,normal text,4')
+    expect(safe.charCodeAt(0)).toBe(0xfeff) // UTF-8 for Excel: René and £ arrive as written
 
     dl = await exportAs(page, 'CSV, exact values')
     expect(readFileSync((await dl.path())!, 'utf8')).toContain('"=HYPERLINK')
+    expect(readFileSync((await dl.path())!, 'utf8').charCodeAt(0)).not.toBe(0xfeff)
+
+    // A refund written in a text column stays a number; a sum's float noise is gone.
+    await runSql(page, "SELECT '-12.50' AS refund, '£12.50 René' AS note, 0.1::DOUBLE + 0.2::DOUBLE AS total")
+    await expect(page.locator('.result-meta')).toContainText('1 row')
+    dl = await exportAs(page, 'CSV')
+    expect(readFileSync((await dl.path())!, 'utf8')).toBe('\ufeffrefund,note,total\n-12.50,£12.50 René,0.3\n')
   })
 
   test('Excel export keeps numbers, dates and text apart, and never turns text into formulas', async ({ page }) => {
@@ -234,6 +279,18 @@ test.describe('a report with title lines above its table', () => {
     await expect(page.locator('.result-meta')).toContainText('7 rows · 5 columns')
     await expect(page.getByRole('button', { name: /^Leave out 2 total lines/ })).toBeVisible()
   })
+
+  test('however many customers, their “Total for …” lines are offered when they add up', async ({ page }) => {
+    await openApp(page)
+    const lines = [',Date,Transaction Type,Num,Amount']
+    for (const [i, who] of ['Acme Corp', 'Globex LLC', 'Initech Inc', 'Umbrella Co'].entries()) {
+      lines.push(who, `,06/1${i}/2024,Invoice,10${i}0,100.00`, `,06/2${i}/2024,Invoice,10${i}1,50.00`, `Total for ${who},,,,150.00`)
+    }
+    lines.push('TOTAL,,,,600.00')
+    await page.locator('input[type=file]').setInputFiles([buf('qb_four.csv', `${lines.join('\r\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('17 rows')
+    await expect(page.getByRole('button', { name: /^Leave out 5 total lines/ })).toBeVisible()
+  })
 })
 
 test.describe('India’s identifiers', () => {
@@ -303,6 +360,16 @@ test.describe('dates that read both ways', () => {
     await page.locator('input[type=file]').setInputFiles([buf('paid_uk.csv', 'id,paid_on\n1,01/02/2024\n2,25/12/2024\n')])
     await expect(page.locator('.result-meta')).toContainText('2 rows')
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2024-02-01')
+  })
+
+  test('a QuickBooks report with group lines (rows of other lengths) is read month first too', async ({ page }) => {
+    await openApp(page)
+    const qb = ['Customer,Date,Type,Amount', 'Amy’s Bird Sanctuary', ',10/02/2026,Invoice,120.00', ',09/10/2026,Invoice,80.00', 'Bill’s Windsurf Shop', ',12/03/2026,Invoice,45.00']
+    await page.locator('input[type=file]').setInputFiles([buf('qb_sales.csv', qb.join('\n'))])
+    await expect(page.locator('.result-meta')).toContainText('5 rows')
+    await expect(page.locator('.sr-grid').last()).toContainText('2026-10-02')
+    await expect(page.locator('.sr-grid').last()).toContainText('2026-12-03')
+    await expect(page.getByRole('button', { name: 'Read Date day first' })).toBeVisible()
   })
 
   test('two-digit years: 01/04/24 is 1 April 2024, not 24 April 2001', async ({ page }) => {

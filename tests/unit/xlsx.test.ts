@@ -150,3 +150,10 @@ test('a column is as wide as its numbers will show (141544.3 is 1,41,544.30), so
   expect(widths[1]).toBeGreaterThanOrEqual(12)
   expect(widths[0]).toBeGreaterThanOrEqual('Balance as per bank statement'.length)
 })
+
+test('a sum’s float noise is written to the 15 digits Excel keeps', async () => {
+  const cols: XlsxColumn[] = [{ name: 'total', type: 'DOUBLE' }]
+  const blob = await writeXlsx('t', { columns: cols, rowCount: 3, fetch: async () => [['98.44999999999999'], ['519314.16000000003'], ['0.30000000000000004']] })
+  const { rows } = await readBack(Buffer.from(await blob.arrayBuffer()))
+  expect(rows.slice(1).map((r) => r[0])).toEqual([98.45, 519314.16, 0.3])
+})

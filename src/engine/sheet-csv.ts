@@ -39,6 +39,32 @@ export function headerRow(data: unknown[][], width: number): number {
   return 0
 }
 
+/**
+ * A header in two rows: a group name merged across its columns ("Sales" over Units and Price) and the
+ * names under it. Excel keeps a merged cell's value in its first cell, so the group is carried right over
+ * the empty ones. Taken as two rows only when the second is all names, there are numbers or dates under
+ * them, and the first leaves cells empty (the merges); the names become "Sales Units", "Sales Price".
+ */
+export function twoRowHeader(data: unknown[][], top: number, width: number): string[] | null {
+  const [first, second, below] = [data[top], data[top + 1], data[top + 2]]
+  if (!first || !second || !below) return null
+  const cells = (row: unknown[]) => Array.from({ length: width }, (_, c) => row[c])
+  const [a, b, d] = [cells(first), cells(second), cells(below)]
+  const names = b.filter((v) => !isEmpty(v))
+  if (names.length < Math.max(2, Math.ceil(width * 0.5)) || !names.every((v) => typeof v === 'string')) return null
+  if (!a.some(isEmpty) || !b.some((v, c) => typeof v === 'string' && (typeof d[c] === 'number' || d[c] instanceof Date))) return null
+  // Merged spans start where the first row has a value: carried right while its cells are empty and the
+  // second row names the columns under it.
+  let group = ''
+  const out = a.map((v, c) => {
+    if (!isEmpty(v)) group = String(v).trim()
+    else if (isEmpty(b[c])) group = ''
+    const name = isEmpty(b[c]) ? '' : String(b[c]).trim()
+    return group && name ? `${group} ${name}` : group || name
+  })
+  return new Set(out.map((n) => n.toLowerCase())).size === out.length && out.every(Boolean) ? out : null
+}
+
 export function sheetToCsv(data: unknown[][]): { csv: string; rows: number; skipped: number } {
   // Drop trailing empty rows and find the real width.
   let end = data.length
@@ -54,12 +80,16 @@ export function sheetToCsv(data: unknown[][]): { csv: string; rows: number; skip
     }
   }
   const top = headerRow(data, width)
-  const header = Array.from({ length: width }, (_, c) => {
-    const h = data[top][c]
-    return isEmpty(h) ? `column_${c + 1}` : h instanceof Date ? cellToText(h) : String(h)
-  })
+  const two = twoRowHeader(data, top, width)
+  const header =
+    two ??
+    Array.from({ length: width }, (_, c) => {
+      const h = data[top][c]
+      return isEmpty(h) ? `column_${c + 1}` : h instanceof Date ? cellToText(h) : String(h)
+    })
+  const first = top + (two ? 2 : 1)
   const lines = [header.map(cellToText).join(',')]
-  for (let r = top + 1; r < end; r++) {
+  for (let r = first; r < end; r++) {
     const row = data[r]
     const cells = new Array<string>(width)
     for (let c = 0; c < width; c++) cells[c] = cellToText(row[c])
@@ -67,5 +97,5 @@ export function sheetToCsv(data: unknown[][]): { csv: string; rows: number; skip
   }
   // Title lines, not the blank rows between them.
   const skipped = data.slice(0, top).filter((r) => !r.every(isEmpty)).length
-  return { csv: lines.join('\n'), rows: end - 1 - top, skipped }
+  return { csv: lines.join('\n'), rows: end - first, skipped }
 }

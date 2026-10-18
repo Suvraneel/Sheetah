@@ -201,6 +201,16 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   (the crash screen, a part that failed) (`tests/fixtures.ts`), even when what it checked on screen looked right.
 
 ### Changed
+- **Excel exports are about 40% faster and smaller**: each distinct text is written once (shared strings, as Excel
+  does), the checksum comes from the browser's own compressor, and the page draws between every thousand rows
+  instead of freezing on a million.
+- The messy sample is in dollars with sales tax for a reader in the US (rupees with GST elsewhere); the year end
+  among ageing's quick days is 31 December outside India; *Zip code* is said as the US says it.
+- Saving a view lists its steps (*Without 4 total lines*, *Taxable Value as number*), with the SQL they make folded
+  under them. Undo and Clear all stay in view at the end of a phone's row of steps; the phone's folded SQL shows
+  the whole query on one line (*SELECT * FROM report WHERE …*).
+- A pseudonym is named for the column's people (*Customer 1*, *Vendor 2*), so a list of companies reads right.
+- Look up says 99.7% matched, never 100% with rows left without a match.
 - Step chips are named for what clicking them does (*Remove step: Without 1 total line*); an added category column's
   chip opens its rules, and its × removes it. Category words come from the rows no category has taken yet, and
   focus stays among them as they're used.
@@ -268,6 +278,32 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   says to tap for exact values.
 
 ### Fixed
+- **Decimal commas read 1000× too big**: a column of 1,500 and 0,750 (kilograms) beside a price of 2,49 was read as
+  thousands. A value only a decimal comma explains (0,750; 1,2345) settles a column, and a column that can't tell
+  is read the way the file's other columns write decimals, before the reader's own habit.
+- **US dates in QuickBooks reports** (group lines with no commas) were read day first, 10/02/2026 as 10 February:
+  the reader's habit applies to them as to any file, with *Read Date day first* a click away.
+- **Stacking months counted rows twice** when a month and its revision were both picked: rows in two of the tables
+  are said before stacking (*2 rows are in both sales_dec and sales_dec_rev*). A month whose amounts were read as
+  text (one "N/A") stacks as numbers, saying what becomes empty, instead of turning every month's amounts to text.
+- A table of 300 columns ran the engine out of memory looking itself over, and the error was taken for a new
+  version: *Reload* lost every table. The look-over runs in parts, and only a missing file counts as a new version.
+- A CSV saved by Excel on Windows (Windows-1252: £, é) didn't open; it's read as that, and said so.
+- A workbook saved as .csv or .xls by a portal opens as the workbook it is; a Word file renamed is named as one.
+- Leaving the page with tables that aren't kept in this browser asks first.
+- *CSV* export: a UTF-8 mark so Excel shows £ and é as written; a plain negative number in a text column (−12.50)
+  isn't quoted as text; a sum's float noise (519314.16000000003) is written as Excel would keep it, in CSV and Excel.
+- QuickBooks' "Total for …" lines are offered however many customers there are, when they add up; a US bank's
+  *Beginning Balance* and *Ending Balance* are balance lines, and a short statement's summary is offered for
+  leaving out.
+- Dates that read both ways (01/04/24, no day past the 12th) are offered in the one-click conversion the reader's way.
+- Ageing is offered on an open items list with a plain Amount and a due date; whole-number amounts show two
+  decimals like other money.
+- A header in two rows (a group merged over its columns) reads as one: *Sales Units*, *Sales Price*.
+- A view that looks a table up in another (this month's sales in the product list) is offered on next month's file.
+- Stacked months are exported as *sales_2024_01-12*, not after the first month.
+- *Add signed amount* on a register says which way round once its balance is read, rather than turning round.
+- Parquet or JSON in a build without them says only that.
 - Dates that read both ways, read the reader's way at load, are offered the other way as one click (*Read paid_on
   day first*): nothing in the file said which was meant.
 - A table opened again keeps its steps only while it has the same rows and columns and the steps still read it; one

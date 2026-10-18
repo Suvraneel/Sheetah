@@ -6,8 +6,9 @@ import { LOCALE, isIdLike } from './sql'
  * doesn't need a million-row string in memory.
  *
  * Types: numbers stay numbers (except integers longer than 15 digits, which Excel would round, kept
- * as text), DATE/TIMESTAMP become real Excel dates, everything else is text. Text cells are inline
- * strings, never formulas, so "=HYPERLINK(…)" in the data can't run when the file is opened.
+ * as text), DATE/TIMESTAMP become real Excel dates, everything else is text. Text cells are strings
+ * (shared: each distinct one written once, as Excel does), never formulas, so "=HYPERLINK(…)" in the data
+ * can't run when the file is opened.
  */
 
 export interface XlsxColumn {
@@ -84,12 +85,34 @@ export function monthSerial(v: string): number | null {
 /** Number styles (cellXfs below): 0 as typed (IDs, years), 4 grouped whole numbers, 5 grouped with two decimals, 6 percent. */
 type NumStyle = 0 | 4 | 5 | 6
 
-function cell(ref: string, kind: Kind, v: string | null | undefined, num: NumStyle = 0): string {
+/**
+ * The workbook's shared strings: each distinct text once, cells pointing to it by number (a region named on
+ * every row is written once). Past a million distinct ones, the rest are written in their cells.
+ */
+class Strings {
+  private map = new Map<string, number>()
+  readonly list: string[] = []
+  count = 0
+  index(s: string): number {
+    let i = this.map.get(s)
+    if (i === undefined) {
+      if (this.list.length >= 1_000_000) return -1
+      i = this.list.length
+      this.map.set(s, i)
+      this.list.push(s)
+    }
+    this.count++
+    return i
+  }
+}
+
+function cell(ref: string, kind: Kind, v: string | null | undefined, num: NumStyle = 0, strings?: Strings): string {
   if (v === null || v === undefined) return ''
   const s = num ? ` s="${num}"` : ''
   switch (kind) {
     case 'number':
-      if (/^-?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(v)) return `<c r="${ref}"${s}><v>${v}</v></c>`
+      // To the 15 significant digits Excel keeps: a sum's 98.44999999999999 is 98.45.
+      if (/^-?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(v)) return `<c r="${ref}"${s}><v>${v.replace(/\D/g, '').length > 15 ? String(Number(Number(v).toPrecision(15))) : v}</v></c>`
       break // inf / nan: keep as text
     case 'bigint': {
       // Excel keeps 15 significant digits: longer numbers would silently change, so they stay text.
@@ -113,6 +136,8 @@ function cell(ref: string, kind: Kind, v: string | null | undefined, num: NumSty
     }
   }
   const text = v.length > 32_767 ? v.slice(0, 32_767) : v // Excel's per-cell limit
+  const shared = strings ? strings.index(text) : -1
+  if (shared >= 0) return `<c r="${ref}" t="s"><v>${shared}</v></c>`
   return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${esc(text)}</t></is></c>`
 }
 
@@ -120,22 +145,6 @@ function cell(ref: string, kind: Kind, v: string | null | undefined, num: NumSty
 export const sheetName = (s: string) => (s.replace(/[[\]:*?/\\]/g, ' ').trim() || 'Sheet1').slice(0, 31)
 
 /* ------------------------------------ Zip ------------------------------------ */
-
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256)
-  for (let n = 0; n < 256; n++) {
-    let c = n
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
-    t[n] = c >>> 0
-  }
-  return t
-})()
-
-function crc32(crc: number, bytes: Uint8Array): number {
-  let c = ~crc >>> 0
-  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8)
-  return ~c >>> 0
-}
 
 interface ZipEntry {
   name: Uint8Array
@@ -147,9 +156,13 @@ interface ZipEntry {
 
 const enc = new TextEncoder()
 
-/** Compresses a stream of text chunks (deflate), tracking CRC and size of the original bytes. */
+/**
+ * Compresses a stream of text chunks (deflate), with the CRC and size of the original bytes. Gzip is
+ * deflate with the CRC in its trailer: the browser computes it natively, and the deflate data between its
+ * header and trailer is what a zip entry holds.
+ */
 async function deflate(chunks: AsyncIterable<string>): Promise<{ blob: Blob; crc: number; size: number }> {
-  const cs = new CompressionStream('deflate-raw')
+  const cs = new CompressionStream('gzip')
   const writer = cs.writable.getWriter()
   const parts: BlobPart[] = []
   const reading = (async () => {
@@ -160,17 +173,25 @@ async function deflate(chunks: AsyncIterable<string>): Promise<{ blob: Blob; crc
       parts.push(value)
     }
   })()
-  let crc = 0
   let size = 0
   for await (const text of chunks) {
     const bytes = enc.encode(text)
-    crc = crc32(crc, bytes)
     size += bytes.length
     await writer.write(bytes)
   }
   await writer.close()
   await reading
-  return { blob: new Blob(parts), crc, size }
+  const gz = new Blob(parts)
+  // The header: 10 bytes, and the optional fields its flags say follow.
+  const head = new Uint8Array(await gz.slice(0, 1024).arrayBuffer())
+  let at = 10
+  const flags = head[3]
+  if (flags & 4) at += 2 + (head[10] | (head[11] << 8))
+  if (flags & 8) while (head[at++] !== 0);
+  if (flags & 16) while (head[at++] !== 0);
+  if (flags & 2) at += 2
+  const tail = new DataView(await gz.slice(gz.size - 8).arrayBuffer())
+  return { blob: gz.slice(at, gz.size - 8), crc: tail.getUint32(0, true), size }
 }
 
 async function* once(text: string) {
@@ -218,12 +239,12 @@ function zip(entries: Omit<ZipEntry, 'offset'>[]): Blob {
 /* ---------------------------------- Workbook ---------------------------------- */
 
 const CONTENT_TYPES = (sheets: number) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${Array.from({ length: sheets }, (_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${Array.from({ length: sheets }, (_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>`
 const ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`
-// Sheets are rId1…rIdN; the styles come after them.
+// Sheets are rId1…rIdN; the styles and the shared strings come after them.
 const WORKBOOK_RELS = (sheets: number) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${Array.from({ length: sheets }, (_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${Array.from({ length: sheets }, (_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId${sheets + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>`
 // Styles: 0 plain, 1 date, 2 date and time, 3 bold header, 4–6 numbers (see NumStyle), 7 a month (Apr 2024).
 // A date is Excel's own short date (format 14), shown the way the reader's computer writes dates: 15-04-2024
 // in India, 4/15/2024 in the US. A month and a timestamp are written out (no regional format has them).
@@ -265,13 +286,16 @@ export async function writeWorkbook(sheets: { name: string; src: XlsxSource }[])
   if (cells > XLSX_MAX_CELLS) {
     throw new Error(`That's ${cells.toLocaleString(LOCALE)} cells, too many for a workable Excel file. Export it as CSV or Parquet instead, or filter it first.`)
   }
+  const strings = new Strings()
   const files: [string, AsyncIterable<string>][] = [
     ['[Content_Types].xml', once(CONTENT_TYPES(sheets.length))],
     ['_rels/.rels', once(ROOT_RELS)],
     ['xl/workbook.xml', once(workbook(sheets.map((s) => s.name)))],
     ['xl/_rels/workbook.xml.rels', once(WORKBOOK_RELS(sheets.length))],
     ['xl/styles.xml', once(STYLES)],
-    ...sheets.map((s, i): [string, AsyncIterable<string>] => [`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s.src)]),
+    ...sheets.map((s, i): [string, AsyncIterable<string>] => [`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s.src, strings)]),
+    // After the sheets: by then every text they hold is in the list.
+    ['xl/sharedStrings.xml', sharedXml(strings)],
   ]
   const entries: Omit<ZipEntry, 'offset'>[] = []
   for (const [path, chunks] of files) {
@@ -281,8 +305,30 @@ export async function writeWorkbook(sheets: { name: string; src: XlsxSource }[])
   return zip(entries)
 }
 
+/** The shared strings' XML, written once the sheets have all been. */
+async function* sharedXml(strings: Strings): AsyncIterable<string> {
+  yield `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${strings.count}" uniqueCount="${strings.list.length}">`
+  for (let i = 0; i < strings.list.length; i += 10_000) {
+    let out = ''
+    for (const s of strings.list.slice(i, i + 10_000)) out += `<si><t xml:space="preserve">${esc(s)}</t></si>`
+    yield out
+  }
+  yield '</sst>'
+}
+
+/** Lets the page draw between parts of a long export (a message, not a timer: a background tab doesn't slow it). */
+const pause = () =>
+  new Promise<void>((resolve) => {
+    const ch = new MessageChannel()
+    ch.port1.onmessage = () => {
+      ch.port1.close()
+      resolve()
+    }
+    ch.port2.postMessage(0)
+  })
+
 /** One worksheet's XML, streamed a window of rows at a time. */
-function sheetXml(src: XlsxSource): AsyncIterable<string> {
+function sheetXml(src: XlsxSource, strings?: Strings): AsyncIterable<string> {
   const rows = Math.min(src.rowCount, XLSX_MAX_ROWS)
   const kinds = src.columns.map((c) => kindOf(c.type))
   // Amounts show grouped like the grid (1,234,567 and 1,234.50); identifiers and years stay as typed.
@@ -325,15 +371,19 @@ function sheetXml(src: XlsxSource): AsyncIterable<string> {
     for (let start = 0; start < rows; start += WINDOW) {
       if (src.cancelled?.()) throw new DOMException('Export cancelled', 'AbortError')
       const batch = start === 0 && first.length >= Math.min(rows, WINDOW) ? first : await src.fetch(start, Math.min(rows, start + WINDOW))
-      let out = ''
-      for (let j = 0; j < batch.length; j++) {
-        const r = start + j + 2
-        let cells = ''
-        const row = batch[j]
-        for (let i = 0; i < kinds.length; i++) cells += cell(`${refs[i]}${r}`, kinds[i], row[i], numStyles[i])
-        out += `<row r="${r}">${cells}</row>`
+      // A thousand rows at a time, the page drawing in between (no long freeze on a million rows).
+      for (let from = 0; from < batch.length; from += 1000) {
+        let out = ''
+        for (let j = from; j < Math.min(batch.length, from + 1000); j++) {
+          const r = start + j + 2
+          let cells = ''
+          const row = batch[j]
+          for (let i = 0; i < kinds.length; i++) cells += cell(`${refs[i]}${r}`, kinds[i], row[i], numStyles[i], strings)
+          out += `<row r="${r}">${cells}</row>`
+        }
+        yield out
+        await pause()
       }
-      yield out
       src.onProgress?.(Math.min(rows, start + WINDOW))
     }
     yield `</sheetData>`

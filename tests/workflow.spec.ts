@@ -211,6 +211,28 @@ test.describe('stack', () => {
     await expect(page.locator('.sr-grid [role=columnheader]').first()).toContainText('source')
     await expect(page.locator('.error-banner')).toHaveCount(0)
   })
+
+  test('a month and its revision both picked are said to share rows; a month of amounts as text stacks as numbers', async ({ page }) => {
+    await openApp(page)
+    await page.locator('input[type=file]').setInputFiles([
+      file('sales_nov.csv', 'id,city,amount\n1,Pune,10\n2,Goa,N/A\n'),
+      file('sales_dec.csv', 'id,city,amount\n3,Pune,30\n4,Goa,40\n5,Agra,50\n'),
+      file('sales_dec_rev.csv', 'id,city,amount\n3,Pune,30\n4,Goa,45\n5,Agra,50\n'),
+    ])
+    await page.getByRole('button', { name: 'Stack them' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Stack tables into one' })
+    const report = dialog.locator('.stack-report')
+    await expect(report).toContainText('amount is text in sales_nov: read as numbers.')
+    await expect(report).toContainText('1 value of amount in sales_nov isn’t a number and becomes empty (“N/A”).')
+    await expect(report).toContainText('2 rows are in both sales_dec and sales_dec_rev: stacked, they would count twice.')
+    await dialog.getByRole('checkbox', { name: 'sales_dec_rev' }).uncheck()
+    await expect(report).not.toContainText('count twice')
+    await dialog.getByRole('button', { name: 'Stack 2 tables' }).click()
+    await expect(page.locator('.result-meta')).toContainText('5 rows')
+    // Numbers, so shown as money (text would read 30).
+    await expect(page.locator('.sr-grid').last()).toContainText('30.00')
+    await expect(page.locator('.error-banner')).toHaveCount(0)
+  })
 })
 
 test.describe('fill down', () => {
@@ -358,7 +380,8 @@ test.describe('the messy sample', () => {
     await expect(page.locator('.result-meta')).toContainText('23 rows')
     await page.getByRole('button', { name: 'Leave out 4 total lines and 3 empty rows' }).click()
     // Tied out: the sub-totals and the Grand Total add up to the invoices, so nothing's lost.
-    await expect(page.locator('.checks', { hasText: 'The totals match the rows exactly: Invoice Total 721,' })).toBeVisible()
+    // (In dollars, with sales tax: this browser reads as the US does.)
+    await expect(page.locator('.checks', { hasText: 'The totals match the rows exactly: Invoice Total 662,184.00' })).toBeVisible()
     await expect(page.locator('.result-meta')).toContainText('16 of 23 rows')
     await idle(page)
     await page.getByRole('button', { name: /^Convert 4 text columns to numbers and dates/ }).click()
@@ -372,7 +395,7 @@ test.describe('the messy sample', () => {
     await expect(page.locator('.op-chip', { hasText: 'Taxable Value as number' })).toHaveCount(0)
     await expect(page.locator('.toast', { hasText: 'Save these steps as a view' })).toBeVisible()
     await idle(page)
-    // Names typed with stray spaces (" asha rao ") are offered for tidying too.
+    // Names typed with stray spaces (" emma clark ") are offered for tidying too.
     await expect(page.locator('.hint-chips').getByRole('button', { name: 'Tidy spaces in Customer' })).toBeVisible()
     // Region is named once per group: offered too, and gone once it's done.
     await page.locator('.hint-chips').getByRole('button', { name: 'Fill down Region' }).click()
@@ -380,13 +403,13 @@ test.describe('the messy sample', () => {
     await expect(page.locator('.sr-grid [role=row]').nth(2)).toContainText('North')
     await expect(page.locator('.op-chip', { hasText: 'Region filled down' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Fill down Region' })).toHaveCount(0)
-    // GST % was "18%" text: it shows as 18%, and a filter typed as a percentage means one.
-    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('18%')
+    // Tax % was "8%" text: it shows as 8%, and a filter typed as a percentage means one.
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('8%')
     await page.locator('.toast', { hasText: 'Save these steps' }).getByRole('button', { name: 'Dismiss' }).click()
     await columnMenu(page, 6)
-    await page.getByLabel('Filter value').fill('12')
+    await page.getByLabel('Filter value').fill('6')
     await page.locator('.colmenu').getByRole('button', { name: 'Filter' }).click()
-    await expect(page.locator('.op-chip', { hasText: 'GST % > 12%' })).toBeVisible()
+    await expect(page.locator('.op-chip', { hasText: 'Tax % > 6%' })).toBeVisible()
     await expect(page.locator('.result-meta')).toContainText('9 of 23 rows')
     await expect(page.locator('.error-banner')).toHaveCount(0)
     // SQL typed against the file reads it as it is: offered the tidied rows instead.

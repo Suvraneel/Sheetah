@@ -141,3 +141,14 @@ export const WORDS = /^en-US$/i.test(LOCALE) ? { ageing: 'Aging', asOn: 'As of' 
 
 /** Dates and timestamps (with or without a time zone): charted over time, bucketed by month in pivots. */
 export const isTemporal = (c: { type: string }) => /^(DATE|TIMESTAMP)/i.test(c.type)
+
+/** Tables stacked together, named as one: sales_2024_01 … sales_2024_12 → sales_2024_01-12; else the first and how many more. */
+export function stackLabel(names: string[]): string {
+  const sorted = [...names].sort()
+  const [a, b] = [sorted[0], sorted[sorted.length - 1]]
+  let i = 0
+  while (i < a.length && a[i] === b[i]) i++
+  // Back to a separator or a digit run's start, so 2024_01 and 2024_12 differ as 01 and 12.
+  while (i > 0 && /\d/.test(a[i - 1]) && /\d/.test(a[i] ?? '')) i--
+  return i >= 3 && i < a.length && i < b.length ? `${a}-${b.slice(i)}` : `${sorted[0]}-and-${sorted.length - 1}-more`
+}

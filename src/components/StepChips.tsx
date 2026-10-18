@@ -183,20 +183,25 @@ export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLo
           </button>
         )
       })}
-      {canUndo && (
-        <button className="link-btn" onClick={onUndo} title={`Undo (${isMac ? '⌘' : 'Ctrl'}+Z)`}>
-          Undo
-        </button>
-      )}
-      {canRedo && (
-        <button className="link-btn" onClick={onRedo} title={`Redo (${isMac ? '⌘⇧Z' : 'Ctrl+Y'})`}>
-          Redo
-        </button>
-      )}
-      {hasOps(ops) && (
-        <button className="link-btn" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply(emptyOps()))}>
-          Clear all
-        </button>
+      {/* Kept in view at the row's end on a phone, however many steps scroll beside them. */}
+      {(canUndo || canRedo || hasOps(ops)) && (
+        <span className="op-actions">
+          {canUndo && (
+            <button className="link-btn" onClick={onUndo} title={`Undo (${isMac ? '⌘' : 'Ctrl'}+Z)`}>
+              Undo
+            </button>
+          )}
+          {canRedo && (
+            <button className="link-btn" onClick={onRedo} title={`Redo (${isMac ? '⌘⇧Z' : 'Ctrl+Y'})`}>
+              Redo
+            </button>
+          )}
+          {hasOps(ops) && (
+            <button className="link-btn" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply(emptyOps()))}>
+              Clear all
+            </button>
+          )}
+        </span>
       )}
     </span>
   )

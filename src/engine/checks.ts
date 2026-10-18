@@ -169,8 +169,8 @@ export function tieOutText(t: TieOut | null | undefined, nf: (n: number) => stri
 }
 
 /** A statement's own opening and closing balance lines, by their labels. */
-const OPENING = `'^\\s*(opening\\s+bal|bal(ance)?\\s+(b/?f|brought)|brought\\s+(forward|fwd|over))'`
-const CLOSING = `'^\\s*(closing\\s+bal|bal(ance)?\\s+(c/?f|carried)|carried\\s+(forward|fwd|over))'`
+const OPENING = `'^\\s*((opening|beginning|starting)\\s+bal|bal(ance)?\\s+(b/?f|brought)|brought\\s+(forward|fwd|over))'`
+const CLOSING = `'^\\s*((closing|ending)\\s+bal|bal(ance)?\\s+(c/?f|carried)|carried\\s+(forward|fwd|over))'`
 
 /**
  * The roll-forward, from the statement's own lines: the opening balance line, plus money in, less money out

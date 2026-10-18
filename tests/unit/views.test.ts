@@ -13,6 +13,10 @@ test('a saved view fits next month’s file when that file has its table’s col
   expect(viewsThatFit([tidy], { name: 'April', columns: cols('region', 'amount', 'date') })).toEqual([])
   expect(viewsThatFit([view({})], { name: 'may', columns: cols('region') })).toEqual([])
   expect(viewsThatFit([view({ tables: ['a', 'b'], shapes: { a: ['x', 'y'], b: ['x', 'y'] } })], { name: 'c', columns: cols('x', 'y') })).toEqual([])
+  // This month's sales looked up in the product list: May's sales fit while the product list is open.
+  const lookedUp = view({ tables: ['sales_apr', 'products'], shapes: { sales_apr: ['sku', 'qty', 'region'], products: ['sku', 'cost'] } })
+  expect(viewsThatFit([lookedUp], { name: 'sales_may', columns: cols('sku', 'qty', 'region') }, ['sales_may', 'products'])).toEqual([{ view: lookedUp, from: 'sales_apr' }])
+  expect(viewsThatFit([lookedUp], { name: 'sales_may', columns: cols('sku', 'qty', 'region') }, ['sales_may'])).toEqual([])
 })
 
 test('the most recently used view comes first, and runs on the new table', () => {

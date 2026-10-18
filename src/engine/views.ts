@@ -292,16 +292,21 @@ export function suggestTable(missing: string, candidates: string[]): string | un
  * table, whose columns the new table has too (next month's export, under another file name). The most
  * recently used first.
  */
-export function viewsThatFit(views: SavedView[], table: { name: string; columns: { name: string }[] }): { view: SavedView; from: string }[] {
+export function viewsThatFit(views: SavedView[], table: { name: string; columns: { name: string }[] }, open: string[] = []): { view: SavedView; from: string }[] {
   const have = new Set(table.columns.map((c) => c.name.toLowerCase()))
-  return views
-    .filter((v) => {
-      const from = v.tables.length === 1 ? v.tables[0] : null
-      const shape = from ? shapeOf(v, from) : undefined
-      return !!from && !!shape && shape.length >= 2 && from.toLowerCase() !== table.name.toLowerCase() && shape.every((c) => have.has(c.toLowerCase()))
-    })
+  const isOpen = new Set(open.map((t) => t.toLowerCase()))
+  // A view of one table; or of several (this month's sales looked up in the product list), when the table that
+  // changes month to month is the one that fits and the others are open as they were.
+  const fits = (v: SavedView, from: string) => {
+    const shape = shapeOf(v, from)
+    return !!shape && shape.length >= 2 && from.toLowerCase() !== table.name.toLowerCase() && shape.every((c) => have.has(c.toLowerCase()))
+  }
+  return [...views]
     .sort((a, b) => (b.lastRunAt ?? b.savedAt) - (a.lastRunAt ?? a.savedAt))
-    .map((view) => ({ view, from: view.tables[0] }))
+    .flatMap((view) => {
+      const from = view.tables.length === 1 ? view.tables[0] : view.tables.find((t) => fits(view, t) && view.tables.every((o) => o === t || isOpen.has(o.toLowerCase())))
+      return from && fits(view, from) ? [{ view, from }] : []
+    })
 }
 
 /** The tables a query reads (names in a table's place, as written). */

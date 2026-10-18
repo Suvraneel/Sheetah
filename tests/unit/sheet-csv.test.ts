@@ -38,3 +38,17 @@ test('dates and text with commas are written as CSV values', () => {
   const { csv } = sheetToCsv([['when', 'note'], [new Date(Date.UTC(2024, 7, 15)), 'a, b'], [new Date(Date.UTC(2024, 7, 15, 10, 30)), ' padded']])
   expect(csv).toBe('when,note\n2024-08-15,"a, b"\n2024-08-15 10:30:00," padded"')
 })
+
+test('a header in two rows (a group merged over its columns) is read as one: Sales Units, Sales Price', async () => {
+  const { twoRowHeader } = await import('../../src/engine/sheet-csv')
+  const data = [
+    ['Region', 'Sales', null, 'Returns', null],
+    [null, 'Units', 'Price', 'Units', 'Price'],
+    ['North', 10, 2.5, 1, 2.5],
+    ['South', 7, 3, 0, 3],
+  ]
+  expect(sheetToCsv(data)).toEqual({ csv: 'Region,Sales Units,Sales Price,Returns Units,Returns Price\nNorth,10,2.5,1,2.5\nSouth,7,3,0,3', rows: 2, skipped: 0 })
+  // A first row of data that happens to be text is data, not names.
+  expect(twoRowHeader([['Name', null, 'City'], ['Asha', 'x', 'Pune'], ['Ravi', 'y', 'Goa']], 0, 3)).toBe(null)
+  expect(twoRowHeader([['id', 'name', 'amount'], [1, 'Asha', 10], [2, 'Ravi', 20]], 0, 3)).toBe(null)
+})

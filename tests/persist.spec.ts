@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import type { Page } from './fixtures'
-import { openDemo, runSql } from './helpers'
+import { openApp, openDemo, runSql } from './helpers'
 
 /** Whether a snapshot file exists in OPFS (false while the folder doesn't exist yet). */
 const hasSnapshot = (page: Page, file: string) =>
@@ -67,4 +67,25 @@ test('kept tables survive a reload with exact types; sample data and wiped data 
   expect(await hasFolder(page)).toBe(false)
   await page.getByRole('tab', { name: 'Tables' }).click()
   await expect(page.getByLabel('Keep my tables in this browser')).not.toBeChecked()
+})
+
+test('leaving with tables that aren’t kept asks first; kept ones don’t', async ({ page }) => {
+  await openApp(page)
+  await page.locator('input[type=file]').setInputFiles([{ name: 'sales.csv', mimeType: 'text/csv', buffer: Buffer.from('city,amount\nPune,10\n') }])
+  await expect(page.locator('.result-meta')).toContainText('1 row')
+  await page.locator('.grid-scroll').click() // used, as browsers ask only then
+  const asked: string[] = []
+  page.on('dialog', (d) => asked.push(d.type()))
+  await page.reload()
+  await expect(page.locator('.engine-pill.is-ready')).toBeVisible({ timeout: 60_000 })
+  expect(asked).toEqual(['beforeunload'])
+
+  await page.locator('input[type=file]').setInputFiles([{ name: 'sales.csv', mimeType: 'text/csv', buffer: Buffer.from('city,amount\nPune,10\n') }])
+  await expect(page.locator('.result-meta')).toContainText('1 row')
+  await page.getByLabel('Keep my tables in this browser').check()
+  await expect.poll(() => hasSnapshot(page, 'sales.arrow')).toBe(true)
+  await page.locator('.grid-scroll').click()
+  await page.reload()
+  await expect(page.locator('.toast', { hasText: 'Restored 1 table' })).toBeVisible({ timeout: 90_000 })
+  expect(asked).toEqual(['beforeunload'])
 })

@@ -201,6 +201,22 @@ test.describe('charts and pivots at the edges', () => {
   })
 })
 
+test.describe('a very wide table', () => {
+  test('300 columns open and are looked over without running out of memory or claiming a new version', async ({ page }) => {
+    await openApp(page)
+    const cols = Array.from({ length: 300 }, (_, i) => (i % 3 === 0 ? `code_${i}` : i % 3 === 1 ? `amount_${i}` : `contact_${i}`))
+    const lines = [cols.join(',')]
+    for (let r = 0; r < 200; r++) lines.push(cols.map((_, i) => (i % 3 === 0 ? `C-${r}-${i}` : i % 3 === 1 ? (r * 1.5).toFixed(2) : `p${r}.${i}@example.com`)).join(','))
+    await page.locator('input[type=file]').setInputFiles([file('wide.csv', lines.join('\n'))])
+    await expect(page.locator('.result-meta')).toContainText('200 rows · 300 columns')
+    // The look-over runs in parts: personal data is still found.
+    await expect(page.locator('.pii-chip', { hasText: 'Personal data' })).toBeVisible({ timeout: 20_000 })
+    await page.waitForTimeout(1500)
+    await expect(page.getByText('A new version of Sheetah is ready.')).toHaveCount(0)
+    await expect(page.locator('.error-banner')).toHaveCount(0)
+  })
+})
+
 test.describe('a part that can’t load', () => {
   // No service worker: it would serve the file from its cache, past the blocked route.
   test.use({ allowPageErrors: [/a part failed/], serviceWorkers: 'block' })
