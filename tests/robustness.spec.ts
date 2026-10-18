@@ -31,7 +31,7 @@ test.describe('engine robustness', () => {
       await page.keyboard.press('Shift+ArrowRight')
     }
     await page.keyboard.press('ControlOrMeta+ArrowDown')
-    await expect(page.locator('.result-meta')).toContainText('1 rows', { timeout: 120_000 })
+    await expect(page.locator('.result-meta')).toContainText('1 row', { timeout: 120_000 })
     await expect(page.locator('.error-banner')).toHaveCount(0)
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText(/\d+/)
   })
@@ -41,7 +41,7 @@ test.describe('engine robustness', () => {
     await runSql(page, SLOW)
     await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible()
     await runSql(page, 'SELECT 42 AS answer')
-    await expect(page.locator('.result-meta')).toContainText('1 rows · 1 columns')
+    await expect(page.locator('.result-meta')).toContainText('1 row · 1 column')
     await expect(page.locator('.sr-grid [role=columnheader]').first()).toContainText('answer')
     await expect(page.getByRole('button', { name: 'Run query' })).toBeVisible()
     await expect(page.locator('.error-banner')).toHaveCount(0)
@@ -77,7 +77,7 @@ test.describe('engine robustness', () => {
   test('opening a file never replaces an existing table, and odd files are handled', async ({ page }) => {
     await openApp(page)
     await page.locator('input[type=file]').setInputFiles([file('Sales.csv', 'a\n1\n')])
-    await expect(page.locator('.result-meta')).toContainText('1 rows')
+    await expect(page.locator('.result-meta')).toContainText('1 row')
     await page.locator('input[type=file]').setInputFiles([file('SALES.CSV.GZ', gzipSync('a,b\n1,2\n3,4\n'))])
     await expect(page.locator('.side-table .side-name')).toHaveText(['sales', 'sales_2'])
     await expect(page.locator('.result-meta')).toContainText('2 rows · 2 columns')

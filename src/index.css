@@ -1815,3 +1815,5 @@ body:has(.modal-backdrop) .toast-stack { z-index: 29; }
 .match-options .inline { display: inline-flex; align-items: center; gap: 8px; }
 .match-options input[type='checkbox'] { margin: 0; accent-color: var(--accent); }
 .match-days { width: 4.5em; padding: 6px 8px; text-align: right; }
+.compare-match { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin: 4px 0 14px; padding: 12px 14px; border-radius: 14px; background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-ring); font-size: 13.5px; }
+.check-more { margin-left: 6px; font-size: 12.5px; }

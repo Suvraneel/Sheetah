@@ -23,6 +23,11 @@ export interface SavedView {
    * is checked to open there. The file's data: kept in this browser, never written to a views file.
    */
   last?: { table: string; rows: number; closing?: number }
+  /**
+   * Each statement period it has run on (first and last date), with where it closed: next month's file is
+   * checked to open where the period just before it closed. Also kept in this browser only.
+   */
+  periods?: { from: string; to: string; closing: number; table: string; rows: number }[]
 }
 
 /** A table and the steps on it (sort, filters, clean-up, look-ups…) that a view's SQL was made from. */
@@ -91,7 +96,7 @@ export function loadViews(): SavedView[] {
     return Array.isArray(list)
       ? list
           .filter((v) => v && typeof v.sql === 'string' && typeof v.name === 'string')
-          .map((v) => ({ ...v, tables: strings(v.tables) ? v.tables : [], shapes: cleanShapes(v.shapes, v.tables), last: cleanLast(v.last) }))
+          .map((v) => ({ ...v, tables: strings(v.tables) ? v.tables : [], shapes: cleanShapes(v.shapes, v.tables), last: cleanLast(v.last), periods: cleanPeriods(v.periods) }))
       : []
   } catch {
     return []
@@ -103,6 +108,14 @@ function cleanLast(v: unknown): SavedView['last'] {
   const l = v as Partial<NonNullable<SavedView['last']>> | null | undefined
   if (!l || typeof l !== 'object' || typeof l.table !== 'string' || typeof l.rows !== 'number' || !Number.isFinite(l.rows)) return undefined
   return { table: l.table, rows: l.rows, ...(typeof l.closing === 'number' && Number.isFinite(l.closing) ? { closing: l.closing } : {}) }
+}
+
+/** A view's periods, only those of the right shape (dates as YYYY-MM-DD, a number for the closing balance). */
+function cleanPeriods(v: unknown): SavedView['periods'] {
+  if (!Array.isArray(v)) return undefined
+  const day = (x: unknown): x is string => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x)
+  const ok = v.filter((p) => p && day(p.from) && day(p.to) && typeof p.closing === 'number' && Number.isFinite(p.closing) && typeof p.table === 'string' && typeof p.rows === 'number')
+  return ok.length ? ok.slice(-36).map(({ from, to, closing, table, rows }) => ({ from, to, closing, table, rows })) : undefined
 }
 
 export const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')
@@ -302,3 +315,19 @@ export function tablesIn(sql: string): string[] {
 }
 
 export const newId = () => Math.random().toString(36).slice(2, 10)
+
+const MONTH = '(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|june?|july?|aug(ust)?|sept?(ember)?|oct(ober)?|nov(ember)?|dec(ember)?)'
+
+/**
+ * A name for a view of a table, without the table's month or year: the view is for every month's file
+ * (stmt_apr_2024 → "stmt view", sales-2024-04 → "sales view"). The table's own name if nothing else is left.
+ */
+export function viewNameFor(table: string): string {
+  const words = table.replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const left = words
+    .replace(new RegExp(`(^| )${MONTH}(?= |$|\\d)`, 'gi'), ' ')
+    .replace(/(^| )(fy|q[1-4])? ?\d{2,8}(?= |$)/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return `${left || words || 'My'} view`
+}

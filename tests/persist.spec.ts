@@ -30,8 +30,10 @@ test('kept tables survive a reload with exact types; sample data and wiped data 
   await openDemo(page)
   await runSql(page, MIXED)
   await expect(page.locator('.side-name', { hasText: 'kept' })).toBeVisible()
-  const types = await page.locator('.side-list > li', { hasText: 'kept' }).locator('.side-type').allInnerTexts()
+  const typesOf = () => page.locator('.side-list > li', { hasText: 'kept' }).locator('.side-type').evaluateAll((els) => els.map((e) => e.getAttribute('title')))
+  const types = await typesOf()
   expect(types).toEqual(['bigint', 'bigint', 'decimal(10,2)', 'date', 'timestamp', 'varchar', 'bigint[]'])
+  expect(await page.locator('.side-list > li', { hasText: 'kept' }).locator('.side-type').allInnerTexts()).toEqual(['number', 'number', 'number', 'date', 'date & time', 'text', 'list'])
 
   await page.getByLabel('Keep my tables in this browser').check()
   await expect(page.locator('.toast', { hasText: 'kept in this browser' })).toBeVisible()
@@ -43,10 +45,10 @@ test('kept tables survive a reload with exact types; sample data and wiped data 
   await expect(page.locator('.toast', { hasText: 'Restored 1 table' })).toBeVisible({ timeout: 90_000 })
   await expect(page.locator('.result-meta')).toContainText('1,000 rows')
   await expect(page.locator('.side-name', { hasText: 'orders' })).toHaveCount(0) // sample data is never kept
-  expect(await page.locator('.side-list > li', { hasText: 'kept' }).locator('.side-type').allInnerTexts()).toEqual(types)
+  expect(await typesOf()).toEqual(types)
 
   await runSql(page, 'SELECT sum(big)::VARCHAR AS s, max(price)::VARCHAR AS p, max(day)::VARCHAR AS d FROM kept')
-  await expect(page.locator('.result-meta')).toContainText('1 rows')
+  await expect(page.locator('.result-meta')).toContainText('1 row')
   await expect(page.locator('.statusbar')).toBeVisible()
 
   // Changes are re-saved: drop it and the snapshot goes too.

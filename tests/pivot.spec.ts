@@ -28,7 +28,7 @@ test('pivot: sensible defaults, correct totals, editable, and a clear limit', as
        WHEN (SELECT count(*) FROM p) <> 9 THEN error('row count')
        ELSE 'ok' END AS check`,
   )
-  await expect(page.locator('.result-meta')).toContainText('1 rows')
+  await expect(page.locator('.result-meta')).toContainText('1 row')
   await expect(page.locator('.error-banner')).toHaveCount(0)
 
   // Reopen the pivot and edit it: years across instead of status
@@ -64,7 +64,7 @@ test('pivot: columns only, several values, and date rows', async ({ page }) => {
   await dialog.getByRole('button', { name: '+ Add a value' }).click()
   await dialog.getByRole('button', { name: 'Create pivot' }).click()
   // One row; per status a sum and an average, plus two totals
-  await expect(page.locator('.result-meta')).toContainText('1 rows · 12 columns')
+  await expect(page.locator('.result-meta')).toContainText('1 row · 12 columns')
 
   await expect(page.getByRole('button', { name: 'Edit pivot' })).toBeVisible()
 

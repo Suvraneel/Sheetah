@@ -1,6 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getEngine, sqlName } from './engine/db'
-import { isBalanceName, monthlySql, signedAmount, statementColumns } from './engine/statement'
+import { isBalanceName, monthlySql, signedAmount, signedNote, statementColumns } from './engine/statement'
 import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent } from './engine/sql'
 import { ACCEPTED, FileKindError, cancelExcel, createDemo, dateOrders, ingestFile, listTables, type TableMeta } from './engine/ingest'
 import { CancelledError, cancelRunning, colRef, exportResult, holdResult, rangeStats, rowOf, runSql, splitStatements, type RangeStats, type ResultSet } from './engine/result'
@@ -37,6 +37,7 @@ const loadAnonymizeDialog = () => import('./components/AnonymizeDialog')
 const AnonymizeDialog = lazy(() => loadAnonymizeDialog().then((m) => ({ default: m.AnonymizeDialog })))
 import type { CompareLayout, CompareSpec } from './engine/compare'
 import type { PivotSpec } from './engine/pivot'
+import type { MatchSide, MatchSpec } from './engine/match'
 import type { ColumnInfo } from './engine/result'
 const loadAddColumn = () => import('./components/AddColumn')
 const AddColumn = lazy(() => loadAddColumn().then((m) => ({ default: m.AddColumn })))
@@ -69,9 +70,11 @@ const RemapDialog = lazy(() => loadViewDialogs().then((m) => ({ default: m.Remap
 const SaveViewDialog = lazy(() => loadViewDialogs().then((m) => ({ default: m.SaveViewDialog })))
 const SharedQueryDialog = lazy(() => loadViewDialogs().then((m) => ({ default: m.SharedQueryDialog })))
 import { MAX_PERSIST_ROWS, clearSaved, persistSupported, removeTable, restoreAll, saveTable } from './engine/persist'
-import { loadViews, newId, referencedTables, remapSteps, remapTables, stepsMake, stepsOf, storeViews, tableBase, viewsThatFit, type SavedView } from './engine/views'
+import { loadViews, newId, referencedTables, remapSteps, remapTables, stepsMake, stepsOf, storeViews, tableBase, viewNameFor, viewsThatFit, type SavedView } from './engine/views'
 
 const nf = new Intl.NumberFormat(LOCALE)
+/** Money in checks and summaries: always to the paisa (28,000.00, not 28,000). */
+const money = new Intl.NumberFormat(LOCALE, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format
 
 /** Turns engine errors people can act on into plain language. */
 function friendly(message: string): string {
@@ -271,6 +274,8 @@ export default function App() {
   const [categorizing, setCategorizing] = useState<{ column?: string; edit?: string } | null>(null)
   // Payments matched across two tables (bank against books), by amount and date.
   const [matching, setMatching] = useState<{ a?: string; b?: string; sources: Record<string, string> } | null>(null)
+  // The last match made (its query and what it matched): its result offers the reconciliation statement.
+  const [matched, setMatched] = useState<{ sql: string; spec: MatchSpec } | null>(null)
   // A pivot to start from (categories by month, after adding categories), rather than the usual first guess.
   const [pivotStart, setPivotStart] = useState<PivotSpec | null>(null)
   // The anonymizing query behind the current result (for export file names).
@@ -622,6 +627,7 @@ export default function App() {
       let first = ''
       let last = ''
       let current = ''
+      const fileChecks = new Map<string, Check[]>()
       try {
         await getEngine()
         setBusyCancel(() => cancelWork)
@@ -629,9 +635,12 @@ export default function App() {
           current = f.name
           const size = f.size > 1.5 * GB ? ` (${(f.size / GB).toFixed(1)} GB: big CSVs load into memory, so this can take a while)` : ''
           setBusy(`Reading ${f.name}${files.length > 1 ? ` · file ${i + 1} of ${files.length}` : ''}${size}`)
-          // Notes about a file (title lines left out, ragged rows) are said once, after it opens.
+          // Notes about a file (title lines left out, ragged rows) are said once, after it opens; checks
+          // on it (a trial balance's debits against its credits) go above its rows.
           const notes: string[] = []
-          const names = await ingestFile(f, undefined, (note) => notes.push(note))
+          const said: Check[] = []
+          const names = await ingestFile(f, undefined, (note, check) => (check ? said.push({ kind: 'totals', ok: check.ok, text: note }) : notes.push(note)))
+          if (said.length && names[0]) fileChecks.set(names[0], said)
           first ||= names[0]
           last = names[names.length - 1]
           if (names.length > 1) say([`Opened ${names.length} sheets from ${f.name}.`, ...notes].join(' '))
@@ -644,6 +653,8 @@ export default function App() {
         if (first) {
           const res = await openTable(first)
           if (res) scanHints(res, 'all', metas)
+          const checked = fileChecks.get(first)
+          if (res && checked) addChecks(tableBase(first), checked)
           // Opened from the landing page (now gone) or a file dialog: keyboard focus lands on the rows.
           keepFocusIn(null, 0)
         }
@@ -694,7 +705,7 @@ export default function App() {
         )
       }
     },
-    [refreshTables, openTable, say, cancelWork, scanHints],
+    [refreshTables, openTable, say, cancelWork, scanHints, addChecks],
   )
 
   // Cells copied from a spreadsheet (or this grid), pasted outside the editor and inputs: a new table.
@@ -948,8 +959,7 @@ export default function App() {
     const on = base
     const inOrder = !ops.sort && !ops.filters.length && !ops.search && !ops.dedupe
     reveal.current = name
-    const short = (n: string) => n.replace(/[\s_]*(amt\.?|amount)$/i, '') || n
-    const note = `${short(statement.credit)} − ${short(statement.debit)}`
+    const note = signedNote(statement)
     applyOps({ ...ops, computed: [...ops.computed.filter((c) => c.name !== name), { name, expr: amountExpr, note }] })
     say(`Added ${name}: ${note}`)
     if (!statement.balance || !inOrder || !rows.table) return
@@ -958,7 +968,7 @@ export default function App() {
       const [{ conn }, m] = await Promise.all([getEngine(), import('./engine/checks')])
       const ref = (n: string) => colRef(rows.columns.find((c) => c.name === n)!)
       const check = m.readBalanceCheck((await conn.query(m.balanceCheckSql(rows.table, { ...statement, balance: statement.balance }, isNum, ref))).toArray()[0]?.toJSON() ?? {})
-      const found = m.balanceText(check, statement.balance, nf.format)
+      const found = m.balanceText(check, statement.balance, nf.format, money)
       addChecks(on, [found && { ...found, step: name }])
     } catch {
       /* the column is added; the check is a bonus */
@@ -967,7 +977,62 @@ export default function App() {
     }
   }
 
+  /**
+   * A statement's roll-forward, when steps leave out its opening and closing balance lines: the opening line
+   * plus money in less money out (the rows kept) against the closing line. Tied to the balance lines' step.
+   */
+  const rollForward = async (table: string, drop: DropRows[]): Promise<Found | null> => {
+    const lines = drop.find((d) => (d.kind ? d.kind === 'balance' : /balance line/.test(d.label)))
+    const meta = tables.find((t) => t.name === table)
+    const st = meta && statementColumns(meta.columns)
+    if (!lines || !meta || !st?.balance) return null
+    const [{ conn }, m] = await Promise.all([getEngine(), import('./engine/checks')])
+    const numeric = (n: string) => isNumericType(meta.columns.find((c) => c.name === n)?.type ?? '')
+    const text = meta.columns.filter((c) => /CHAR|TEXT|STRING/i.test(c.type)).map((c) => c.name)
+    const sql = m.rollForwardSql(table, { ...st, balance: st.balance }, text, numeric, `(${drop.map((d) => `(${d.keep})`).join(' AND ')})`)
+    const found = sql ? m.rollForwardText((await conn.query(sql)).toArray()[0]?.toJSON() ?? {}, money) : null
+    return found && { ...found, step: lines.keep }
+  }
+
   /** Categories added as a column (or their rules changed); then a pivot of them by month is offered. */
+  /**
+   * The bank reconciliation statement from the match on screen: the bank's closing balance (where its
+   * running balance ends, read the way round its rows run) and the lines left over on each side.
+   */
+  const reconcile = async () => {
+    if (!matched) return
+    const { sql, spec } = matched
+    try {
+      const [{ conn }, b, m] = await Promise.all([getEngine(), import('./engine/brs'), import('./engine/checks')])
+      const describe = async (s: MatchSide) =>
+        (await conn.query(`DESCRIBE SELECT * FROM ${b.numberedRows(s)}`)).toArray().map((r) => {
+          const j = r.toJSON()
+          return { name: String(j.column_name), type: String(j.column_type) }
+        })
+      const [ca, cb] = await Promise.all([describe(spec.a), describe(spec.b)])
+      const { bank, statement } = b.bankOf({ a: ca, b: cb })
+      let closing: number | null = null
+      let asOf: string | null = null
+      if (statement) {
+        const side = spec[bank]
+        const rows = b.numberedRows(side)
+        const types = bank === 'a' ? ca : cb
+        const isN = (n: string) => isNumericType(types.find((c) => c.name === n)?.type ?? '')
+        const counts = (await conn.query(m.balanceCheckSql(rows, statement, isN))).toArray()[0]?.toJSON() ?? {}
+        const order = m.readOrder(counts)
+        const ends = order && m.readEnds((await conn.query(m.endsSql(rows, statement, isN))).toArray()[0]?.toJSON() ?? {}, order)
+        if (ends) {
+          closing = Math.round(ends.closing * 100) / 100
+          asOf = ((await conn.query(`SELECT max(${quoteIdent(side.date)})::DATE::VARCHAR AS d FROM ${rows}`)).toArray()[0]?.toJSON().d as string | null) ?? null
+        }
+      }
+      runDerived(b.brsSql({ match: sql, spec, bank, closing, asOf }), { label: 'Bank reconciliation' })
+      if (!statement) say(`No running balance in ${spec[bank].table}: the statement starts from the lines left over, without the bank’s closing balance.`)
+    } catch (e) {
+      say(`Couldn’t make the reconciliation: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
   const addCategories = (name: string, expr: string, c: import('./engine/categorize').Categorize) => {
     setCategorizing(null)
     const editing = ops.computed.some((x) => x.name === name)
@@ -1006,29 +1071,50 @@ export default function App() {
       const cols = meta?.columns.filter((c) => !isBalanceName(c.name)).map((c) => ({ name: c.name, numeric: isNumericType(c.type) })) ?? []
       const tie = o.drop?.length ? m.tieOutSql(table, cols, o.drop) : null
       const totals = o.drop?.find((d) => (d.kind ? d.kind === 'totals' : /total line/.test(d.label)))
-      const tied = tie ? m.tieOutText(m.readTieOutRow(cols, (await conn.query(tie)).toArray()[0]?.toJSON() ?? {}), nf.format) : null
+      const tied = tie ? m.tieOutText(m.readTieOutRow(cols, (await conn.query(tie)).toArray()[0]?.toJSON() ?? {}), money) : null
       if (tied && totals) found.push({ ...tied, step: totals.keep })
       const st = statementColumns(rows.columns)
       let closing: number | undefined
+      let period: NonNullable<SavedView['periods']>[number] | undefined
       if (st?.balance && rows.table && !o.sort && !o.filters.length && !o.search && !o.dedupe) {
         const col = (n: string) => rows.columns.find((c) => c.name === n)!
         const s = { ...st, balance: st.balance }
         const isN = (n: string) => !!col(n).numeric
         const ref = (n: string) => colRef(col(n))
         const counts = (await conn.query(m.balanceCheckSql(rows.table, s, isN, ref))).toArray()[0]?.toJSON() ?? {}
-        found.push(m.balanceText(m.readBalanceCheck(counts), st.balance, nf.format))
+        found.push(m.balanceText(m.readBalanceCheck(counts), st.balance, nf.format, money))
         // Where it starts and ends, read the way round the rows run (not at all if they don't run either way).
         const order = m.readOrder(counts)
         const ends = order && m.readEnds((await conn.query(m.endsSql(rows.table, s, isN, ref))).toArray()[0]?.toJSON() ?? {}, order)
-        const prev = view && (viewsRef.current.find((x) => x.id === view.id) ?? view).last
-        // Last time's rows again (the same file run twice), or another month's: a file can keep its name each month.
-        const sameName = !!prev && prev.table.toLowerCase() === table.toLowerCase()
-        const again = sameName && prev.rows === rows.rowCount && (!ends || (typeof prev.closing === 'number' && Math.abs(prev.closing - ends.closing) < 0.005))
-        if (ends && prev && typeof prev.closing === 'number' && !again)
-          found.push(m.continuityText(ends.opening, { table: sameName ? `the last ${prev.table}` : prev.table, closing: prev.closing }, nf.format))
+        const saved = view && (viewsRef.current.find((x) => x.id === view.id) ?? view)
+        // The period these rows cover (by their dates), so each month is checked against the one before it,
+        // whatever ran last: May again after June, or April after both, isn't a statement gone missing.
+        const date = rows.columns.find(isTemporal)
+        const span = date && ((await conn.query(`SELECT min(${colRef(date)})::DATE::VARCHAR AS a, max(${colRef(date)})::DATE::VARCHAR AS b FROM ${rows.table}`)).toArray()[0]?.toJSON() as { a: string | null; b: string | null } | undefined)
+        if (ends && span?.a && span.b) {
+          // Run again on the same month, it's checked against the month before, as it was the first time.
+          const before = (saved?.periods ?? []).filter((p) => p.to < span.a!).sort((x, y) => (x.to < y.to ? 1 : -1))[0]
+          if (before) found.push(m.continuityText(ends.opening, { table: before.table === table ? `the statement to ${before.to}` : before.table, closing: before.closing }, money))
+          period = { from: span.a, to: span.b, closing: ends.closing, table, rows: rows.rowCount }
+        } else if (ends && saved?.last?.closing !== undefined && saved.last.table.toLowerCase() !== table.toLowerCase()) {
+          // No dates to tell the months apart (left as text): against the file it ran on last, if that's another.
+          found.push(m.continuityText(ends.opening, { table: saved.last.table, closing: saved.last.closing }, money))
+        }
         closing = ends?.closing ?? undefined
       }
-      if (view) updateViews((v) => v.map((x) => (x.id === view.id ? { ...x, last: { table, rows: rows.rowCount, ...(closing !== undefined ? { closing } : {}) } } : x)))
+      if (o.drop?.length) found.push(await rollForward(table, o.drop).catch(() => null))
+      if (view)
+        updateViews((v) =>
+          v.map((x) =>
+            x.id === view.id
+              ? {
+                  ...x,
+                  last: { table, rows: rows.rowCount, ...(closing !== undefined ? { closing } : {}) },
+                  ...(period ? { periods: [...(x.periods ?? []).filter((p) => p.from !== period!.from || p.to !== period!.to), period].sort((a, b) => (a.from < b.from ? -1 : 1)).slice(-36) } : {}),
+                }
+              : x,
+          ),
+        )
       if (!quiet) addChecks(tableBase(table), found)
     } catch {
       /* the view ran; the checks are a bonus */
@@ -1613,18 +1699,26 @@ export default function App() {
   // Columns with nothing in them, until they're hidden.
   const emptyHere = hintFor(emptyHints)?.filter((c) => result?.columns.some((x) => x.name === c)) ?? []
   // A bank statement (money in and out in two columns): offered a signed amount, until it's added.
-  const statement = result && !result.message ? statementColumns(result.columns) : null
+  // A statement's suggestions are for its own rows (with their steps, or stacked month on month), not a
+  // summary made from them (by month, a match, a pivot).
+  const statement = result && !result.message && !origins[base.trim()] ? statementColumns(result.columns) : null
   const isNum = (name: string) => !!result?.columns.find((c) => c.name === name)?.numeric
   const amountExpr = statement ? signedAmount(statement, isNum) : null
-  const amountHere = statement && !ops.computed.some((c) => c.expr === amountExpr) ? statement : null
+  // Added already, even if its formula has changed since (the columns were converted after): not offered twice.
+  const amountHere = statement && !ops.computed.some((c) => c.expr === amountExpr || c.note === signedNote(statement)) ? statement : null
   // Once a statement's amount is signed: its month-by-month summary (by its date column), and its narrations
   // grouped into categories (for a pivot by month).
-  const monthlyHere = statement && !amountHere && plainTable(base) ? (result?.columns.find(isTemporal)?.name ?? null) : null
+  const monthlyHere = statement && !amountHere ? (result?.columns.find(isTemporal)?.name ?? null) : null
+  // The payments matched, on screen: offered as a reconciliation statement.
+  const reconcileHere = !!matched && !!result && !result.message && base.trim() === matched.sql.trim()
   const narrationHere =
     statement && !amountHere && !ops.computed.some((c) => c.categorize) ? (result?.columns.find((c) => !c.numeric && /narration|description|particulars|details|remarks|memo/i.test(c.name))?.name ?? null) : null
   const fillHere = hintFor(fillHints)?.filter((c) => result?.columns.some((x) => x.name === c) && !ops.clean?.some((x) => x.kind === 'filldown' && x.column === c)) ?? []
   const headerNotes = unconverted?.length ? Object.fromEntries(unconverted.map((c) => [c.column, c.kind === 'date' ? 'date as text' : 'number as text'])) : null
   const ofRows = baseRows?.base === base && (shownOps.filters.length || shownOps.search || shownOps.dedupe || shownOps.drop?.length) ? ` of ${nf.format(baseRows.rows)}` : ''
+  // "1 row", "16 of 23 rows": the word goes with the number it's next to.
+  const rowsWord = ofRows || result?.rowCount !== 1 ? 'rows' : 'row'
+  const colsWord = result?.columns.length === 1 ? 'column' : 'columns'
 
   /** What the current result is about, for SQL comments and file names: "customers", "oct-vs-nov". */
   function resultLabel() {
@@ -1863,7 +1957,7 @@ export default function App() {
         <h1 className="sr-only">Sheetah workspace</h1>
         {/* Always there, so the first result is read too; the count is the answer to a filter ("16 of 23 rows"). */}
         <p className="sr-only" role="status" aria-atomic="true">
-          {result && !result.message ? `${nf.format(result.rowCount)}${ofRows} rows, ${result.columns.length} columns` : ''}
+          {result && !result.message ? `${nf.format(result.rowCount)}${ofRows} ${rowsWord}, ${result.columns.length} ${colsWord}` : ''}
         </p>
         <section
           ref={editorShell}
@@ -2021,7 +2115,7 @@ export default function App() {
               {result && (
                 <span className="result-meta">
                   <strong>{nf.format(result.rowCount)}</strong>
-                  {ofRows} rows · {result.columns.length} columns ·{' '}
+                  {ofRows} {rowsWord} · {result.columns.length} {colsWord} ·{' '}
                   <span className="mono">{result.elapsedMs < 1000 ? `${Math.round(result.elapsedMs)} ms` : `${(result.elapsedMs / 1000).toFixed(2)} s`}</span>
                 </span>
               )}
@@ -2043,6 +2137,8 @@ export default function App() {
                 categorize={narrationHere}
                 onCategorize={(column) => setCategorizing({ column })}
                 monthly={!!monthlyHere}
+                reconcile={!!reconcileHere}
+                onReconcile={() => void reconcile()}
                 onMonthly={() => {
                   if (!statement || !monthlyHere) return
                   const rows = compose(base, { ...ops, sort: undefined, hidden: undefined })
@@ -2057,13 +2153,11 @@ export default function App() {
                   // The tie-out, kept above the rows: the figure people would check by hand, or the column that's short.
                   const tied = drop.find((d) => d.checked)
                   const on = base
-                  if (tied?.checked) {
-                    const c = tied.checked
-                    void import('./engine/checks').then((m) => {
-                      const found = m.tieOutText(c, nf.format)
-                      addChecks(on, [found && { ...found, step: tied.keep }])
-                    })
-                  }
+                  const table = plainTable(base)
+                  void import('./engine/checks').then(async (m) => {
+                    const found = tied?.checked ? m.tieOutText(tied.checked, money) : null
+                    addChecks(on, [found && tied ? { ...found, step: tied.keep } : null, table ? await rollForward(table, drop).catch(() => null) : null])
+                  })
                 }}
                 onUnpivot={() => setUnpivoting({})}
                 onConvert={(cleans) => applyOps(withCleans(cleans.reduce(addClean, ops.clean ?? [])))}
@@ -2106,6 +2200,7 @@ export default function App() {
                 onUndo={undoOps}
                 onRedo={redoOps}
                 origin={originHere}
+                onEditCategories={(name) => setCategorizing({ edit: name })}
               />
               <span className="spacer" />
               {source && finding && (
@@ -2367,8 +2462,16 @@ export default function App() {
               setPivoting(false)
               setPivotStart(null)
               setView('grid')
+              if (!editingPivot) {
+                // A new pivot, like any summary: an undo step, and "Pivot, from <table>" with the way back.
+                runDerived(sql, { label: 'Pivot' })
+                return
+              }
+              // An edited pivot keeps where the first one came from.
+              const from = origins[base.trim()]
+              if (from) setOrigins((o) => ({ ...o, [sql.trim()]: from }))
               setEditor(sql)
-              void execute(sql, { base: sql, ops: emptyOps() }).then((res) => res && say(`Pivot: ${res.rowCount.toLocaleString(LOCALE)} rows × ${res.columns.length} columns`))
+              void execute(sql, { base: sql, ops: emptyOps() })
             }}
           />
         </Lazy>
@@ -2515,11 +2618,13 @@ export default function App() {
             a={matching.a}
             b={matching.b}
             onClose={() => setMatching(null)}
-            onMatch={(sql, summary) => {
+            onMatch={(sql, summary, all, spec) => {
               setMatching(null)
               setView('grid')
+              setMatched({ sql, spec })
               runDerived(sql, { label: 'Payments matched' })
-              say(summary)
+              // What it found stays above the rows (a toast would be gone before the leftovers are looked at).
+              addChecks(sql, [{ kind: 'match', ok: all, text: summary }])
             }}
           />
         </Lazy>
@@ -2611,7 +2716,7 @@ export default function App() {
           <SaveViewDialog
             sql={editor.trim()}
             tables={editorTables}
-            initialName={editorTables[0] ? `${editorTables[0].replace(/_/g, ' ')} view` : 'My view'}
+            initialName={editorTables[0] ? viewNameFor(editorTables[0]) : 'My view'}
             onSave={saveView}
             onClose={() => setSaving(false)}
           />

@@ -10,7 +10,7 @@ import type { StatementColumns } from './statement'
 
 /** One check's outcome, as shown above the rows. */
 export interface Check {
-  kind: 'balance' | 'totals' | 'continuity'
+  kind: 'balance' | 'totals' | 'continuity' | 'rollforward' | 'match'
   ok: boolean
   text: string
 }
@@ -108,7 +108,7 @@ export function continuityText(opening: number, last: { table: string; closing: 
 }
 
 /** What the balance check found, in words (null when there was too little to check). */
-export function balanceText(check: BalanceCheck | null, balance: string, nf: (n: number) => string): Check | null {
+export function balanceText(check: BalanceCheck | null, balance: string, nf: (n: number) => string, money: (n: number) => string = nf): Check | null {
   if (!check) return null
   const nearby = check.order === 'newest first' ? 'below' : 'above'
   if (!check.firstBad) return { kind: 'balance', ok: true, text: `Every ${balance} follows from the row ${nearby} (${nf(check.pairs)} rows checked)` }
@@ -116,7 +116,7 @@ export function balanceText(check: BalanceCheck | null, balance: string, nf: (n:
   return {
     kind: 'balance',
     ok: false,
-    text: `${balance} on row ${nf(check.firstBad.row)} doesn’t follow from the row ${nearby}: off by ${nf(Math.abs(check.firstBad.off))}. A line missing or doubled?${more}`,
+    text: `${balance} on row ${nf(check.firstBad.row)} doesn’t follow from the row ${nearby}: off by ${money(Math.abs(check.firstBad.off))}. A line missing or doubled?${more}`,
   }
 }
 
@@ -150,5 +150,42 @@ export function tieOutText(t: TieOut | null | undefined, nf: (n: number) => stri
       text: `The totals say ${o.column} is ${nf(o.says)}; the rows come to ${nf(o.rows)}: ${nf(Math.abs(gap))} ${gap < 0 ? 'short' : 'over'}${more}`,
     }
   }
-  return { kind: 'totals', ok: true, text: `The totals match the rows exactly: ${t.ok[0].column} ${nf(t.ok[0].sum)}` }
+  // Every column that was checked (people check each against the footer by hand), the largest first.
+  const listed = t.ok.slice(0, 3).map((c) => `${c.column} ${nf(c.sum)}`).join(' · ')
+  return { kind: 'totals', ok: true, text: `The totals match the rows exactly: ${listed}${t.ok.length > 3 ? ` and ${t.ok.length - 3} more` : ''}` }
+}
+
+/** A statement's own opening and closing balance lines, by their labels. */
+const OPENING = `'^\\s*(opening\\s+bal|bal(ance)?\\s+(b/?f|brought)|brought\\s+(forward|fwd|over))'`
+const CLOSING = `'^\\s*(closing\\s+bal|bal(ance)?\\s+(c/?f|carried)|carried\\s+(forward|fwd|over))'`
+
+/**
+ * The roll-forward, from the statement's own lines: the opening balance line, plus money in, less money out
+ * (over the rows the steps keep), against the closing balance line. A line missing anywhere shows here, even
+ * when the total line was made to agree. `keep` is the steps' rows to keep (all of them, ANDed).
+ */
+export function rollForwardSql(table: string, s: StatementColumns & { balance: string }, text: string[], numeric: (name: string) => boolean, keep: string): string | null {
+  const labels = text.filter((c) => c !== s.credit && c !== s.debit && c !== s.balance)
+  if (!labels.length) return null
+  const n = (name: string) => (numeric(name) ? `${sqlName(name)}::DOUBLE` : `number_from_text(${sqlName(name)}::VARCHAR)`)
+  const is = (re: string) => `(${labels.map((c) => `regexp_matches(coalesce(${sqlName(c)}::VARCHAR, ''), ${re}, 'i')`).join(' OR ')})`
+  return `SELECT arg_min(${n(s.balance)}, rowid) FILTER (WHERE ${is(OPENING)})::DOUBLE AS opening,
+  arg_max(${n(s.balance)}, rowid) FILTER (WHERE ${is(CLOSING)})::DOUBLE AS closing,
+  sum(coalesce(${n(s.credit)}, 0)) FILTER (WHERE ${keep})::DOUBLE AS money_in,
+  sum(coalesce(${n(s.debit)}, 0)) FILTER (WHERE ${keep})::DOUBLE AS money_out
+FROM ${sqlName(table)}`
+}
+
+/** The roll-forward in words: it comes to the closing line, or how far it's off (null without both lines). */
+export function rollForwardText(row: Record<string, unknown>, money: (n: number) => string): Check | null {
+  const [opening, closing, i, o] = ['opening', 'closing', 'money_in', 'money_out'].map((k) => row[k])
+  if (typeof opening !== 'number' || typeof closing !== 'number') return null
+  const comes = opening + (Number(i) || 0) - (Number(o) || 0)
+  const sum = `Opening ${money(opening)} + in ${money(Number(i) || 0)} − out ${money(Number(o) || 0)}`
+  if (Math.abs(comes - closing) < 0.005 + Math.abs(closing) * 1e-9) return { kind: 'rollforward', ok: true, text: `${sum} = closing ${money(closing)}, as the file says` }
+  return {
+    kind: 'rollforward',
+    ok: false,
+    text: `${sum} comes to ${money(comes)}, but the closing balance line says ${money(closing)}: ${money(Math.abs(comes - closing))} apart. A line missing?`,
+  }
 }

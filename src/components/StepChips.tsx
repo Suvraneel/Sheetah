@@ -23,10 +23,15 @@ interface Props {
   onRedo: () => void
   /** These rows were made from others (counted, unpivoted…): what was done, from what, and the way back. */
   origin?: { label: string; source: string; onBack: () => void } | null
+  /** Opens an added category column's rules to edit (its chip does; its × removes it). */
+  onEditCategories?: (name: string) => void
 }
 
+/** A step's chip is named for what clicking it does: "Remove step: Without 1 total line". */
+const removes = (what: string) => `Remove step: ${what}`
+
 /** The steps applied to the rows on screen, each a chip that removes it; Undo, Redo and Clear all. */
-export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLookup, canUndo, canRedo, onUndo, onRedo, origin }: Props) {
+export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLookup, canUndo, canRedo, onUndo, onRedo, origin, onEditCategories }: Props) {
   // Steps of one kind, usually from one click: three or more columns converted ("Convert"), or two or more
   // look-alike values merged in a column ("Merge all"). One chip for them, opened on demand.
   const [open, setOpen] = useState<string[]>([])
@@ -52,25 +57,40 @@ export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLo
         </button>
       )}
       {ops.sort && (
-        <button className="op-chip" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, sort: undefined }))} title={`Remove sort · ORDER BY ${sqlName(ops.sort.column)} ${ops.sort.dir.toUpperCase()}`}>
+        <button
+          className="op-chip"
+          aria-label={removes(`sorted by ${ops.sort.column}, ${ops.sort.dir === 'asc' ? 'ascending' : 'descending'}`)}
+          onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, sort: undefined }))}
+          title={`Remove sort · ORDER BY ${sqlName(ops.sort.column)} ${ops.sort.dir.toUpperCase()}`}>
           <Icon name={ops.sort.dir === 'asc' ? 'sortAsc' : 'sortDesc'} size={14} /> {ops.sort.column}, {ops.sort.dir === 'asc' ? 'ascending' : 'descending'}
           <Icon name="close" size={12} />
         </button>
       )}
       {ops.filters.map((f, i) => (
-        <button key={i} className="op-chip" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, filters: ops.filters.filter((_, j) => j !== i) }))} title={`Remove filter · WHERE ${filterSql(f)}`}>
+        <button
+          key={i}
+          className="op-chip"
+          aria-label={removes(describeFilter(f))}
+          onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, filters: ops.filters.filter((_, j) => j !== i) }))}
+          title={`Remove filter · WHERE ${filterSql(f)}`}
+        >
           <Icon name="filter" size={14} /> {describeFilter(f)}
           <Icon name="close" size={12} />
         </button>
       ))}
       {ops.search && (
-        <button className="op-chip" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, search: undefined }))} title="Remove search">
+        <button className="op-chip" aria-label={removes(`contains “${ops.search}”`)} onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, search: undefined }))} title="Remove search">
           <Icon name="search" size={14} /> Contains “{ops.search}”
           <Icon name="close" size={12} />
         </button>
       )}
       {ops.dedupe && (
-        <button className="op-chip" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, dedupe: undefined }))} title="Show all rows again">
+        <button
+          className="op-chip"
+          aria-label={removes(ops.dedupe.mode === 'show' ? `duplicates in ${ops.dedupe.column}` : `first of each ${ops.dedupe.column}`)}
+          onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, dedupe: undefined }))}
+          title="Show all rows again"
+        >
           <Icon name="copy" size={14} /> {ops.dedupe.mode === 'show' ? `Duplicates in ${ops.dedupe.column}` : `First of each ${ops.dedupe.column}`}
           <Icon name="close" size={12} />
         </button>
@@ -94,7 +114,13 @@ export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLo
       ))}
       {ops.clean?.map((c, i) =>
         inShut.has(i) ? null : (
-          <button key={`clean:${i}:${c.column}`} className="op-chip" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply(withoutClean(i)))} title={`Undo this cleaning · ${cleanExpr(c)}`}>
+          <button
+            key={`clean:${i}:${c.column}`}
+            className="op-chip"
+            aria-label={removes(describeClean(c))}
+            onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply(withoutClean(i)))}
+            title={`Undo this cleaning · ${cleanExpr(c)}`}
+          >
             <Icon name="spark" size={14} /> {describeClean(c)}
             <Icon name="close" size={12} />
           </button>
@@ -111,6 +137,7 @@ export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLo
         <button
           key={`drop:${i}`}
           className="op-chip"
+          aria-label={removes(`without ${d.label}`)}
           onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, drop: ops.drop!.length > 1 ? ops.drop!.filter((_, j) => j !== i) : undefined }))}
           title="Show these rows again"
         >
@@ -122,6 +149,7 @@ export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLo
         <button
           key={`hidden:${h}`}
           className="op-chip"
+          aria-label={removes(`${h} hidden`)}
           onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, hidden: ops.hidden!.length > 1 ? ops.hidden!.filter((x) => x !== h) : undefined }))}
           title={`Show this column again · EXCLUDE (${sqlName(h)})`}
         >
@@ -130,18 +158,31 @@ export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLo
         </button>
       ))}
       {ops.lookups?.map((l, i) => (
-        <button key={`lookup:${i}`} className="op-chip" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply(withoutLookup(i)))} title="Remove these columns">
+        <button key={`lookup:${i}`} className="op-chip" aria-label={removes(describeLookup(l))} onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply(withoutLookup(i)))} title="Remove these columns">
           <Icon name="link" size={14} /> {describeLookup(l)}
           <Icon name="close" size={12} />
         </button>
       ))}
-      {ops.computed.map((c, i) => (
-        <button key={c.name} className="op-chip" onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, computed: ops.computed.filter((_, j) => j !== i) }))} title={`Remove column · ${c.expr}`}>
-          <Icon name="plus" size={14} /> {c.name}
-          {c.note ? ` (${c.note})` : ''}
-          <Icon name="close" size={12} />
-        </button>
-      ))}
+      {ops.computed.map((c, i) => {
+        const label = `${c.name}${c.note ? ` (${c.note})` : ''}`
+        const remove = (e: { currentTarget: HTMLElement }) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, computed: ops.computed.filter((_, j) => j !== i) }))
+        // Categories are rules to go back to (a word to add): the chip opens them, its × removes the column.
+        return c.categorize && onEditCategories ? (
+          <span key={c.name} className="op-chip op-chip-split">
+            <button className="op-chip-main" aria-label={`Edit the categories in ${c.name}`} onClick={() => onEditCategories(c.name)} title="Edit the categories and their words">
+              <Icon name="plus" size={14} /> {label}
+            </button>
+            <button className="op-chip-x" aria-label={removes(`${c.name} column`)} onClick={remove} title={`Remove column · ${c.name}`}>
+              <Icon name="close" size={12} />
+            </button>
+          </span>
+        ) : (
+          <button key={c.name} className="op-chip" aria-label={removes(`${label} column`)} onClick={remove} title={`Remove column · ${c.expr}`}>
+            <Icon name="plus" size={14} /> {label}
+            <Icon name="close" size={12} />
+          </button>
+        )
+      })}
       {canUndo && (
         <button className="link-btn" onClick={onUndo} title={`Undo (${isMac ? '⌘' : 'Ctrl'}+Z)`}>
           Undo

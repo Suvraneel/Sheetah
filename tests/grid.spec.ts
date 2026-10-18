@@ -170,6 +170,6 @@ test.describe('grid and query engine', () => {
     await cancel.click()
     await expect(page.locator('.toast, .error-banner')).toContainText(/cancel/i)
     await runSql(page, 'SELECT 42 AS answer')
-    await expect(page.locator('.result-meta')).toContainText('1 rows')
+    await expect(page.locator('.result-meta')).toContainText('1 row')
   })
 })

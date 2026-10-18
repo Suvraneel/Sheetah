@@ -122,7 +122,7 @@ async function readDates(name: string, path: string, read: (opts: string) => str
  * Parquet stays a view because it's already columnar and compressed.
  * Loads run one at a time on the cancellable connection, so the Cancel button stops them.
  */
-export async function ingestFile(file: File, taken: Set<string> = new Set(), onNote?: (note: string) => void): Promise<string[]> {
+export async function ingestFile(file: File, taken: Set<string> = new Set(), onNote?: Noted): Promise<string[]> {
   if (!file.size) throw new FileKindError(`${file.name} is empty.`)
   const { sniff, notATable } = await import('./sniff')
   const kind = sniff(new Uint8Array(await file.slice(0, 1024).arrayBuffer()))
@@ -157,7 +157,7 @@ export async function ingestFile(file: File, taken: Set<string> = new Set(), onN
 }
 
 
-function ingestRead(file: File, taken: Set<string>, onNote?: (note: string) => void): Promise<string[]> {
+function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<string[]> {
   return withRunLock(async () => {
     const { db } = await getEngine()
     const name = tableNameFor(file.name, await takenNames(taken))
@@ -239,14 +239,14 @@ function parseExcel(file: File): Promise<XlsxReply> {
 }
 
 /** Every non-empty sheet becomes its own table: budget.xlsx → budget_q1, budget_q2, … */
-async function ingestExcel(file: File, taken: Set<string>, onNote?: (note: string) => void): Promise<string[]> {
+async function ingestExcel(file: File, taken: Set<string>, onNote?: Noted): Promise<string[]> {
   const reply = await parseExcel(file)
   if (!reply.ok) throw reply.plain ? new FileKindError(reply.error) : new Error(reply.error)
   return ingestSheets(file, reply.sheets, taken, onNote)
 }
 
 /** An ".xls" that is a web page's table or Excel 2003 XML: read here (the browser parses markup). */
-async function ingestMarkup(file: File, kind: 'html' | 'xml-sheet', taken: Set<string>, onNote?: (note: string) => void, decoded?: string): Promise<string[]> {
+async function ingestMarkup(file: File, kind: 'html' | 'xml-sheet', taken: Set<string>, onNote?: Noted, decoded?: string): Promise<string[]> {
   // The browser builds the whole page in memory (several times the file), and that can't be stopped.
   if (file.size > 50 * 1024 ** 2) throw new FileKindError(`${file.name} is a web page or XML spreadsheet over 50 MB. Save it as CSV or .xlsx and open that.`)
   const { markupToCsv } = await import('./markup-sheets')
@@ -255,16 +255,21 @@ async function ingestMarkup(file: File, kind: 'html' | 'xml-sheet', taken: Set<s
   return ingestSheets(file, sheets, taken, onNote)
 }
 
+/** A note about a file as it opened (title lines left out…), or a check on it (a trial balance's tie-out). */
+export type Noted = (note: string, check?: { ok: boolean }) => void
+
 /** Tally's XML: its envelope, or the messages inside one. */
 const TALLY = /<ENVELOPE\b|<TALLYMESSAGE\b/i
 
 /** Tally's XML, read as a table: one row per voucher line, or per row of a report. */
-async function ingestTally(file: File, source: string, taken: Set<string>, onNote?: (note: string) => void): Promise<string[]> {
+async function ingestTally(file: File, source: string, taken: Set<string>, onNote?: Noted): Promise<string[]> {
   if (file.size > 100 * 1024 ** 2) throw new FileKindError(`${file.name} is Tally XML over 100 MB. From Tally, export the report to Excel or CSV instead, and open that.`)
   const { tallyToCsv } = await import('./tally')
-  const sheets = tallyToCsv(source)
+  const { sheets, notes } = tallyToCsv(source, file.name)
   if (!sheets.length) throw new FileKindError(`${file.name} is Tally’s own XML, with no vouchers or report rows in it. From Tally, export the report to Excel or CSV instead, and open that.`)
-  return ingestSheets(file, sheets, taken, onNote)
+  const names = await ingestSheets(file, sheets, taken, onNote)
+  for (const n of notes) onNote?.(n.text, { ok: n.ok })
+  return names
 }
 
 /** A web page's or XML file's text in the encoding it declares (Excel's web pages are often windows-1252). */
@@ -279,7 +284,7 @@ async function textOf(file: File): Promise<string> {
   }
 }
 
-async function ingestSheets(file: File, sheets: XlsxSheet[], taken: Set<string>, onNote?: (note: string) => void): Promise<string[]> {
+async function ingestSheets(file: File, sheets: XlsxSheet[], taken: Set<string>, onNote?: Noted): Promise<string[]> {
   if (!sheets.length) throw new FileKindError('That workbook has no data in any sheet.')
   const reply = { sheets }
   return withRunLock(async () => {

@@ -73,7 +73,7 @@ test.describe('anonymize', () => {
     await page.keyboard.press('ControlOrMeta+a')
     await page.keyboard.insertText(`SELECT count(DISTINCT email) AS people FROM (${sql.replace(/^--.*\n/, '')})`)
     await page.keyboard.press('ControlOrMeta+Enter')
-    await expect(page.locator('.result-meta')).toContainText('1 rows')
+    await expect(page.locator('.result-meta')).toContainText('1 row')
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2')
   })
 })

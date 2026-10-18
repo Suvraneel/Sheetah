@@ -55,3 +55,9 @@ test('an amount stored as text is no category; a category named like one still i
   expect(startersFor('sales', [cols[1], cols[2]], 1000).some((s) => s.label.includes('by Unit Rate'))).toBe(false)
   expect(startersFor('costs', [{ name: 'Cost Centre', type: 'VARCHAR', distinct: 6 }, cols[2]], 1000)[0].label).toBe('Qty by Cost Centre')
 })
+
+test('a statement’s amounts stored as text are no categories, however they are written', () => {
+  const statement = ['Narration', 'Withdrawal Amt.', 'Deposit Amt.', 'Amount (INR)', 'Dr/Cr'].map((name, i) => ({ name, type: 'VARCHAR', distinct: 3 + i }))
+  const labels = startersFor('stmt', statement, 500).map((s) => s.label)
+  expect(labels.filter((l) => /^Rows by (Withdrawal|Deposit|Amount)/.test(l))).toEqual([])
+})

@@ -100,7 +100,7 @@ export function ChartPanel({ result, onOpenSql, textNumbers, onConvert }: Props)
               <label>
                 <span>By</span>
                 <select value={spec.grain ?? ''} onChange={(e) => set({ grain: (e.target.value || undefined) as TimeGrain | undefined })}>
-                  <option value="">{data?.bucket && !spec.grain ? `${data.bucket[0].toUpperCase()}${data.bucket.slice(1)} (picked)` : 'Picked from the dates'}</option>
+                  <option value="">{data?.bucket && !spec.grain ? `Auto (${data.bucket})` : 'Auto'}</option>
                   {grains.map((g) => (
                     <option key={g} value={g}>
                       {g[0].toUpperCase() + g.slice(1)}

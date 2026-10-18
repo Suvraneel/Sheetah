@@ -4,6 +4,8 @@ import { openApp, openDemo, runSql } from './helpers'
 const file = (name: string, text: string) => ({ name, mimeType: 'text/csv', buffer: Buffer.from(text) })
 
 /** Waits until no query is running (header actions show their chips at once; the result follows). */
+// Saving a view checks its rows once more, then keeps where they closed (for next month's): done before a reload.
+const periodKept = (page: Page) => expect.poll(() => page.evaluate(() => localStorage.getItem('sheetah:views')?.includes('"periods"') ?? false)).toBe(true)
 const idle = (page: Page) => expect(page.getByRole('button', { name: 'Run query' })).toBeVisible({ timeout: 60_000 })
 
 async function columnMenu(page: Page, column: number) {
@@ -337,12 +339,12 @@ test.describe('hints follow their table', () => {
       file('plain.csv', 'a,b\n1,2\n'),
       file('report.csv', 'region,rep,sales\nNorth,Asha,"₹1,200"\nSouth,Ravi,"₹800"\nTotal,,"₹2,000"\n'),
     ])
-    await expect(page.locator('.result-meta')).toContainText('1 rows')
+    await expect(page.locator('.result-meta')).toContainText('1 row')
     await page.locator('.side-table', { hasText: 'report' }).click()
     await expect(page.getByRole('button', { name: 'Leave out 1 total line' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Convert 1 text column to numbers' })).toBeVisible()
     await page.locator('.side-table', { hasText: 'plain' }).click()
-    await expect(page.locator('.result-meta')).toContainText('1 rows')
+    await expect(page.locator('.result-meta')).toContainText('1 row')
     await expect(page.locator('.hint-chips')).toHaveCount(0)
     await page.locator('.side-table', { hasText: 'report' }).click()
     await expect(page.getByRole('button', { name: 'Leave out 1 total line' })).toBeVisible()
@@ -391,7 +393,7 @@ test.describe('the messy sample', () => {
     await expect(page.locator('.error-banner')).toContainText('This query skips sales_register_april’s 7 tidy-up steps')
     await page.locator('.error-banner').getByRole('button', { name: 'Run on the tidied rows' }).click()
     await expect(page.locator('.cm-content')).toContainText('WITH sales_register_april AS (')
-    await expect(page.locator('.result-meta')).toContainText('1 rows')
+    await expect(page.locator('.result-meta')).toContainText('1 row')
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('613,950') // the invoices, not the totals too
     await expect(page.locator('.error-banner')).toHaveCount(0)
     // A mistake of another kind (a misspelt column) keeps its own explanation; the tidied rows are a second offer.
@@ -497,11 +499,20 @@ test.describe('bank statements', () => {
     await expect(dialog.getByLabel('Category 1 words')).toHaveValue('swiggy, zomato')
     // A word of its own, picked from the column's common words, goes to the category being edited.
     await dialog.getByLabel('Category 1 words').focus()
-    await dialog.getByRole('group', { name: 'Common words in Narration' }).getByRole('button', { name: /^mystery/ }).click()
+    await dialog.getByRole('group', { name: 'Common words in Narration' }).getByRole('button', { name: /^Add mystery \(1 row\)/ }).click()
     await expect(dialog.getByLabel('Category 1 words')).toHaveValue('swiggy, zomato, mystery')
+    // Every row has a category now: no words are left to offer, and focus goes back to the words it went to.
+    await expect(dialog.getByRole('group', { name: /^Common words in Narration/ })).toContainText('none left')
+    await expect(dialog.getByLabel('Category 1 words')).toBeFocused()
     await expect(dialog.getByRole('status')).toHaveText('5 rows: 5 in 3 categories, 0 as Other.')
-    await dialog.getByRole('button', { name: 'Add category' }).click()
+    await dialog.getByRole('button', { name: 'Add the category column' }).click()
     await expect(page.locator('.op-chip', { hasText: 'category (by Narration)' })).toBeVisible()
+    // The chip opens the rules again (its × is what removes the column).
+    await page.getByRole('button', { name: 'Edit the categories in category' }).click()
+    const editing = page.getByRole('dialog', { name: 'Group Narration into categories' })
+    await expect(editing.getByLabel('Category 1 words')).toHaveValue('swiggy, zomato, mystery')
+    await editing.getByRole('button', { name: 'Cancel' }).click()
+    await expect(page.getByRole('button', { name: 'Remove step: category column' })).toBeVisible()
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('Food and dining')
     await page.locator('.toast', { hasText: 'Added category: 3 categories by words in Narration' }).getByRole('button', { name: 'Pivot by month' }).click()
     const pivot = page.getByRole('dialog', { name: 'Summarize this result' })
@@ -539,14 +550,27 @@ test.describe('bank statements', () => {
     await page.getByRole('button', { name: /^Leave out 1 total line/ }).click()
     await expect(page.locator('.result-meta')).toContainText('3 of 4 rows')
     await page.getByRole('button', { name: 'Compare two tables' }).click()
-    await page.getByRole('button', { name: 'Match payments by amount and date' }).click()
+    // A statement and its books: Compare says rows aren't the way to compare them, and offers the match.
+    await expect(page.getByRole('dialog').getByText('bank_apr and books_apr look like a statement and its books')).toBeVisible()
+    await page.getByRole('button', { name: 'Match payments', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: 'Bank against books' })
     await expect(dialog.getByLabel('Table').first()).toBeFocused()
-    await expect(dialog.getByRole('status')).toHaveText('2 matched · 1 only in bank_apr (-118) · 1 only in books_apr (2,500)')
+    await expect(dialog.getByRole('status')).toHaveText('2 matched · 1 only in bank_apr (-118.00) · 1 only in books_apr (2,500.00)')
     await dialog.getByRole('button', { name: 'Match them' }).click()
-    await expect(page.locator('.result-meta')).toContainText('4 rows · 7 columns')
+    await expect(page.locator('.result-meta')).toContainText('4 rows · 8 columns')
     await expect(page.locator('.origin-chip')).toContainText('Payments matched')
     await expect(page.locator('.sr-grid [role=row]').nth(4)).toContainText('only in books_apr')
+    // The month-end write-up: from the bank's closing balance to what the books should show.
+    await page.getByRole('button', { name: 'Reconciliation statement' }).click()
+    await expect(page.locator('.result-meta')).toContainText('6 rows · 3 columns')
+    await expect(page.locator('.origin-chip')).toContainText('Bank reconciliation, from')
+    const first = page.locator('.sr-grid [role=row]').nth(1)
+    await expect(first).toContainText('Balance as per bank_apr on 2024-04-19')
+    await expect(first).toContainText('59,382')
+    await expect(page.locator('.sr-grid [role=row]').nth(2)).toContainText('Add: money in, in books_apr only (deposits not yet credited)')
+    await expect(page.locator('.sr-grid [role=row]').nth(5)).toContainText('118')
+    await expect(page.locator('.sr-grid [role=row]').nth(6)).toContainText('Balance as per books_apr, worked out')
+    await expect(page.locator('.sr-grid [role=row]').nth(6)).toContainText('62,000')
   })
 
   test('a statement that keeps its file name each month is still checked against last month’s', async ({ page }) => {
@@ -561,6 +585,7 @@ test.describe('bank statements', () => {
     await page.fill('#view-name', 'Monthly')
     await page.locator('.modal .btn-primary').click()
     await expect(page.locator('.side-view')).toContainText('Monthly')
+    await periodKept(page)
 
     // May's file, same name; it opens at 7,500, not the 8,000 April closed at.
     await page.reload()
@@ -571,7 +596,7 @@ test.describe('bank statements', () => {
     await page.locator('.side-tabs button', { hasText: 'Saved' }).click()
     await page.locator('.side-view', { hasText: 'Monthly' }).click()
     await expect(page.locator('.toast', { hasText: '· 3 rows (2 last time)' })).toBeVisible()
-    await expect(page.locator('.checks .is-off', { hasText: 'Opens at 7,500, but the last statement closed at 8,000: 500 apart' })).toBeVisible()
+    await expect(page.locator('.checks .is-off', { hasText: 'Opens at 7,500.00, but the statement to 2024-04-19 closed at 8,000.00: 500.00 apart' })).toBeVisible()
   })
 
   test('next month’s statement is checked when a saved view runs on it: a missing line is named', async ({ page }) => {
@@ -584,7 +609,14 @@ test.describe('bank statements', () => {
     // The opening and closing balance lines aren't transactions: left out with the total line.
     await page.getByRole('button', { name: 'Leave out 1 total line, 2 balance lines and 1 empty row' }).click()
     await expect(page.locator('.result-meta')).toContainText('4 of 8 rows')
-    await expect(page.locator('.checks .is-ok', { hasText: 'The totals match the rows exactly: Withdrawal Amt. 5,000' })).toBeVisible()
+    // Checks that pass fold into one line, until shown.
+    await expect(page.locator('.checks')).toContainText('2 checks passed: totals, opening to closing')
+    await page.locator('.checks').getByRole('button', { name: 'Show' }).click()
+    // The same button folds them again: focus stays on it.
+    await expect(page.locator('.checks').getByRole('button', { name: 'Fold' })).toBeFocused()
+    await expect(page.locator('.checks').getByRole('button', { name: 'Fold' })).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('.checks .is-ok', { hasText: 'The totals match the rows exactly: Withdrawal Amt. 5,000.00 · Deposit Amt. 2,000.00' })).toBeVisible()
+    await expect(page.locator('.checks .is-ok', { hasText: 'Opening 10,000.00 + in 2,000.00 − out 5,000.00 = closing 7,000.00, as the file says' })).toBeVisible()
     await page.getByRole('button', { name: /^Add signed amount/ }).click()
     await expect(page.locator('.checks .is-ok', { hasText: 'Every Closing Balance follows from the row above' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Run query' })).toBeVisible({ timeout: 60_000 })
@@ -592,6 +624,7 @@ test.describe('bank statements', () => {
     await page.fill('#view-name', 'Statement tidy')
     await page.locator('.modal .btn-primary').click()
     await expect(page.locator('.side-view')).toContainText('Statement tidy')
+    await periodKept(page)
 
     // May's statement, with its 1,300.00 groceries line missing (its footer still counts it).
     await page.reload()
@@ -602,9 +635,10 @@ test.describe('bank statements', () => {
     await page.locator('.toast', { hasText: 'Your view “Statement tidy” fits stmt_may' }).getByRole('button', { name: 'Run it' }).click()
     await expect(page.locator('.toast', { hasText: /Ran “Statement tidy” on stmt_may: \d+ steps, shown above the rows · 3 rows \(stmt_apr had 4\)/ })).toBeVisible()
     // It opens where April closed (7,000.00): no statement missing in between.
-    await expect(page.locator('.checks .is-ok', { hasText: 'Opens at 7,000, where stmt_apr closed' })).toBeVisible()
-    await expect(page.locator('.checks .is-off', { hasText: 'The totals say Withdrawal Amt. is 5,000; the rows come to 3,700: 1,300 short' })).toBeVisible()
-    await expect(page.locator('.checks .is-off', { hasText: 'Closing Balance on row 3 doesn’t follow from the row above: off by 1,300' })).toBeVisible()
+    await expect(page.locator('.checks .is-ok', { hasText: 'Opens at 7,000.00, where stmt_apr closed' })).toBeVisible()
+    await expect(page.locator('.checks .is-off', { hasText: 'The totals say Withdrawal Amt. is 5,000.00; the rows come to 3,700.00: 1,300.00 short' })).toBeVisible()
+    await expect(page.locator('.checks .is-off', { hasText: 'Closing Balance on row 3 doesn’t follow from the row above: off by 1,300.00' })).toBeVisible()
+    await expect(page.locator('.checks .is-off', { hasText: 'Opening 7,000.00 + in 50,000.00 − out 3,700.00 comes to 53,300.00, but the closing balance line says 52,000.00: 1,300.00 apart' })).toBeVisible()
     // A check stays only while its step does: with the total line back, there's no tie-out to show.
     await page.locator('.op-chip', { hasText: 'Without 1 total line' }).click()
     await expect(page.locator('.checks', { hasText: 'The totals say' })).toHaveCount(0)

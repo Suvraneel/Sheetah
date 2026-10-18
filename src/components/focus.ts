@@ -17,10 +17,11 @@ export function keepFocusIn(group: Element | null, index: number, fallback: () =
   attempt(10)
 }
 
-/** Runs a click's action, then keeps focus in the clicked control's group (see keepFocusIn). */
-export function thenKeepFocus(e: { currentTarget: HTMLElement }, groupSelector: string, action: () => void) {
+/** Runs a click's action, then keeps focus in the clicked control's group (see keepFocusIn); returns where it was. */
+export function thenKeepFocus(e: { currentTarget: HTMLElement }, groupSelector: string, action: () => void, fallback?: () => HTMLElement | null): number {
   const group = e.currentTarget.closest(groupSelector)
-  const index = group ? [...group.querySelectorAll('button')].indexOf(e.currentTarget as HTMLButtonElement) : 0
+  const index = Math.max(0, group ? [...group.querySelectorAll('button')].indexOf(e.currentTarget as HTMLButtonElement) : 0)
   action()
-  keepFocusIn(group, Math.max(0, index))
+  keepFocusIn(group, index, fallback)
+  return index
 }

@@ -21,7 +21,7 @@ test.describe('opening and exporting files', () => {
     await openFiles(page, committedFixture('budget 2024.xlsx'))
     await expect(page.locator('.side-table .side-name')).toHaveText(['budget_2024_notes', 'budget_2024_q1_sales'])
     await runSql(page, "SELECT typeof(date) AS d, typeof(paid) AS p, typeof(amount) AS a, count(*) AS n FROM budget_2024_q1_sales GROUP BY ALL")
-    await expect(page.locator('.result-meta')).toContainText('1 rows')
+    await expect(page.locator('.result-meta')).toContainText('1 row')
     await page.locator('.grid-scroll').focus()
     await page.keyboard.press('ArrowDown')
     await expect(page.locator('.statusbar')).toContainText('DATE')
@@ -152,21 +152,37 @@ test.describe('files that are something else inside', () => {
 <TALLYMESSAGE><VOUCHER VCHTYPE="Receipt"><DATE>20240405</DATE><VOUCHERNUMBER>2</VOUCHERNUMBER><PARTYLEDGERNAME>Acme Ltd</PARTYLEDGERNAME>
 <ALLLEDGERENTRIES.LIST><LEDGERNAME>Acme Ltd</LEDGERNAME><AMOUNT>50000.00</AMOUNT></ALLLEDGERENTRIES.LIST>
 <ALLLEDGERENTRIES.LIST><LEDGERNAME>HDFC Bank</LEDGERNAME><AMOUNT>-50000.00</AMOUNT></ALLLEDGERENTRIES.LIST></VOUCHER></TALLYMESSAGE>
+<TALLYMESSAGE><VOUCHER VCHTYPE="Sales"><DATE>20240410</DATE><VOUCHERTYPENAME>Sales</VOUCHERTYPENAME><VOUCHERNUMBER>S-1</VOUCHERNUMBER><PARTYLEDGERNAME>Acme Ltd</PARTYLEDGERNAME>
+<ALLINVENTORYENTRIES.LIST><STOCKITEMNAME>Widget</STOCKITEMNAME><AMOUNT>10000.00</AMOUNT>
+<ACCOUNTINGALLOCATIONS.LIST><LEDGERNAME>Sales</LEDGERNAME><AMOUNT>10000.00</AMOUNT></ACCOUNTINGALLOCATIONS.LIST></ALLINVENTORYENTRIES.LIST>
+<LEDGERENTRIES.LIST><LEDGERNAME>Acme Ltd</LEDGERNAME><AMOUNT>-11800.00</AMOUNT></LEDGERENTRIES.LIST>
+<LEDGERENTRIES.LIST><LEDGERNAME>Output IGST</LEDGERNAME><AMOUNT>1800.00</AMOUNT></LEDGERENTRIES.LIST></VOUCHER></TALLYMESSAGE>
+<TALLYMESSAGE><VOUCHER VCHTYPE="Journal"><DATE>20240412</DATE><VOUCHERNUMBER>J-7</VOUCHERNUMBER>
+<ALLLEDGERENTRIES.LIST><LEDGERNAME>Office Expenses</LEDGERNAME><AMOUNT>-1000.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+<ALLLEDGERENTRIES.LIST><LEDGERNAME>Cash</LEDGERNAME><AMOUNT>900.00</AMOUNT></ALLLEDGERENTRIES.LIST></VOUCHER></TALLYMESSAGE>
 </REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>`
     // Tally writes UTF-16 by default.
     await page.locator('input[type=file]').setInputFiles([buf('DayBook.xml', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(vouchers, 'utf16le')]))])
-    await expect(page.locator('.result-meta')).toContainText('4 rows · 8 columns')
+    await expect(page.locator('.result-meta')).toContainText('9 rows · 8 columns')
     const first = page.locator('.sr-grid [role=row]').nth(1)
     await expect(first).toContainText('2024-04-01')
     await expect(first).toContainText('Rent for April')
     await expect(first).toContainText('25,000')
     await expect(page.locator('.sr-grid [role=columnheader]').nth(6)).toContainText('Debit')
+    // An item invoice's sales ledger is inside its stock lines: read from there, as a credit.
+    await expect(page.locator('.sr-grid [role=row]').nth(5)).toContainText('Sales')
+    await expect(page.locator('.sr-grid [role=row]').nth(5)).toContainText('10,000')
+    // A voucher whose debits and credits don't agree is named above the rows.
+    await expect(page.locator('.checks .is-off', { hasText: '1 voucher doesn’t balance: J-7 (100.00 more in debits)' })).toBeVisible()
     // A report (a trial balance): one row per account.
     const report = `<ENVELOPE><DSPACCNAME><DSPDISPNAME>Capital Account</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA></DSPCLDRAMTA></DSPCLDRAMT><DSPCLCRAMT><DSPCLCRAMTA>500000.00</DSPCLCRAMTA></DSPCLCRAMT></DSPACCINFO>
-<DSPACCNAME><DSPDISPNAME>Rent</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA>-25000.00</DSPCLDRAMTA></DSPCLDRAMT><DSPCLCRAMT><DSPCLCRAMTA></DSPCLCRAMTA></DSPCLCRAMT></DSPACCINFO></ENVELOPE>`
+<DSPACCNAME><DSPDISPNAME>Rent</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA>-25000.00</DSPCLDRAMTA></DSPCLDRAMT><DSPCLCRAMT><DSPCLCRAMTA></DSPCLCRAMTA></DSPCLCRAMT></DSPACCINFO>
+<DSPACCNAME><DSPDISPNAME>HDFC Bank</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA>-475000.00</DSPCLDRAMTA></DSPCLDRAMT><DSPCLCRAMT><DSPCLCRAMTA></DSPCLCRAMTA></DSPCLCRAMT></DSPACCINFO></ENVELOPE>`
     await page.locator('input[type=file]').setInputFiles([buf('TrialBal.xml', report)])
-    await expect(page.locator('.result-meta')).toContainText('2 rows · 3 columns')
-    await expect(page.locator('.sr-grid [role=columnheader]').nth(0)).toContainText('Name')
+    await expect(page.locator('.result-meta')).toContainText('3 rows · 3 columns')
+    // A trial balance's debits and credits must agree: checked as it opens.
+    await expect(page.locator('.checks .is-ok', { hasText: 'Debits and credits agree: 500,000.00 each' })).toBeVisible()
+    await expect(page.locator('.sr-grid [role=columnheader]').nth(0)).toContainText('Particulars')
     await expect(page.locator('.sr-grid [role=row]').nth(2)).toContainText('Rent')
   })
 })

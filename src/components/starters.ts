@@ -69,8 +69,12 @@ export function startersFor(table: string, cols: StarterColumn[], rows?: number)
     // Names that sound like amounts first, then decimals before whole numbers.
     .sort((a, b) => rank(a.name, MEASURE_WORDS) - rank(b.name, MEASURE_WORDS) || Number(isInt(a)) - Number(isInt(b)))[0]
   // Text that names an amount (a rate or price stored as text) is a number to convert, not a category:
-  // by its last word ("Unit Rate", "GST %"), so "Cost Centre" and "Country" stay categories.
-  const amountLike = (c: StarterColumn) => /(^|[^a-z])(rate|price|amount|amt|cost|tax|value|total|balance|qty|quantity)s?$|%$/i.test(c.name.trim())
+  // by its last word ("Unit Rate", "GST %", "Withdrawal Amt.", "Amount (INR)"), so "Cost Centre" and
+  // "Country" stay categories.
+  const amountLike = (c: StarterColumn) =>
+    /(^|[^a-z])(rate|price|amount|amt|cost|tax|value|total|balance|bal|qty|quantity|debit|credit|withdrawal|deposit|dr|cr)s?$|%$/i.test(
+      c.name.trim().replace(/\s*\([^)]*\)$/, '').replace(/[.:]+$/, ''),
+    )
   const category = cols
     .filter((c) => TEXT.test(c.type) && c.distinct !== undefined && c.distinct >= 2 && c.distinct <= 60 && !amountLike(c))
     .sort((a, b) => rank(a.name, CATEGORY_WORDS) - rank(b.name, CATEGORY_WORDS) || (a.distinct ?? 0) - (b.distinct ?? 0))[0]

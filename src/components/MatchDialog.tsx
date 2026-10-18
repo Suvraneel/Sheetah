@@ -18,11 +18,13 @@ interface Props {
   /** The two tables to start with (the bank statement first, if it's known). */
   a?: string
   b?: string
-  onMatch: (sql: string, summary: string) => void
+  /** The match's query, what it found in words, and whether every line matched. */
+  onMatch: (sql: string, summary: string, all: boolean, spec: MatchSpec) => void
   onClose: () => void
 }
 
 const nf = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 2 })
+const money = new Intl.NumberFormat(LOCALE, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format
 const TWO = '\u0000in-out'
 const NONE: Record<string, string> = {}
 
@@ -87,7 +89,15 @@ function SideFields({ label, name, table, side, tables, onTable, onSide }: { lab
           </label>
         </>
       ) : (
-        <p className="fine">{table ? `${table.name} needs a date column (convert dates stored as text first) and an amount to match on.` : name ? 'Reading its columns…' : 'Pick a table.'}</p>
+        <p className="fine">
+          {!table
+            ? name
+              ? 'Reading its columns…'
+              : 'Pick a table.'
+            : table.columns.some((c) => /date/i.test(c.name) && !/^(DATE|TIMESTAMP)/i.test(c.type))
+              ? `${table.name}’s dates are stored as text. Open it, take its Convert suggestion (or Convert in the date column’s menu), and come back: the converted rows are what’s matched.`
+              : `${table.name} needs a date column and an amount to match on.`}
+        </p>
       )}
     </fieldset>
   )
@@ -101,9 +111,12 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
   const dialog = useDialog<HTMLDivElement>(onClose)
   const [names, setNames] = useState(() => {
     // The bank statement first (it's what the books are checked against).
-    const isStatement = (n?: string) => !!statementColumns(tables.find((t) => t.name === n)?.columns ?? [])
-    if (a && b && isStatement(b) && !isStatement(a)) [a, b] = [b, a]
-    const first = a ?? tables.find((t) => statementColumns(t.columns))?.name ?? tables[0]?.name ?? ''
+    const bank = (n?: string) => {
+      const st = statementColumns(tables.find((t) => t.name === n)?.columns ?? [])
+      return !!st && !st.books
+    }
+    if (a && b && bank(b) && !bank(a)) [a, b] = [b, a]
+    const first = a ?? tables.find((t) => bank(t.name))?.name ?? tables[0]?.name ?? ''
     return { a: first, b: b && b !== first ? b : (tables.find((t) => t.name !== first && sideFor(t))?.name ?? tables.find((t) => t.name !== first)?.name ?? '') }
   })
   // Each table's columns as the match reads it: as tidied by its steps (dates converted), else as opened.
@@ -167,14 +180,14 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
   }, [dirKey])
 
   // How many lines match, and what's left on each side, a moment after anything changes.
-  const [counts, setCounts] = useState<{ sql: string; rows?: { status: string; n: number; total: number }[]; error?: string } | null>(null)
+  const [counts, setCounts] = useState<{ sql: string; rows?: { status: string; n: number; total: number; near: number }[]; error?: string } | null>(null)
   useEffect(() => {
     if (!sql) return
     let live = true
     const t = window.setTimeout(() => {
       void getEngine()
         .then(({ conn }) => conn.query(matchCountsSql(sql)))
-        .then((res) => live && setCounts({ sql, rows: res.toArray().map((r) => r.toJSON() as { status: string; n: number; total: number }) }))
+        .then((res) => live && setCounts({ sql, rows: res.toArray().map((r) => r.toJSON() as { status: string; n: number; total: number; near: number }) }))
         .catch((e: unknown) => live && setCounts({ sql, error: e instanceof Error ? e.message : String(e) }))
     }, 300)
     return () => {
@@ -192,8 +205,12 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
           `${nf.format(of(labels.matched)?.n ?? 0)} matched`,
           ...[labels.a, labels.b].map((l) => {
             const r = of(l)
-            return `${nf.format(r?.n ?? 0)} ${l}${r?.n ? ` (${nf.format(r.total)})` : ''}`
+            return `${nf.format(r?.n ?? 0)} ${l}${r?.n ? ` (${money(r.total)})` : ''}`
           }),
+          ...(() => {
+            const near = (of(labels.a)?.near ?? 0) + (of(labels.b)?.near ?? 0)
+            return near ? [`${nf.format(near)} with the same amount further apart (see maybe)`] : []
+          })(),
         ].join(' · ')
       : null
 
@@ -204,7 +221,7 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
           className="shell modal modal-wide"
           onSubmit={(e) => {
             e.preventDefault()
-            if (sql && summary) onMatch(sql, summary)
+            if (sql && summary && labels && spec) onMatch(sql, summary, !of(labels.a)?.n && !of(labels.b)?.n, spec)
           }}
         >
           <div className="core">

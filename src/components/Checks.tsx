@@ -1,24 +1,56 @@
+import { useState } from 'react'
 import type { Check } from '../engine/checks'
 import { Icon } from './Icon'
 
+/** What each check is about, for the one line that says they passed. */
+const ABOUT: Record<Check['kind'], string> = {
+  totals: 'totals',
+  balance: 'running balance',
+  rollforward: 'opening to closing',
+  continuity: 'carries on from last time',
+  match: 'match',
+}
+
 /**
- * What the checks found on these rows (the running balance, the total lines), kept above the grid until
- * dismissed: a toast would be gone before a missing line is found. Passed checks are quiet; a failed one
- * says where and by how much. The region is always there (empty when there's nothing to say), so screen
+ * What the checks found on these rows (the running balance, the total lines…), kept above the grid until
+ * dismissed: a toast would be gone before a missing line is found. A failed check says where and by how
+ * much; checks that passed fold into one line ("3 checks passed: totals, running balance…") until opened,
+ * so the rows keep the room. The region is always there (empty when there's nothing to say), so screen
  * readers announce a check when it arrives.
  */
 export function Checks({ items, onDismiss }: { items: Check[]; onDismiss: () => void }) {
+  const [open, setOpen] = useState(false)
+  const passed = items.filter((c) => c.ok)
+  const failed = items.filter((c) => !c.ok)
+  const fold = passed.length >= 2 && !open
+  const one = (c: Check) => (
+    <span key={c.kind} className={`check ${c.ok ? 'is-ok' : 'is-off'}`}>
+      <Icon name={c.ok ? 'check' : 'alert'} size={14} />
+      <span>
+        <span className="sr-only">{c.ok ? 'Check passed: ' : 'Check failed: '}</span>
+        {c.text}
+      </span>
+    </span>
+  )
   return (
     <div className="checks" role="status" aria-label="Checks on these rows">
-      {items.map((c) => (
-        <span key={c.kind} className={`check ${c.ok ? 'is-ok' : 'is-off'}`}>
-          <Icon name={c.ok ? 'check' : 'alert'} size={14} />
+      {failed.map(one)}
+      {fold ? (
+        <span className="check is-ok">
+          <Icon name="check" size={14} />
           <span>
-            <span className="sr-only">{c.ok ? 'Check passed: ' : 'Check failed: '}</span>
-            {c.text}
+            {passed.length} checks passed: {passed.map((c) => ABOUT[c.kind]).join(', ')}
           </span>
         </span>
-      ))}
+      ) : (
+        passed.map(one)
+      )}
+      {/* One button, there either way: focus stays on it as the checks open and fold. */}
+      {passed.length >= 2 && (
+        <button className="link-btn check-more" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+          {open ? 'Fold' : 'Show'}
+        </button>
+      )}
       {items.length > 0 && (
         <button className="icon-btn check-dismiss" aria-label="Dismiss the checks" title="Dismiss" onClick={onDismiss}>
           <Icon name="close" size={13} />

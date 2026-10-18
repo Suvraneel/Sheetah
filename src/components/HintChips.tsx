@@ -19,6 +19,9 @@ interface Props {
   /** A statement with dates: its money in and out by month, as a summary. */
   monthly?: boolean
   onMonthly?: () => void
+  /** The payments matched are on screen: the bank reconciliation statement from them. */
+  reconcile?: boolean
+  onReconcile?: () => void
   /** Dates the reader read one way (day first, 'dmy') that could be the other: to read the other way. */
   dates?: { columns: string[]; read: 'dmy' | 'mdy' } | null
   onSwapDates?: (columns: string[]) => void
@@ -51,9 +54,9 @@ const listed = (xs: string[]) => (xs.length < 3 ? xs.join(' and ') : `${xs.slice
  * Suggestions from looking the table over, outlined so they never read as applied steps (filled chips),
  * in the order they're best taken: rows that aren't data first, then the layout, then the types.
  */
-export function HintChips({ namesRow, onNames, junk, checkingTotals, empty, onHideEmpty, amount, onAmount, categorize, onCategorize, monthly, onMonthly, dates, onSwapDates, spaces, onTrim, fill, onFill, series, text, personal, compact, onDrop, onUnpivot, onConvert, onAnonymize }: Props) {
+export function HintChips({ namesRow, onNames, junk, checkingTotals, empty, onHideEmpty, amount, onAmount, categorize, onCategorize, monthly, onMonthly, reconcile, onReconcile, dates, onSwapDates, spaces, onTrim, fill, onFill, series, text, personal, compact, onDrop, onUnpivot, onConvert, onAnonymize }: Props) {
   const names = typeof namesRow === 'number'
-  if (!names && !junk && !checkingTotals && !empty && !fill && !series && !text && !amount && !categorize && !monthly && !dates && !spaces && !personal) return null
+  if (!names && !junk && !checkingTotals && !empty && !fill && !series && !text && !amount && !categorize && !monthly && !reconcile && !dates && !spaces && !personal) return null
   const into = (t: Clean[]) => (t.every((c) => c.kind === 'date') ? 'dates' : t.some((c) => c.kind === 'date') ? 'numbers and dates' : 'numbers')
   return (
     <span className="hint-chips">
@@ -126,6 +129,15 @@ export function HintChips({ namesRow, onNames, junk, checkingTotals, empty, onHi
       {monthly && (
         <button className="pii-chip" onClick={(e) => thenKeepFocus(e, '.hint-chips', () => onMonthly?.())} title="A summary: each month's money in, money out, the net and how many lines, as a new result (Undo comes back here).">
           <Icon name="calendar" size={13} /> Money in and out by month
+        </button>
+      )}
+      {reconcile && (
+        <button
+          className="pii-chip"
+          onClick={(e) => thenKeepFocus(e, '.hint-chips', () => onReconcile?.())}
+          title="From the bank’s closing balance to the books’: the cheques not yet presented, the deposits not yet credited, the bank’s own charges and interest (Undo comes back here)."
+        >
+          <Icon name="check" size={13} /> Reconciliation statement
         </button>
       )}
       {dates && (

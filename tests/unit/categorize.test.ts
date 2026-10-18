@@ -27,7 +27,8 @@ test('rules become a CASE: the first rule with a word wins, matched where a word
 
 test('the words a column has, without the payment rails and banks; known ones suggest categories', async () => {
   await q(`CREATE OR REPLACE TABLE nar2 AS SELECT * FROM (VALUES
-    ('UPI-SWIGGY-swiggy@icici'), ('UPI-SWIGGY-order'), ('UPI-UBER-trip'), ('NEFT-HDFC-RENT JUNE'), ('UPI-Mystery Shop'), ('POS CAFÉ_ÉCOLE')
+    ('UPI-SWIGGY-swiggy@icici'), ('UPI-SWIGGY-order'), ('UPI-UBER-trip'), ('NEFT-HDFC-RENT JUNE'), ('UPI-Mystery Shop'), ('POS CAFÉ_ÉCOLE'),
+    ('NEFT-SBIN0001234-ACME'), ('UPI-BHARATPE09897654321@ybl'), ('AMAZON0001234 PURCHASE')
   ) t(narration)`)
   const words = (await q(wordsSql('nar2', 'narration'))).map((r) => [r.word, r.rows])
   expect(words[0]).toEqual(['swiggy', 2])
@@ -36,6 +37,12 @@ test('the words a column has, without the payment rails and banks; known ones su
   expect(words.map((w) => w[0])).toContain('mystery')
   // Words in any script, whole: café and école, not caf and cole.
   expect(words.map((w) => w[0])).toEqual(expect.arrayContaining(['café', 'école']))
+  // A bank's branch code (SBIN0001234) is left out whole; a merchant's name that runs into digits isn't cut.
+  expect(words.map((w) => w[0])).toEqual(expect.arrayContaining(['acme', 'bharatpe', 'amazon']))
+  expect(words.map((w) => w[0])).not.toContain('sbin')
+  expect(words.map((w) => w[0])).not.toContain('bhar')
+  // A charge is a charge, whatever it's for.
+  expect(suggestRules(['atm', 'chgs', 'gst']).map((r) => r.category)).toEqual(['Charges and fees', 'Cash withdrawals', 'GST and taxes'])
   expect(knownCategory('UBER')).toBe('Travel')
   expect(suggestRules(['swiggy', 'uber', 'rent', 'mystery', 'zomato'])).toEqual([
     { category: 'Food and dining', words: ['swiggy', 'zomato'] },

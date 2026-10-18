@@ -1,5 +1,6 @@
 import type { TableMeta } from '../engine/ingest'
 import { LOCALE, sqlName } from '../engine/sql'
+import { friendlyType } from '../grid/format'
 import { Icon } from './Icon'
 
 /*
@@ -59,7 +60,10 @@ export function TablesPanel({ tables, openName, onOpen, onInsert, onCompare, onS
                   <li key={c.name}>
                     <button onClick={() => onInsert(sqlName(c.name))} title="Insert into SQL">
                       <span>{c.name}</span>
-                      <span className="side-type">{c.type.toLowerCase()}</span>
+                      {/* As a spreadsheet would say it; the database's own type on hover (and in the column menu). */}
+                      <span className="side-type" title={c.type.toLowerCase()}>
+                        {friendlyType(c.type)}
+                      </span>
                     </button>
                   </li>
                 ))}

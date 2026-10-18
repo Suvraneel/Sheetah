@@ -10,6 +10,11 @@ export interface StatementColumns {
   credit: string
   debit: string
   balance?: string
+  /**
+   * The books' side (a ledger exported from the accounts, with its voucher types): a debit to the bank
+   * account is money in, so `credit` (in) is the Debit column here, and `debit` (out) the Credit column.
+   */
+  books?: boolean
 }
 
 const OUT = /(^|_)(withdrawals?|debits?|dr|paid_out|money_out|outflows?|payments?|spent|expenses?)(_|$)/
@@ -26,7 +31,16 @@ export function statementColumns(columns: { name: string; type: string }[]): Sta
   const credit = columns.find((c) => money(c) && IN.test(nameKey(c.name)) && !OUT.test(nameKey(c.name)))
   if (!debit || !credit) return null
   const balance = columns.find((c) => money(c) && BALANCE.test(nameKey(c.name)) && c !== debit && c !== credit)
+  // A ledger from the books (Tally's has Vch Type and Vch No.): its Debit and Credit are the bank's other way round.
+  const books = /^(debits?|dr)$/.test(nameKey(debit.name)) && /^(credits?|cr)$/.test(nameKey(credit.name)) && columns.some((c) => /(^|_)(vch|voucher)(_|$)/.test(nameKey(c.name)))
+  if (books) return { credit: debit.name, debit: credit.name, books: true, ...(balance ? { balance: balance.name } : {}) }
   return { credit: credit.name, debit: debit.name, ...(balance ? { balance: balance.name } : {}) }
+}
+
+/** What the signed amount is, in words: "Deposit − Withdrawal" (its columns, without "Amt."). */
+export function signedNote(s: StatementColumns): string {
+  const short = (n: string) => n.replace(/[\s_]*(amt\.?|amount)$/i, '') || n
+  return `${short(s.credit)} − ${short(s.debit)}`
 }
 
 /** A running balance, by its name ("Closing Balance", "bal"): never a column that total lines add up. */

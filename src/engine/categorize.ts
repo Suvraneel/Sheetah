@@ -50,41 +50,58 @@ export function categorizeExpr(c: Categorize, ref: (name: string) => string = sq
 const FILLER = new Set(
   `upi neft imps rtgs nach ach ecs pos cms mmt inb ib net txn trf transfer tfr payment paid pay to from by for the and of in
   cr dr ref no bank ltd pvt private limited india indian co inc llp com www http https ok id via mob mobile acct ac account
-  wdl atw withdrawal deposit chq cheque clg branch
-  hdfc icici sbi axis kotak yes idfc indusind pnb bob canara union federal rbl paytm phonepe gpay googlepay ybl okicici okhdfcbank
-  oksbi okaxis apl ibl axl upi_ srl sbin hdfc0 utib icic kkbk`
+  wdl withdrawal deposit chq cheque clg branch
+  hdfc icici sbi axis kotak yes yesb yesbank idfc indusind pnb bob canara union federal rbl paytm paytmqr pytm phonepe gpay googlepay
+  ybl okicici okhdfcbank oksbi okaxis apl ibl axl srl sbin utib icic kkbk barb punb ubin cnrb idib ioba mahb ucba indb kotk ratn fdrl`
     .split(/\s+/)
     .filter(Boolean),
 )
 
 /**
- * The commonest words of a text column (a narration's merchants and payees), by the rows they're in:
- * letters only (any script), three or more, filler left out. `table` is read; `ref` is the column as SQL.
+ * A text column's words, one per row and word: UPI handles (…@okicici) and IFSC codes (HDFC0001234) taken
+ * out first, then split where the rules see a word end (anything but a letter, in any script), so a word
+ * offered is one a rule matches.
  */
-export function wordsSql(table: string, ref: string, limit = 24): string {
-  // Split where the rules see a word end (anything that isn't a letter, in any script), so a word offered matches.
-  const words = `regexp_split_to_table(lower(${ref}::VARCHAR), '[^\\pL\\pM]+')`
+function words(table: string, ref: string, where?: string): string {
+  const text = `regexp_replace(regexp_replace(lower(${ref}::VARCHAR), '@[a-z0-9._-]+', ' ', 'g'), '\\b[a-z]{4}0[a-z0-9]{6}\\b', ' ', 'g')`
+  return `SELECT rowid AS r, regexp_split_to_table(${text}, '[^\\pL\\pM]+') AS w FROM ${table}${where ? ` WHERE ${where}` : ''}`
+}
+
+/**
+ * The commonest words of a text column (a narration's merchants and payees), by the rows they're in:
+ * three letters or more, filler left out. `table` is read; `ref` is the column as SQL; `where` picks the
+ * rows (those no category has taken yet, say).
+ */
+export function wordsSql(table: string, ref: string, limit = 24, where?: string): string {
   const filler = [...FILLER].map(quoteLiteral).join(', ')
-  return `SELECT w AS word, count(DISTINCT r)::DOUBLE AS rows FROM (SELECT rowid AS r, ${words} AS w FROM ${table})
+  return `SELECT w AS word, count(DISTINCT r)::DOUBLE AS rows FROM (${words(table, ref, where)})
 WHERE length(w) >= 3 AND w NOT IN (${filler}) AND NOT regexp_full_match(w, 'x+')
 GROUP BY w ORDER BY rows DESC, w LIMIT ${limit}`
 }
 
+/** Which of the usual categories' words the column has anywhere (not only among its commonest words). */
+export function knownWordsSql(table: string, ref: string): string {
+  const known = Object.values(KNOWN).flat().map(quoteLiteral).join(', ')
+  return `SELECT DISTINCT w AS word FROM (${words(table, ref)}) WHERE w IN (${known}) ORDER BY w`
+}
+
 /** Categories most statements need, from a word's usual meaning. A starting point: every rule is editable. */
 const KNOWN: Record<string, string[]> = {
+  // First: a charge names what it's for ("ATM CHGS", "SMS CHGS+GST"), and it's a charge, not that.
+  'Charges and fees': ['charges', 'chrg', 'chgs', 'fee', 'fees', 'penalty', 'amc'],
   'Food and dining': ['swiggy', 'zomato', 'dominos', 'mcdonalds', 'starbucks', 'restaurant', 'cafe', 'eatsure', 'blinkit', 'zepto', 'bigbasket', 'dunzo', 'instamart'],
   Shopping: ['amazon', 'flipkart', 'myntra', 'ajio', 'nykaa', 'meesho', 'tatacliq', 'decathlon', 'ikea'],
   Travel: ['uber', 'ola', 'rapido', 'irctc', 'makemytrip', 'goibibo', 'indigo', 'vistara', 'airindia', 'redbus', 'cleartrip', 'fastag'],
   'Bills and recharges': ['airtel', 'jio', 'vodafone', 'bsnl', 'tatasky', 'electricity', 'bescom', 'tneb', 'msedcl', 'billdesk', 'broadband', 'recharge'],
-  'Cash withdrawals': ['atm'],
-  Salary: ['salary'],
+  'Cash withdrawals': ['atm', 'atw', 'nwd', 'cwdr'],
+  Salary: ['salary', 'payroll'],
+  'GST and taxes': ['gst', 'cbic', 'gstn', 'tds', 'cbdt', 'incometax', 'advtax'],
   Rent: ['rent'],
   Investments: ['zerodha', 'groww', 'mutual', 'sip', 'upstox', 'kuvera', 'nps', 'ppf'],
   Fuel: ['petrol', 'fuel', 'hpcl', 'bpcl', 'iocl', 'indianoil', 'shell'],
   Health: ['pharmacy', 'apollo', 'medplus', 'hospital', 'clinic', 'netmeds', 'pharmeasy', 'practo'],
   Subscriptions: ['netflix', 'spotify', 'hotstar', 'youtube'],
   Interest: ['interest'],
-  'Charges and fees': ['charges', 'fee', 'gst', 'penalty'],
 }
 
 /** A known category for a word (lower case), if there is one. */

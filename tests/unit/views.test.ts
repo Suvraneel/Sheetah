@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { referencedTables, remapTables, tablesIn, viewsThatFit, type SavedView } from '../../src/engine/views'
+import { referencedTables, remapTables, tablesIn, viewNameFor, viewsThatFit, type SavedView } from '../../src/engine/views'
 import { exportViews, mergeViews, parseViews } from '../../src/engine/views-file'
 
 const view = (over: Partial<SavedView>): SavedView => ({ id: 'v', name: 'Tidy', sql: 'SELECT * FROM april', tables: ['april'], savedAt: 1, ...over })
@@ -133,4 +133,15 @@ test('a views file’s category rules are kept only when they are exactly the co
     const [v] = parseViews(file(odd))
     expect(v.steps?.ops.computed[0]).toEqual({ name: 'category', expr: categorizeExpr(rules) })
   }
+})
+
+test('a view is named for its table without the month or year: it is for every month', () => {
+  expect(viewNameFor('stmt_apr_2024')).toBe('stmt view')
+  expect(viewNameFor('sales-2024-04')).toBe('sales view')
+  expect(viewNameFor('HDFC_Statement_April24')).toBe('HDFC Statement view')
+  expect(viewNameFor('fy24_ledger_q1_2024')).toBe('ledger view')
+  expect(viewNameFor('market_share')).toBe('market share view')
+  expect(viewNameFor('Statement')).toBe('Statement view')
+  // Nothing but a date: the table's name, as it is.
+  expect(viewNameFor('2024_04')).toBe('2024 04 view')
 })

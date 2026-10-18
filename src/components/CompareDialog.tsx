@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { compareSql, defaultCompare, keyHealth, schemaDiff, type CompareSpec, type KeyHealth, type TableColumns } from '../engine/compare'
 import { isNumericType, LOCALE } from '../engine/sql'
+import { sideFor } from '../engine/match'
+import { statementColumns } from '../engine/statement'
 import { BtnIcon, Icon } from './Icon'
 import { useDialog } from './useDialog'
 
@@ -80,6 +82,8 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onMat
     update({ mode: 'key', keys, columns: spec.columns.filter((c) => !keys.includes(c)) })
   }
   const ready = !!spec && !same && (spec.mode === 'key' ? spec.keys.length > 0 : spec.columns.length > 0)
+  // A bank statement and books (or two statements): their lines are matched by amount and date, not compared.
+  const payments = !!onMatch && !same && !!A && !!B && !!sideFor(A) && !!sideFor(B) && (!!statementColumns(A.columns) || !!statementColumns(B.columns))
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -96,7 +100,7 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onMat
             <h2 id="compare-title">What changed between two tables?</h2>
             <p className="muted">
               Finds rows that were added, removed or changed, and which columns changed. Runs on every row, here in this tab.
-              {onMatch && (
+              {onMatch && !payments && (
                 <>
                   {' '}
                   Bank against books?{' '}
@@ -107,6 +111,16 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onMat
               )}
             </p>
 
+            {payments && (
+              <p className="compare-match">
+                <span>
+                  {pair.before} and {pair.after} look like a statement and its books: payments are matched by amount and date, not compared row by row.
+                </span>
+                <button type="button" className="btn btn-primary btn-sm" onClick={() => onMatch!(pair.before, pair.after)}>
+                  Match payments
+                </button>
+              </p>
+            )}
             <div className="compare-pair">
               <label>
                 <span>Before</span>

@@ -54,7 +54,9 @@ test('lines match one to one by amount and nearest date; a missing line doesn’
     ['matched', -500, -1],
     ['only in books', 2500, null],
   ])
-  expect(Object.keys(rows[0])).toEqual(['status', 'bank date', 'books date', 'amount', 'bank: Narration', 'books: Party', 'days_apart'])
+  expect(Object.keys(rows[0])).toEqual(['status', 'bank date', 'books date', 'amount', 'bank: Narration', 'books: Party', 'days_apart', 'maybe'])
+  // A line left over with the same amount on the other side within a month is said: Ravi's first payment.
+  expect(rows[0].maybe).toBe(null)
   // Books that write money the other way round match once turned round.
   await q(`CREATE OR REPLACE TABLE cash AS SELECT "Posted", "Party", -"Amount" AS "Amount" FROM books`)
   const flipped = { ...spec, b: { ...spec.b, table: 'cash' } }
@@ -85,4 +87,17 @@ test('a side can be a query: the table as tidied, or a view (no rowid)', async (
   // The books as tidied: a total line left out by a step.
   const tidied = { ...spec, b: { ...spec.b, source: 'SELECT * FROM tb WHERE amt < 999' } }
   expect(await statuses(tidied, { va: ['amt'], tb: ['amt'] })).toEqual({ matched: 1, 'only in va': 1 })
+})
+
+test('a line left over says where the same amount is on the other side, up to a month away; a dateless line is listed, unmatched', async () => {
+  await q(`CREATE OR REPLACE TABLE ca AS SELECT * FROM (VALUES (DATE '2024-04-09', -85000.0), (NULL, -85000.0), (DATE '2024-04-20', 10.0)) t(d, amt)`)
+  await q(`CREATE OR REPLACE TABLE cb AS SELECT * FROM (VALUES (DATE '2024-04-02', -85000.0), (DATE '2024-04-30', 99.0)) t(d, amt)`)
+  const rows = await q(matchSql(simple('ca', 'cb'), numeric({ ca: ['amt'], cb: ['amt'] })))
+  expect(rows.map((r) => [r.status, r.maybe])).toEqual([
+    ['only in cb', 'same amount in ca on 2024-04-09 (7 days later)'],
+    ['only in ca', 'same amount in cb on 2024-04-02 (7 days earlier)'],
+    ['only in ca', null],
+    ['only in cb', null],
+    ['only in ca', 'no date, so not matched'],
+  ])
 })

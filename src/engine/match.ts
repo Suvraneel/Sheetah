@@ -39,6 +39,8 @@ const AMOUNT = /(^|[^a-z])(amount|amt|value|total|net|sum)([^a-z]|$)/i
 const TEXT = /narration|description|particulars|details|remarks|memo|party|payee|name|ledger|account/i
 /** Rounds of pairing: each pairs every line with the line that is nearest to it, if that one pairs back. */
 const ROUNDS = 4
+/** How far apart a line left over and one of the same amount on the other side are still said to be close. */
+const NEAR = 31
 
 /** A table's side of the match, guessed from its columns: null when it has no date or no amount. */
 export function sideFor(table: { name: string; columns: Col[] }): MatchSide | null {
@@ -76,8 +78,9 @@ function amountSql(s: MatchSide, numeric: (side: MatchSide, column: string) => b
 
 /**
  * The two tables' lines as the match reads them: a number for each line, its date, amount and words.
- * Lines whose amount is nothing at all (0, or both sides empty: an opening balance line) are left out;
- * one written but not readable as a number ("Rs. 500/-") is kept, with no amount, to be looked at.
+ * Lines whose amount is nothing at all (0, or both sides empty: an opening balance line) are left out.
+ * One written but not readable as a number ("Rs. 500/-") is kept, with no amount, to be looked at; one with
+ * no date (a date that didn't read, or a total line the steps didn't leave out) is listed, never matched.
  */
 function sides(spec: MatchSpec, numeric: (side: MatchSide, column: string) => boolean): string {
   const side = (k: 'a' | 'b', s: MatchSide, sign: string) => {
@@ -158,20 +161,38 @@ export function matchSql(spec: MatchSpec, numeric: (side: MatchSide, column: str
 ${sides(spec, numeric)},
 ${candidates(n)},
 ${rounds},
-pairs AS (SELECT * FROM done${ROUNDS})
+pairs AS (SELECT * FROM done${ROUNDS}),
+-- What's left on each side, and the nearest line left on the other side with the same amount, up to a month
+-- away: a cheque that cleared late, a date typed wrong. Said beside the line, not matched.
+left_a AS (SELECT * FROM a WHERE a_row NOT IN (SELECT a_row FROM pairs)),
+left_b AS (SELECT * FROM b WHERE b_row NOT IN (SELECT b_row FROM pairs)),
+near_a AS (
+  SELECT a_row, b_date AS other, date_diff('day', a_date, b_date) AS apart FROM left_a JOIN left_b USING (amount)
+  WHERE abs(date_diff('day', a_date, b_date)) <= ${NEAR}
+  QUALIFY row_number() OVER (PARTITION BY a_row ORDER BY abs(date_diff('day', a_date, b_date)), b_row) = 1
+),
+near_b AS (
+  SELECT b_row, a_date AS other, date_diff('day', a_date, b_date) AS apart FROM left_a JOIN left_b USING (amount)
+  WHERE abs(date_diff('day', a_date, b_date)) <= ${NEAR}
+  QUALIFY row_number() OVER (PARTITION BY b_row ORDER BY abs(date_diff('day', a_date, b_date)), a_row) = 1
+)
 SELECT * FROM (
-  SELECT ${quoteLiteral(st.matched)} AS status, a_date AS ${aDate}, b_date AS ${bDate}, a.amount, a_text AS ${aText}, b_text AS ${bText}, date_diff('day', a_date, b_date) AS days_apart
+  SELECT ${quoteLiteral(st.matched)} AS status, a_date AS ${aDate}, b_date AS ${bDate}, a.amount, a_text AS ${aText}, b_text AS ${bText}, date_diff('day', a_date, b_date) AS days_apart, NULL AS maybe
   FROM pairs JOIN a USING (a_row) JOIN b USING (b_row)
   UNION ALL
-  SELECT ${quoteLiteral(st.a)}, a_date, NULL, amount, a_text, NULL, NULL FROM a WHERE a_row NOT IN (SELECT a_row FROM pairs)
+  SELECT ${quoteLiteral(st.a)}, a_date, NULL, amount, a_text, NULL, NULL,
+    CASE WHEN a_date IS NULL THEN 'no date, so not matched' WHEN other IS NOT NULL THEN 'same amount in ' || ${quoteLiteral(spec.b.table)} || ' on ' || other::VARCHAR || ' (' || abs(apart) || CASE WHEN abs(apart) = 1 THEN ' day ' ELSE ' days ' END || CASE WHEN apart > 0 THEN 'later' ELSE 'earlier' END || ')' END
+  FROM left_a LEFT JOIN near_a USING (a_row)
   UNION ALL
-  SELECT ${quoteLiteral(st.b)}, NULL, b_date, amount, NULL, b_text, NULL FROM b WHERE b_row NOT IN (SELECT b_row FROM pairs)
+  SELECT ${quoteLiteral(st.b)}, NULL, b_date, amount, NULL, b_text, NULL,
+    CASE WHEN b_date IS NULL THEN 'no date, so not matched' WHEN other IS NOT NULL THEN 'same amount in ' || ${quoteLiteral(spec.a.table)} || ' on ' || other::VARCHAR || ' (' || abs(apart) || CASE WHEN abs(apart) = 1 THEN ' day ' ELSE ' days ' END || CASE WHEN apart > 0 THEN 'earlier' ELSE 'later' END || ')' END
+  FROM left_b LEFT JOIN near_b USING (b_row)
 )
 ORDER BY coalesce(${aDate}, ${bDate}), status`
 }
 
 /** How many lines, and how much, each status gets: for the dialog's preview. */
-export const matchCountsSql = (sql: string) => `SELECT status, count(*)::DOUBLE AS n, sum(amount)::DOUBLE AS total FROM (\n${sql}\n) GROUP BY status`
+export const matchCountsSql = (sql: string) => `SELECT status, count(*)::DOUBLE AS n, sum(amount)::DOUBLE AS total, count(maybe)::DOUBLE AS near FROM (\n${sql}\n) GROUP BY status`
 
 /**
  * Which way round the other table records money: how many lines of the first have a line of the same
