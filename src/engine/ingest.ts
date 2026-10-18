@@ -131,10 +131,9 @@ export async function ingestFile(file: File, taken: Set<string> = new Set(), onN
   if (kind === 'html' || kind === 'xml-sheet') return ingestMarkup(file, kind, taken, onNote)
   if (kind === 'text' && /\.html?$/i.test(file.name)) return ingestMarkup(file, 'html', taken, onNote)
   if (kind === 'text' && /\.xml$/i.test(file.name)) {
-    // Tally's own XML (vouchers and masters in an ENVELOPE): its reports export to Excel and CSV too.
-    if (/<ENVELOPE\b|<TALLYMESSAGE\b/i.test(await file.slice(0, 8192).text()))
-      throw new FileKindError(`${file.name} is Tally’s own XML. From Tally, export the report to Excel or CSV instead, and open that.`)
-    throw new FileKindError(`${file.name} is XML, but not a spreadsheet. Sheetah opens XML saved by Excel (XML Spreadsheet 2003); for other XML, export a CSV.`)
+    // Tally's own XML (its vouchers, or a report, in an ENVELOPE): read as a table.
+    if (TALLY.test(await file.slice(0, 8192).text())) return ingestTally(file, await textOf(file), taken, onNote)
+    throw new FileKindError(`${file.name} is XML, but not a spreadsheet. Sheetah opens XML saved by Excel (XML Spreadsheet 2003) or Tally; for other XML, export a CSV.`)
   }
   if (/\.xls$/i.test(file.name)) {
     // Some systems save tab-separated text as .xls (Excel opens it): read it as the text it is.
@@ -147,6 +146,11 @@ export async function ingestFile(file: File, taken: Set<string> = new Set(), onN
   if (kind === 'utf16le' || kind === 'utf16be') {
     if (file.size > 512 * 1024 ** 2) throw new FileKindError(`${file.name} is UTF-16 text over 512 MB. Save it as CSV UTF-8 and open that.`)
     const text = new TextDecoder(kind === 'utf16le' ? 'utf-16le' : 'utf-16be').decode(await file.arrayBuffer())
+    // Tally writes its XML in UTF-16 by default; Excel's XML Spreadsheet can be too.
+    if (/^\s*</.test(text) && /\.xml$/i.test(file.name)) {
+      if (TALLY.test(text.slice(0, 8192))) return ingestTally(file, text, taken, onNote)
+      if (/<Workbook\b/.test(text.slice(0, 8192))) return ingestMarkup(file, 'xml-sheet', taken, onNote, text)
+    }
     return ingestRead(new File([text], file.name, { type: 'text/plain' }), taken, onNote)
   }
   return ingestRead(file, taken, onNote)
@@ -242,12 +246,24 @@ async function ingestExcel(file: File, taken: Set<string>, onNote?: (note: strin
 }
 
 /** An ".xls" that is a web page's table or Excel 2003 XML: read here (the browser parses markup). */
-async function ingestMarkup(file: File, kind: 'html' | 'xml-sheet', taken: Set<string>, onNote?: (note: string) => void): Promise<string[]> {
+async function ingestMarkup(file: File, kind: 'html' | 'xml-sheet', taken: Set<string>, onNote?: (note: string) => void, decoded?: string): Promise<string[]> {
   // The browser builds the whole page in memory (several times the file), and that can't be stopped.
   if (file.size > 50 * 1024 ** 2) throw new FileKindError(`${file.name} is a web page or XML spreadsheet over 50 MB. Save it as CSV or .xlsx and open that.`)
   const { markupToCsv } = await import('./markup-sheets')
-  const sheets = markupToCsv(await textOf(file), kind)
+  const sheets = markupToCsv(decoded ?? (await textOf(file)), kind)
   if (!sheets.length && kind === 'html') throw new FileKindError(`${file.name} is a web page with no table in it.`)
+  return ingestSheets(file, sheets, taken, onNote)
+}
+
+/** Tally's XML: its envelope, or the messages inside one. */
+const TALLY = /<ENVELOPE\b|<TALLYMESSAGE\b/i
+
+/** Tally's XML, read as a table: one row per voucher line, or per row of a report. */
+async function ingestTally(file: File, source: string, taken: Set<string>, onNote?: (note: string) => void): Promise<string[]> {
+  if (file.size > 100 * 1024 ** 2) throw new FileKindError(`${file.name} is Tally XML over 100 MB. From Tally, export the report to Excel or CSV instead, and open that.`)
+  const { tallyToCsv } = await import('./tally')
+  const sheets = tallyToCsv(source)
+  if (!sheets.length) throw new FileKindError(`${file.name} is Tally’s own XML, with no vouchers or report rows in it. From Tally, export the report to Excel or CSV instead, and open that.`)
   return ingestSheets(file, sheets, taken, onNote)
 }
 

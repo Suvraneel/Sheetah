@@ -281,7 +281,7 @@ export async function splitParts(result: ResultSet, column: ColumnInfo, delim: s
 }
 
 /** Ways to clean a text column (convert to number or date, trim…), judged on a sample of its values. */
-export async function cleaningFor(result: ResultSet, column: ColumnInfo, locale = navigator.language): Promise<CleanSuggestion[]> {
+export async function cleaningFor(result: ResultSet, column: ColumnInfo, locale = LOCALE): Promise<CleanSuggestion[]> {
   if (!result.table || !isTextColumn(column.type)) return []
   const { conn } = await getEngine()
   const row = (await conn.query(statsSql(result.table, [colRef(column)]))).toArray()[0]?.toJSON() as Record<string, unknown> | undefined
@@ -293,7 +293,7 @@ export async function cleaningFor(result: ResultSet, column: ColumnInfo, locale 
  * stored as text (typically from Excel), to convert; and names typed with stray spaces (" asha rao ",
  * "Kabir  Khan"), to tidy: they group and look up as different values.
  */
-export async function textFindings(result: ResultSet, locale = navigator.language): Promise<{ convert: Clean[]; spaces: string[] }> {
+export async function textFindings(result: ResultSet, locale = LOCALE): Promise<{ convert: Clean[]; spaces: string[] }> {
   const cols = result.columns.filter((c) => isTextColumn(c.type)).slice(0, 40)
   if (!result.table || !cols.length) return { convert: [], spaces: [] }
   const { conn } = await getEngine()

@@ -17,6 +17,11 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   missing in between), whether or not each month's file has the same name, and the rows are counted against last
   time. Checks sit above the rows (not in a passing
   toast) while the step they checked is there. What a view last ran on stays in this browser, never in a views file.
+- **Tally's own XML opens**: a Day Book or vouchers export becomes one row per ledger line (date, voucher type and
+  number, party, narration, ledger, Debit, Credit: Tally's minus is a debit), and a report (a Trial Balance) one row
+  per account. UTF-16, Tally's default, and the control characters Tally writes (`&#4;`) are handled.
+- **India by its time zone**: a browser left on US English in India reads numbers and dates as India does (1,00,000;
+  01/04/2024 is 1 April), so two-digit years, the date hint and number grouping follow suit.
 - **Match payments, bank against books**: from Compare, *Match payments by amount and date* pairs each line with
   one line of the other table of the same amount, dated up to a few days apart (3 to start with): same-day lines
   first, occurrence by occurrence, then each the other's nearest, in rounds, so a missing line doesn't pull its
@@ -174,8 +179,7 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   (*City: 4 values merged*), and the column menu offers *Merge all*; a stray space shows as ␣ (*Mumbai␣ → Mumbai*).
 - Pivot rows and columns by month, quarter or year read as the period (2024-04, 2024-Q2), sort as dates, and go to
   Excel as real months (*Apr 2024*). The pivot dialog speaks plainly: *Totals over all 58 rows*, *Date (50 values)*.
-- A file that doesn't open says which (*Couldn’t open tally.xml.*), not *That query didn’t run.* Tally's own XML is
-  recognised, with how to get an Excel or CSV out of Tally.
+- A file that doesn't open says which (*Couldn’t open tally.xml.*), not *That query didn’t run.*
 - The shortcuts list fits a laptop screen (two balanced columns, one line a shortcut); on phones the landing page
   offers opening a file first; while a big file's total lines are looked for, a quiet *Checking for total lines…*
   holds their chip's place; running a query closes the editor's suggestions.

@@ -141,6 +141,34 @@ test.describe('files that are something else inside', () => {
     await expect(page.locator('.result-meta')).toContainText('2 rows · 2 columns')
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('Puné')
   })
+
+  test('Tally’s own XML opens: vouchers as one row per ledger line, a report as its rows', async ({ page }) => {
+    await openApp(page)
+    const vouchers = `<ENVELOPE><HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER><BODY><IMPORTDATA><REQUESTDATA>
+<TALLYMESSAGE xmlns:UDF="TallyUDF"><VOUCHER VCHTYPE="Payment" ACTION="Create"><DATE>20240401</DATE><NARRATION>Rent for April&#4;</NARRATION>
+<VOUCHERTYPENAME>Payment</VOUCHERTYPENAME><VOUCHERNUMBER>1</VOUCHERNUMBER><PARTYLEDGERNAME>HDFC Bank</PARTYLEDGERNAME>
+<ALLLEDGERENTRIES.LIST><LEDGERNAME>Rent</LEDGERNAME><AMOUNT>-25000.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+<ALLLEDGERENTRIES.LIST><LEDGERNAME>HDFC Bank</LEDGERNAME><AMOUNT>25000.00</AMOUNT></ALLLEDGERENTRIES.LIST></VOUCHER></TALLYMESSAGE>
+<TALLYMESSAGE><VOUCHER VCHTYPE="Receipt"><DATE>20240405</DATE><VOUCHERNUMBER>2</VOUCHERNUMBER><PARTYLEDGERNAME>Acme Ltd</PARTYLEDGERNAME>
+<ALLLEDGERENTRIES.LIST><LEDGERNAME>Acme Ltd</LEDGERNAME><AMOUNT>50000.00</AMOUNT></ALLLEDGERENTRIES.LIST>
+<ALLLEDGERENTRIES.LIST><LEDGERNAME>HDFC Bank</LEDGERNAME><AMOUNT>-50000.00</AMOUNT></ALLLEDGERENTRIES.LIST></VOUCHER></TALLYMESSAGE>
+</REQUESTDATA></IMPORTDATA></BODY></ENVELOPE>`
+    // Tally writes UTF-16 by default.
+    await page.locator('input[type=file]').setInputFiles([buf('DayBook.xml', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(vouchers, 'utf16le')]))])
+    await expect(page.locator('.result-meta')).toContainText('4 rows · 8 columns')
+    const first = page.locator('.sr-grid [role=row]').nth(1)
+    await expect(first).toContainText('2024-04-01')
+    await expect(first).toContainText('Rent for April')
+    await expect(first).toContainText('25,000')
+    await expect(page.locator('.sr-grid [role=columnheader]').nth(6)).toContainText('Debit')
+    // A report (a trial balance): one row per account.
+    const report = `<ENVELOPE><DSPACCNAME><DSPDISPNAME>Capital Account</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA></DSPCLDRAMTA></DSPCLDRAMT><DSPCLCRAMT><DSPCLCRAMTA>500000.00</DSPCLCRAMTA></DSPCLCRAMT></DSPACCINFO>
+<DSPACCNAME><DSPDISPNAME>Rent</DSPDISPNAME></DSPACCNAME><DSPACCINFO><DSPCLDRAMT><DSPCLDRAMTA>-25000.00</DSPCLDRAMTA></DSPCLDRAMT><DSPCLCRAMT><DSPCLCRAMTA></DSPCLCRAMTA></DSPCLCRAMT></DSPACCINFO></ENVELOPE>`
+    await page.locator('input[type=file]').setInputFiles([buf('TrialBal.xml', report)])
+    await expect(page.locator('.result-meta')).toContainText('2 rows · 3 columns')
+    await expect(page.locator('.sr-grid [role=columnheader]').nth(0)).toContainText('Name')
+    await expect(page.locator('.sr-grid [role=row]').nth(2)).toContainText('Rent')
+  })
 })
 
 test.describe('pasting cells', () => {
@@ -160,6 +188,20 @@ test.describe('pasting cells', () => {
     await paste('Just a note')
     await expect(page.locator('.toast', { hasText: 'two rows or more' })).toBeVisible()
     await expect(page.locator('.side-name')).toHaveText(['pasted'])
+  })
+})
+
+test.describe('a browser on US English in India', () => {
+  test.use({ locale: 'en-US', timezoneId: 'Asia/Kolkata' })
+
+  test('reads numbers and dates as India does: 1,00,000 and 01/02/2024 as 1 February', async ({ page }) => {
+    await openApp(page)
+    await page.locator('input[type=file]').setInputFiles([buf('paid.csv', 'id,paid_on,amount\n1,01/02/2024,100000\n2,03/04/2024,250000\n')])
+    await expect(page.locator('.result-meta')).toContainText('2 rows')
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('1,00,000')
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2024-02-01')
+    // Read the way this reader writes dates: nothing to offer.
+    await expect(page.getByRole('button', { name: /month first/ })).toHaveCount(0)
   })
 })
 

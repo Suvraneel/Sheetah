@@ -1,5 +1,5 @@
 import type { ColumnInfo } from '../engine/result'
-import { isIdLike } from '../engine/sql'
+import { isIdLike, LOCALE } from '../engine/sql'
 
 /*
  * Display formatting for the grid, decided per column from the first rows that arrive. It only
@@ -32,7 +32,7 @@ const INT = /^(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT|UTINYINT|USMALLINT|UINTEG
 const FLOAT = /^(FLOAT|REAL|DOUBLE)$/i
 const DECIMAL = /^(DECIMAL|NUMERIC)\s*\(\s*\d+\s*,\s*(\d+)\s*\)$/i
 
-const locale = typeof navigator !== 'undefined' ? navigator.language || 'en-US' : 'en-US'
+const locale = LOCALE
 const grouped = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 })
 const plainFloat = new Intl.NumberFormat(locale, { maximumSignificantDigits: 4 })
 // At least as many decimals as the data usually shows, but never fewer than a value has (up to 4):

@@ -20,6 +20,7 @@ There is no backend; it deploys as a static site for free.
 - **Canvas grid** that stays at ~60 fps from 1 to 10,000,000+ rows; the first column stays in view while wide tables scroll
 - **Open** CSV, TSV, Excel (.xlsx, every sheet becomes a table), JSON / NDJSON, Parquet, and gzipped CSV; drop several files at once and join them
 - **Paste cells** copied from Excel, Google Sheets or the grid itself (⌘/Ctrl + V) and they become a table
+- **Tally XML** (Day Book vouchers, one row per ledger line; reports like the Trial Balance) opens as a table
 - **The ".xls" that isn't**: a web page's table or Excel 2003 XML (what banks and ERPs export) opens like a workbook, and Excel's UTF-16 "Unicode text" too; a PDF, an image or a zip renamed .csv says what it is instead of failing
 - **Spreadsheet-grade numbers**: thousands separators in your locale, decimals that match the data, percentages as 18%, exact 64-bit values; column widths survive sorting and filtering
 - **Status bar**: select any range for count / sum / average / min / max, computed by SQL so it works on a million rows

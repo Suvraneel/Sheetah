@@ -17,6 +17,9 @@ export default defineConfig({
   use: {
     baseURL: `http://localhost:${PORT}`,
     viewport: { width: 1440, height: 900 },
+    // The same reader wherever the tests run: US English in UTC (a few tests set their own, e.g. India's).
+    locale: 'en-US',
+    timezoneId: 'UTC',
     trace: 'retain-on-failure',
     // Lets a pre-installed Chromium be used when Playwright's own download isn't available.
     launchOptions: process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {},

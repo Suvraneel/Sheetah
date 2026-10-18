@@ -154,3 +154,13 @@ test('a missing comma between two column names is found, and put back', async ()
   expect(missingCommas('SELECT Region area, City AS town, round(amount, 2) total FROM t', cols)).toEqual([])
   expect(missingCommas('SELECT * FROM t', cols)).toEqual([])
 })
+
+test('a browser on US English in India reads numbers and dates as India does', async () => {
+  const { readerLocale } = await import('../../src/engine/sql')
+  expect(readerLocale('en-US', 'Asia/Kolkata')).toBe('en-IN')
+  expect(readerLocale('en', 'Asia/Calcutta')).toBe('en-IN')
+  expect(readerLocale('en-US', 'America/New_York')).toBe('en-US')
+  expect(readerLocale('en-GB', 'Asia/Kolkata')).toBe('en-GB') // a choice made: kept
+  expect(readerLocale('hi-IN', 'Asia/Kolkata')).toBe('hi-IN')
+  expect(readerLocale(undefined, undefined)).toBe('en-US')
+})

@@ -117,8 +117,24 @@ export const commentText = (s: string) => s.replace(/[\r\n\u2028\u2029]+/g, ' ')
 export const isIdLike = (name: string) =>
   /(^|_)(id|ids|code|no|num|number|pin|zip|zipcode|postcode|postal|year|yr|phone|mobile|sku|ref|uuid|guid|gstin|pan|ifsc|invoice|voucher|serial|sr|sno)$/.test(nameKey(name))
 
-/** The reader's locale for numbers in the interface (12,34,567 in India, 1.234.567 in Germany). */
-export const LOCALE = (typeof navigator !== 'undefined' && navigator.language) || 'en-US'
+/**
+ * The reader's locale, for numbers (12,34,567 in India, 1.234.567 in Germany) and how dates are written.
+ * A browser left on plain or US English in India (its time zone says where it is) reads as India does:
+ * 1,00,000, and 01/04/2024 as 1 April.
+ */
+export function readerLocale(language: string | undefined, zone: string | undefined): string {
+  const lang = language || 'en-US'
+  return /^en(-US)?$/i.test(lang) && /^Asia\/(Kolkata|Calcutta)$/.test(zone ?? '') ? 'en-IN' : lang
+}
+
+const zone = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone
+  } catch {
+    return undefined
+  }
+})()
+export const LOCALE = readerLocale(typeof navigator !== 'undefined' ? navigator.language : undefined, zone)
 
 /** Dates and timestamps (with or without a time zone): charted over time, bucketed by month in pivots. */
 export const isTemporal = (c: { type: string }) => /^(DATE|TIMESTAMP)/i.test(c.type)
