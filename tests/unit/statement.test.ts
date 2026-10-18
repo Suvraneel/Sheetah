@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { balanceLineSql, signedAmount, statementColumns } from '../../src/engine/statement'
 import { readTieOut } from '../../src/engine/clean'
-import { balanceCheckSql, balanceText, readBalanceCheck, readTieOutRow, tieOutSql, tieOutText } from '../../src/engine/checks'
+import { balanceCheckSql, balanceText, continuityText, endsSql, readBalanceCheck, readEnds, readTieOutRow, tieOutSql, tieOutText } from '../../src/engine/checks'
 import { q } from './duck'
 
 const col = (name: string, type = 'VARCHAR') => ({ name, type })
@@ -96,4 +96,19 @@ test('next month’s tie-out adds up the total lines only: not the balance lines
   // Steps without total lines have nothing to tie out; a view saved before steps had kinds goes by the label.
   expect(tieOutSql('nm', cols, drop.slice(1))).toBeNull()
   expect(tieOutSql('nm', cols, drop.map(({ label, keep }) => ({ label, keep })))).not.toBeNull()
+})
+
+test('a statement’s ends: where it opened and closed, either way round, and whether next month carries on from there', async () => {
+  const s = { credit: 'deposit', debit: 'withdrawal', balance: 'balance' }
+  await q(`CREATE OR REPLACE TABLE ends AS SELECT * FROM (VALUES
+    ('500.00', NULL, '9,500.00'), (NULL, '2,000.00', '11,500.00'), ('1,500.00', NULL, '10,000.00')
+  ) t(withdrawal, deposit, balance)`)
+  const row = (await q(endsSql('ends', s, () => false)))[0] as Record<string, unknown>
+  expect(readEnds(row)).toEqual({ opening: 10000, closing: 10000 })
+  // Newest first: the last row is the oldest.
+  expect(readEnds(row, 'newest first')).toEqual({ opening: 10000 + 1500, closing: 9500 })
+  expect(readEnds({ b0: null })).toBeNull()
+  const nf = (n: number) => n.toFixed(2)
+  expect(continuityText(10000, { table: 'apr', closing: 10000 }, nf)).toEqual({ kind: 'continuity', ok: true, text: 'Opens at 10000.00, where apr closed' })
+  expect(continuityText(10000, { table: 'apr', closing: 9200 }, nf).text).toBe('Opens at 10000.00, but apr closed at 9200.00: 800.00 apart. A statement missing in between?')
 })

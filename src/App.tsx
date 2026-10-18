@@ -959,9 +959,11 @@ export default function App() {
 
   /**
    * The checks again, on a saved view's rows (next month's file): the total lines its steps leave out
-   * against the rows they keep, and a statement's running balance (while the rows are in their own order).
+   * against the rows they keep, a statement's running balance (while the rows are in their own order), and
+   * whether it opens where the file the view last ran on closed. What it closes at is kept with the view.
+   * Quiet (nothing shown) when the view has just been saved: its checks are on screen already.
    */
-  const recheck = async (table: string, o: Ops, rows: ResultSet) => {
+  const recheck = async (table: string, o: Ops, rows: ResultSet, view?: SavedView, quiet = false) => {
     const meta = tables.find((t) => t.name === table)
     const release = holdResult(rows)
     try {
@@ -973,12 +975,22 @@ export default function App() {
       const tied = tie ? m.tieOutText(m.readTieOutRow(cols, (await conn.query(tie)).toArray()[0]?.toJSON() ?? {}), nf.format) : null
       if (tied && totals) found.push({ ...tied, step: totals.keep })
       const st = statementColumns(rows.columns)
+      let closing: number | undefined
       if (st?.balance && rows.table && !o.sort && !o.filters.length && !o.search && !o.dedupe) {
         const col = (n: string) => rows.columns.find((c) => c.name === n)!
-        const sql = m.balanceCheckSql(rows.table, { ...st, balance: st.balance }, (n) => !!col(n).numeric, (n) => colRef(col(n)))
-        found.push(m.balanceText(m.readBalanceCheck((await conn.query(sql)).toArray()[0]?.toJSON() ?? {}), st.balance, nf.format))
+        const s = { ...st, balance: st.balance }
+        const isN = (n: string) => !!col(n).numeric
+        const ref = (n: string) => colRef(col(n))
+        const check = m.readBalanceCheck((await conn.query(m.balanceCheckSql(rows.table, s, isN, ref))).toArray()[0]?.toJSON() ?? {})
+        found.push(m.balanceText(check, st.balance, nf.format))
+        const ends = m.readEnds((await conn.query(m.endsSql(rows.table, s, isN, ref))).toArray()[0]?.toJSON() ?? {}, check?.order)
+        const prev = view && (viewsRef.current.find((x) => x.id === view.id) ?? view).last
+        if (ends && prev && typeof prev.closing === 'number' && prev.table.toLowerCase() !== table.toLowerCase())
+          found.push(m.continuityText(ends.opening, { table: prev.table, closing: prev.closing }, nf.format))
+        closing = ends?.closing
       }
-      addChecks(tableBase(table), found)
+      if (view) updateViews((v) => v.map((x) => (x.id === view.id ? { ...x, last: { table, rows: rows.rowCount, ...(closing !== undefined ? { closing } : {}) } } : x)))
+      if (!quiet) addChecks(tableBase(table), found)
     } catch {
       /* the view ran; the checks are a bonus */
     } finally {
@@ -1281,6 +1293,8 @@ export default function App() {
     const sql = fromSteps ? compose(base, kept).trim() : editor.trim()
     const view: SavedView = { id: newId(), name, sql, tables: editorTables, shapes, savedAt: Date.now(), ...(fromSteps && from ? { steps: { table: from, ops: kept } } : {}) }
     updateViews((v) => [view, ...v.filter((x) => x.name !== name)])
+    // Where these rows leave off (a statement's closing balance), for next month's file to be checked against.
+    if (fromSteps && from && result?.table && !result.message) void recheck(from, kept, result, view, true)
     setSaving(false)
     // "Save these steps as a view" has been answered.
     setNudge(null)
@@ -1312,11 +1326,14 @@ export default function App() {
       const b = tableBase(on.name)
       const composed = compose(b, s.ops)
       setEditor(composed)
+      // The file it last ran on (last month's), for comparing this one with it.
+      const prev = (viewsRef.current.find((x) => x.id === view.id) ?? view).last
       void execute(composed, { base: b, ops: s.ops }).then((res) => {
         if (!res) return
         const n = stepCount(s.ops)
-        say(`Ran “${view.name}” on ${on.name}: ${n} ${n === 1 ? 'step' : 'steps'}, shown above the rows`)
-        void recheck(on.name, s.ops, res)
+        const vs = prev && prev.table.toLowerCase() !== on.name.toLowerCase() ? ` · ${nf.format(res.rowCount)} rows (${prev.table} had ${nf.format(prev.rows)})` : ''
+        say(`Ran “${view.name}” on ${on.name}: ${n} ${n === 1 ? 'step' : 'steps'}, shown above the rows${vs}`)
+        void recheck(on.name, s.ops, res, view)
       })
       return
     }

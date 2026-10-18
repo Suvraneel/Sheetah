@@ -18,6 +18,11 @@ export interface SavedView {
   imported?: boolean
   /** The table's steps it was saved from (header actions): back as chips when it runs. */
   steps?: ViewSteps
+  /**
+   * The rows it last ran on: their table, how many, and (a statement's) closing balance, so next month's file
+   * is checked to open there. The file's data: kept in this browser, never written to a views file.
+   */
+  last?: { table: string; rows: number; closing?: number }
 }
 
 /** A table and the steps on it (sort, filters, clean-up, look-ups…) that a view's SQL was made from. */
@@ -83,10 +88,21 @@ export function loadViews(): SavedView[] {
   try {
     const list = JSON.parse(localStorage.getItem(KEY) ?? '[]') as SavedView[]
     // Stored views are checked like imported ones: a bad entry is dropped, never trusted.
-    return Array.isArray(list) ? list.filter((v) => v && typeof v.sql === 'string' && typeof v.name === 'string').map((v) => ({ ...v, tables: strings(v.tables) ? v.tables : [], shapes: cleanShapes(v.shapes, v.tables) })) : []
+    return Array.isArray(list)
+      ? list
+          .filter((v) => v && typeof v.sql === 'string' && typeof v.name === 'string')
+          .map((v) => ({ ...v, tables: strings(v.tables) ? v.tables : [], shapes: cleanShapes(v.shapes, v.tables), last: cleanLast(v.last) }))
+      : []
   } catch {
     return []
   }
+}
+
+/** A view's last run, only if it's the shape it should be (a number that isn't one would make a check lie). */
+function cleanLast(v: unknown): SavedView['last'] {
+  const l = v as Partial<NonNullable<SavedView['last']>> | null | undefined
+  if (!l || typeof l !== 'object' || typeof l.table !== 'string' || typeof l.rows !== 'number' || !Number.isFinite(l.rows)) return undefined
+  return { table: l.table, rows: l.rows, ...(typeof l.closing === 'number' && Number.isFinite(l.closing) ? { closing: l.closing } : {}) }
 }
 
 export const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')

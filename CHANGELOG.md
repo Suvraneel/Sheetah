@@ -11,8 +11,10 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   from the row above*, or the row where a line is missing or doubled, and by how much. Its *Opening Balance* and
   *Closing Balance* lines (and *Balance b/f*, *Carried forward*) are offered for leaving out with the total line.
 - **Checks that travel with a saved view**: running a view on next month's file checks it again, the running
-  balance and the total lines against the rows, and says what passed or which line is missing. Checks sit above the
-  rows (not in a passing toast) while the step they checked is there.
+  balance and the total lines against the rows, and says what passed or which line is missing. A statement is
+  checked to open where the last one closed (*Opens at 7,000, where stmt_apr closed*, or how far apart: a statement
+  missing in between), and the rows are counted against last time. Checks sit above the rows (not in a passing
+  toast) while the step they checked is there. What a view last ran on stays in this browser, never in a views file.
 - **Two-digit years read the right way round**: `01/04/24` is 1 April 2024, not 24 April 2001 (the file reader's
   guess), and `01/04/24 10:30` is a time, not the year 1. A file read the other way would put its dates years
   from today, so one that really is year first (`24/01/31`) stays as it is.

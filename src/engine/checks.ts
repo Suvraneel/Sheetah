@@ -9,7 +9,7 @@ import type { StatementColumns } from './statement'
 
 /** One check's outcome, as shown above the rows. */
 export interface Check {
-  kind: 'balance' | 'totals'
+  kind: 'balance' | 'totals' | 'continuity'
   ok: boolean
   text: string
 }
@@ -19,11 +19,15 @@ export interface Check {
  * equals the one before plus this row's amount (oldest first), or the one after plus it (newest first).
  * Rows without a balance (an opening line, a summary) are skipped.
  */
-export function balanceCheckSql(table: string, s: StatementColumns & { balance: string }, numeric: (name: string) => boolean, ref: (name: string) => string = sqlName): string {
+/** Each row's balance (b) and amount (a, in less out), by the rows' order (r). */
+function balanceRows(table: string, s: StatementColumns & { balance: string }, numeric: (name: string) => boolean, ref: (name: string) => string): string {
   const n = (name: string) => (numeric(name) ? `${ref(name)}::DOUBLE` : `number_from_text(${ref(name)})`)
-  const amount = `coalesce(${n(s.credit)}, 0) - coalesce(${n(s.debit)}, 0)`
+  return `SELECT rowid AS r, ${n(s.balance)} AS b, coalesce(${n(s.credit)}, 0) - coalesce(${n(s.debit)}, 0) AS a FROM ${table}`
+}
+
+export function balanceCheckSql(table: string, s: StatementColumns & { balance: string }, numeric: (name: string) => boolean, ref: (name: string) => string = sqlName): string {
   const off = (other: string) => `abs(b - ${other} - a) > 0.005 + abs(b) * 1e-9`
-  return `WITH t AS (SELECT rowid AS r, ${n(s.balance)} AS b, ${amount} AS a FROM ${table}),
+  return `WITH t AS (${balanceRows(table, s, numeric, ref)}),
 s AS (SELECT r, b, a, lag(b) OVER (ORDER BY r) AS before, lead(b) OVER (ORDER BY r) AS after FROM t WHERE b IS NOT NULL)
 SELECT count(before)::DOUBLE AS pairs,
   count(*) FILTER (WHERE before IS NOT NULL AND ${off('before')})::DOUBLE AS bad_down,
@@ -60,6 +64,31 @@ export function readBalanceCheck(row: Record<string, number | null>): BalanceChe
     bad,
     order: which === 'up' ? 'newest first' : 'oldest first',
     ...(bad && first !== null && first !== undefined ? { firstBad: { row: Number(first) + 1, off: Number(row[`off_${which}`] ?? 0) } } : {}),
+  }
+}
+
+/** A statement's two ends, in its rows' order: the first and last balances, and those rows' amounts. */
+export function endsSql(table: string, s: StatementColumns & { balance: string }, numeric: (name: string) => boolean, ref: (name: string) => string = sqlName): string {
+  return `WITH t AS (${balanceRows(table, s, numeric, ref)})
+SELECT arg_min(b, r)::DOUBLE AS b0, arg_min(a, r)::DOUBLE AS a0, arg_max(b, r)::DOUBLE AS b1, arg_max(a, r)::DOUBLE AS a1 FROM t WHERE b IS NOT NULL`
+}
+
+/** Where the statement opened (the balance before its first line) and where it closed. */
+export function readEnds(row: Record<string, unknown>, order: BalanceCheck['order'] = 'oldest first'): { opening: number; closing: number } | null {
+  const [b0, a0, b1, a1] = ['b0', 'a0', 'b1', 'a1'].map((k) => row[k])
+  if (![b0, a0, b1, a1].every((v) => typeof v === 'number' && Number.isFinite(v))) return null
+  const [f, fa, l, la] = [b0, a0, b1, a1] as number[]
+  return order === 'newest first' ? { opening: l - la, closing: f } : { opening: f - fa, closing: l }
+}
+
+/** Whether this month's statement opens where last month's closed: a statement missing in between shows. */
+export function continuityText(opening: number, last: { table: string; closing: number }, nf: (n: number) => string): Check {
+  const gap = opening - last.closing
+  if (Math.abs(gap) < 0.005 + Math.abs(opening) * 1e-9) return { kind: 'continuity', ok: true, text: `Opens at ${nf(opening)}, where ${last.table} closed` }
+  return {
+    kind: 'continuity',
+    ok: false,
+    text: `Opens at ${nf(opening)}, but ${last.table} closed at ${nf(last.closing)}: ${nf(Math.abs(gap))} apart. A statement missing in between?`,
   }
 }
 

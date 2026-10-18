@@ -503,7 +503,9 @@ test.describe('bank statements', () => {
       '20/05/24,Rent,"3,000.00",,"52,000.00"', ',,,,', ',Total,"5,000.00","50,000.00",', ',Closing Balance,,,"52,000.00"']
     await page.locator('input[type=file]').setInputFiles([file('stmt_may.csv', `${may.join('\n')}\n`)])
     await page.locator('.toast', { hasText: 'Your view “Statement tidy” fits stmt_may' }).getByRole('button', { name: 'Run it' }).click()
-    await expect(page.locator('.toast', { hasText: /Ran “Statement tidy” on stmt_may: \d+ steps, shown above the rows/ })).toBeVisible()
+    await expect(page.locator('.toast', { hasText: /Ran “Statement tidy” on stmt_may: \d+ steps, shown above the rows · 3 rows \(stmt_apr had 4\)/ })).toBeVisible()
+    // It opens where April closed (7,000.00): no statement missing in between.
+    await expect(page.locator('.checks .is-ok', { hasText: 'Opens at 7,000, where stmt_apr closed' })).toBeVisible()
     await expect(page.locator('.checks .is-off', { hasText: 'The totals say Withdrawal Amt. is 5,000; the rows come to 3,700: 1,300 short' })).toBeVisible()
     await expect(page.locator('.checks .is-off', { hasText: 'Closing Balance on row 3 doesn’t follow from the row above: off by 1,300' })).toBeVisible()
     // A check stays only while its step does: with the total line back, there's no tie-out to show.

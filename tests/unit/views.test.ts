@@ -41,7 +41,8 @@ test('a view finds the tables it reads, not columns named like tables', () => {
 })
 
 test('views travel as a file: only names and SQL, checked on the way in, never clashing', () => {
-  const tidy = view({ name: 'Tidy', sql: 'SELECT 1 FROM april', shapes: { april: ['a', 'b'] }, lastRunAt: 9 })
+  // What it last ran on (a closing balance) is the file's data: it stays in this browser.
+  const tidy = view({ name: 'Tidy', sql: 'SELECT 1 FROM april', shapes: { april: ['a', 'b'] }, lastRunAt: 9, last: { table: 'april', rows: 4, closing: 7000 } })
   const file = exportViews([tidy])
   expect(JSON.parse(file)).toEqual({ format: 'sheetah-views', version: 1, views: [{ name: 'Tidy', sql: 'SELECT 1 FROM april', tables: ['april'], shapes: { april: ['a', 'b'] }, savedAt: 1 }] })
   const [back] = parseViews(file)
