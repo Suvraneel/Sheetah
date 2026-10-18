@@ -26,6 +26,8 @@ const loadColumnMenu = () => import('./components/ColumnMenu')
 const ColumnMenu = lazy(() => loadColumnMenu().then((m) => ({ default: m.ColumnMenu })))
 const loadChartPanel = () => import('./components/ChartPanel')
 const ChartPanel = lazy(() => loadChartPanel().then((m) => ({ default: m.ChartPanel })))
+const loadMatchDialog = () => import('./components/MatchDialog')
+const MatchDialog = lazy(() => loadMatchDialog().then((m) => ({ default: m.MatchDialog })))
 const loadCategorizeDialog = () => import('./components/CategorizeDialog')
 const CategorizeDialog = lazy(() => loadCategorizeDialog().then((m) => ({ default: m.CategorizeDialog })))
 const loadUnpivotDialog = () => import('./components/UnpivotDialog')
@@ -267,6 +269,8 @@ export default function App() {
   const [unpivoting, setUnpivoting] = useState<{ around?: string } | null>(null)
   // Categories from a text column's words: a new column, or (edit) the rules of one added before.
   const [categorizing, setCategorizing] = useState<{ column?: string; edit?: string } | null>(null)
+  // Payments matched across two tables (bank against books), by amount and date.
+  const [matching, setMatching] = useState<{ a?: string; b?: string; sources: Record<string, string> } | null>(null)
   // A pivot to start from (categories by month, after adding categories), rather than the usual first guess.
   const [pivotStart, setPivotStart] = useState<PivotSpec | null>(null)
   // The anonymizing query behind the current result (for export file names).
@@ -2411,6 +2415,13 @@ export default function App() {
             after={comparing.after}
             initial={editingCompare ? compareOrigin!.spec : undefined}
             onClose={() => setComparing(null)}
+            onMatch={(a, b) => {
+              setComparing(null)
+              // Once the Compare dialog has handed focus back (a frame after it closes), so this one keeps it.
+              // Tables tidied by steps are matched as tidied (no total lines; dates and amounts converted).
+              const sources = Object.fromEntries([...tidiedRef.current.values()].map((t) => [t.table, t.sql]))
+              requestAnimationFrame(() => requestAnimationFrame(() => setMatching({ a, b, sources })))
+            }}
             onCompare={async (sql, spec) => {
               const { compareLayout, changeCounts } = await import('./engine/compare') // loaded with the dialog
               const layout = compareLayout(spec)
@@ -2493,6 +2504,23 @@ export default function App() {
                 : undefined
             }
             categorized={ops.computed.some((x) => x.name === menuCol.name && x.categorize)}
+          />
+        </Lazy>
+      )}
+      {matching && (
+        <Lazy onFail={(e) => partFailed(e, () => setMatching(null))}>
+          <MatchDialog
+            tables={tables}
+            sources={matching.sources}
+            a={matching.a}
+            b={matching.b}
+            onClose={() => setMatching(null)}
+            onMatch={(sql, summary) => {
+              setMatching(null)
+              setView('grid')
+              runDerived(sql, { label: 'Payments matched' })
+              say(summary)
+            }}
           />
         </Lazy>
       )}

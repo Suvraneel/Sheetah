@@ -528,6 +528,27 @@ test.describe('bank statements', () => {
     await expect(april).toContainText('47,000')
   })
 
+  test('payments are matched bank against books: what’s left on either side is listed', async ({ page }) => {
+    await openApp(page)
+    const bank = ['Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance', '13/04/24,UPI Ravi,500.00,,"9,500.00"', '15/04/24,NEFT Acme,,"50,000.00","59,500.00"', '19/04/24,Bank charges,118.00,,"59,382.00"', ',Total,618.00,"50,000.00",']
+    const books = ['Posted,Party,Amount', '2024-04-12,Ravi,-500', '2024-04-14,Acme Ltd,50000', '2024-04-28,Kiran,2500']
+    await page.locator('input[type=file]').setInputFiles([file('bank_apr.csv', `${bank.join('\n')}\n`), file('books_apr.csv', `${books.join('\n')}\n`)])
+    await expect(page.locator('.side-table .side-name')).toHaveText(['bank_apr', 'books_apr'])
+    // The statement's total line is left out by a step: the match reads the tidied rows, not the file.
+    await page.locator('.side-table .side-name', { hasText: 'bank_apr' }).click()
+    await page.getByRole('button', { name: /^Leave out 1 total line/ }).click()
+    await expect(page.locator('.result-meta')).toContainText('3 of 4 rows')
+    await page.getByRole('button', { name: 'Compare two tables' }).click()
+    await page.getByRole('button', { name: 'Match payments by amount and date' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Bank against books' })
+    await expect(dialog.getByLabel('Table').first()).toBeFocused()
+    await expect(dialog.getByRole('status')).toHaveText('2 matched · 1 only in bank_apr (-118) · 1 only in books_apr (2,500)')
+    await dialog.getByRole('button', { name: 'Match them' }).click()
+    await expect(page.locator('.result-meta')).toContainText('4 rows · 7 columns')
+    await expect(page.locator('.origin-chip')).toContainText('Payments matched')
+    await expect(page.locator('.sr-grid [role=row]').nth(4)).toContainText('only in books_apr')
+  })
+
   test('a statement that keeps its file name each month is still checked against last month’s', async ({ page }) => {
     await openApp(page)
     const head = 'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance'

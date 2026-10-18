@@ -11,13 +11,15 @@ interface Props {
   after?: string
   initial?: CompareSpec
   onCompare: (sql: string, spec: CompareSpec) => void
+  /** Matching payments instead (a bank statement against the books): a dialog of its own. */
+  onMatch?: (a: string, b: string) => void
   onClose: () => void
 }
 
 const nf = new Intl.NumberFormat(LOCALE)
 const list = (names: string[]) => (names.length > 4 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', '))
 
-export function CompareDialog({ tables, before, after, initial, onCompare, onClose }: Props) {
+export function CompareDialog({ tables, before, after, initial, onCompare, onMatch, onClose }: Props) {
   const dialog = useDialog<HTMLDivElement>(onClose)
   const [pair, setPair] = useState(() => ({
     before: initial?.before ?? before ?? tables[0]?.name ?? '',
@@ -92,7 +94,18 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onClo
           <div className="core">
             <span className="eyebrow">Compare</span>
             <h2 id="compare-title">What changed between two tables?</h2>
-            <p className="muted">Finds rows that were added, removed or changed, and which columns changed. Runs on every row, here in this tab.</p>
+            <p className="muted">
+              Finds rows that were added, removed or changed, and which columns changed. Runs on every row, here in this tab.
+              {onMatch && (
+                <>
+                  {' '}
+                  Bank against books?{' '}
+                  <button type="button" className="link-btn" onClick={() => onMatch(pair.before, pair.after)}>
+                    Match payments by amount and date
+                  </button>
+                </>
+              )}
+            </p>
 
             <div className="compare-pair">
               <label>

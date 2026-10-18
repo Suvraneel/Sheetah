@@ -17,6 +17,14 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   missing in between), whether or not each month's file has the same name, and the rows are counted against last
   time. Checks sit above the rows (not in a passing
   toast) while the step they checked is there. What a view last ran on stays in this browser, never in a views file.
+- **Match payments, bank against books**: from Compare, *Match payments by amount and date* pairs each line with
+  one line of the other table of the same amount, dated up to a few days apart (3 to start with): same-day lines
+  first, occurrence by occurrence, then each the other's nearest, in rounds, so a missing line doesn't pull its
+  neighbours out of their pairs and five payments of 500 on a day pair up at once (50,000 lines a side in about two
+  seconds). Tables tidied by steps are matched as tidied; Cr/Dr amounts are read; a line whose amount can't be read
+  is listed, not lost. A cash book that writes money the other way round is noticed and turned round (and the
+  reader's say stands). The result lists every line once, *matched* side by side or *only in bank_apr* / *only in
+  books_apr*, with the totals of what's left over said as it opens.
 - **Categories from words**: *Group Narration into categories* (offered once a statement's amount is signed, and in
   any text column's menu) adds a category column from rules like *swiggy, zomato → Food and dining*: matched where a
   word starts (*ola* is Ola and OLACABS, not COLA), the first rule winning, the rest *Other*. The column's common words
