@@ -76,6 +76,13 @@ test('a statement’s opening and closing balance lines are known: no money in o
   const sql = balanceLineSql(s, ['d', 'narration', 'withdrawal', 'deposit', 'balance'], () => false)!
   expect((await q(`SELECT narration FROM bl WHERE ${sql}`)).map((r) => r.narration)).toEqual(['Opening Balance', 'BALANCE B/F', 'Closing Balance', 'Carried forward'])
   expect(balanceLineSql(s, ['withdrawal', 'deposit', 'balance'], () => false)).toBeNull()
+  // The books write their opening balance in Debit or Credit: a cell that says only that is a balance line still.
+  await q(`CREATE OR REPLACE TABLE tl AS SELECT * FROM (VALUES
+    (NULL, 'Opening Balance', '1,25,000.00', NULL), ('1-Apr-26', 'Rent', NULL, '25,000.00'), (NULL, 'Closing Balance:', '1,00,000.00', NULL)
+  ) t("Date", "Particulars", "Debit", "Credit")`)
+  const books = statementColumns([{ name: 'Date', type: 'VARCHAR' }, { name: 'Particulars', type: 'VARCHAR' }, { name: 'Vch No.', type: 'VARCHAR' }, { name: 'Debit', type: 'VARCHAR' }, { name: 'Credit', type: 'VARCHAR' }])!
+  const lines = balanceLineSql(books, ['Date', 'Particulars'], () => false)!
+  expect((await q(`SELECT "Particulars" FROM tl WHERE ${lines}`)).map((r) => r.Particulars)).toEqual(['Opening Balance', 'Closing Balance:'])
 })
 
 test('next month’s tie-out adds up the total lines only: not the balance lines or empty rows a view also leaves out', async () => {
@@ -134,4 +141,17 @@ test('a statement month by month: money in, money out, the net and the lines', a
     [2000, 500, 1500, 2],
     [0, 1500, -1500, 1],
   ])
+})
+
+test('balances written with Cr (in credit) or Dr (overdrawn) are checked as the bank means them', async () => {
+  const s = { credit: 'deposit', debit: 'withdrawal', balance: 'balance' }
+  await q(`CREATE OR REPLACE TABLE crst AS SELECT * FROM (VALUES
+    (NULL, NULL, '1,000.00 Cr'), ('1,500.00', NULL, '500.00 Dr'), (NULL, '2,00,000.00', '1,99,500.00 Cr'), ('10,000.00', NULL, '1,99,500.00 Cr')
+  ) t(withdrawal, deposit, balance)`)
+  expect(readBalanceCheck((await q(balanceCheckSql('crst', s, () => false)))[0] as Record<string, number>)).toEqual({
+    pairs: 3,
+    bad: 1,
+    order: 'oldest first',
+    firstBad: { row: 4, off: 10000 },
+  })
 })

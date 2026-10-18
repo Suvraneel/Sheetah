@@ -20,7 +20,13 @@ const BUCKETS: [string, string][] = [
  */
 export function ageingSql(rows: string, a: AgeingColumns, asOf: string, numeric: (name: string) => boolean): string {
   const amount = numeric(a.amount) ? `${sqlName(a.amount)}::DOUBLE` : `number_from_cr_dr(${sqlName(a.amount)}::VARCHAR)`
-  const buckets: [string, string][] = [...(a.by === 'due' ? ([['Not yet due', 'age < 0']] as [string, string][]) : []), ...BUCKETS, ['No date', 'age IS NULL']]
+  // What's owed, by its age; an advance (the other way round) on account, whatever its date.
+  const buckets: [string, string][] = [
+    ...(a.by === 'due' ? ([['Not yet due', 'age < 0']] as [string, string][]) : []),
+    ...BUCKETS,
+    ['No date', 'age IS NULL'],
+  ].map(([name, when]) => [name, `amount > 0 AND ${when}`] as [string, string])
+  buckets.push(['On account', 'amount < 0'])
   const sums = buckets.map(([name, when]) => `coalesce(sum(amount) FILTER (WHERE ${when}), 0) AS ${quoteIdent(name)}`).join(',\n  ')
   const cols = [...buckets.map(([name]) => quoteIdent(name)), 'Total']
   const P = quoteIdent(a.party)
@@ -34,12 +40,13 @@ ${rows}
 ),
 -- What's owed counts as plus, whichever way it's written ("12,000.00 Dr" owed to us, "Cr" owed by us):
 -- an advance the other way round counts against it.
-t AS (SELECT party, amount * CASE WHEN sum(amount) OVER () < 0 THEN -1 ELSE 1 END AS amount, age FROM r),
+t AS (SELECT party, amount * CASE WHEN sum(amount) FILTER (WHERE NOT is_total_label(party)) OVER () < 0 THEN -1 ELSE 1 END AS amount, age FROM r),
 p AS (
   SELECT party,
   ${sums},
   coalesce(sum(amount), 0) AS Total
-  FROM t WHERE amount IS NOT NULL AND amount <> 0
+  -- A total line the steps didn't leave out isn't a party.
+  FROM t WHERE amount IS NOT NULL AND amount <> 0 AND NOT is_total_label(party)
   GROUP BY party
 )
 SELECT ${P}, ${cols.map((c) => `round(${c}, 2) AS ${c}`).join(', ')} FROM (

@@ -555,22 +555,24 @@ test.describe('bank statements', () => {
     await page.getByRole('button', { name: 'Match payments', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: 'Bank against books' })
     await expect(dialog.getByLabel('Table').first()).toBeFocused()
-    await expect(dialog.getByRole('status')).toHaveText('2 matched · 1 only in bank_apr (-118.00) · 1 only in books_apr (2,500.00)')
+    await expect(dialog.getByRole('status')).toHaveText('2 matched · 1 only in bank_apr (out 118.00) · 1 only in books_apr (in 2,500.00)')
     await dialog.getByRole('button', { name: 'Match them' }).click()
     await expect(page.locator('.result-meta')).toContainText('4 rows · 8 columns')
     await expect(page.locator('.origin-chip')).toContainText('Payments matched')
     await expect(page.locator('.sr-grid [role=row]').nth(4)).toContainText('only in books_apr')
-    // The month-end write-up: from the bank's closing balance to what the books should show.
+    // The month-end write-up: from the bank's closing balance to what the books should show, each line under its heading.
     await page.getByRole('button', { name: 'Reconciliation statement' }).click()
-    await expect(page.locator('.result-meta')).toContainText('6 rows · 3 columns')
-    await expect(page.locator('.origin-chip')).toContainText('Bank reconciliation, from')
-    const first = page.locator('.sr-grid [role=row]').nth(1)
-    await expect(first).toContainText('Balance as per bank_apr on 2024-04-19')
-    await expect(first).toContainText('59,382')
-    await expect(page.locator('.sr-grid [role=row]').nth(2)).toContainText('Add: money in, in books_apr only (deposits not yet credited)')
-    await expect(page.locator('.sr-grid [role=row]').nth(5)).toContainText('118')
-    await expect(page.locator('.sr-grid [role=row]').nth(6)).toContainText('Balance as per books_apr, worked out')
-    await expect(page.locator('.sr-grid [role=row]').nth(6)).toContainText('62,000')
+    await expect(page.locator('.result-meta')).toContainText('8 rows · 4 columns')
+    await expect(page.locator('.origin-chip')).toContainText('Bank reconciliation, from payments matched')
+    const line = (i: number) => page.locator('.sr-grid [role=row]').nth(i)
+    await expect(line(1)).toContainText('Balance as per bank statement (bank_apr) on Apr 19, 2024')
+    await expect(line(1)).toContainText('59,382')
+    await expect(line(2)).toContainText('Add: deposits in the books, not yet credited by the bank')
+    await expect(line(3)).toContainText('Kiran')
+    await expect(line(3)).toContainText('2,500')
+    await expect(line(7)).toContainText('Bank charges')
+    await expect(line(8)).toContainText('Balance as per books (books_apr), as it should be')
+    await expect(line(8)).toContainText('62,000')
   })
 
   test('a statement that keeps its file name each month is still checked against last month’s', async ({ page }) => {
@@ -658,8 +660,13 @@ test.describe('open bills', () => {
     await page.locator('input[type=file]').setInputFiles([file('receivables.csv', `${csv.join('\n')}\n`)])
     await expect(page.locator('.result-meta')).toContainText('3 rows')
     await page.getByRole('button', { name: "Ageing by Party's Name" }).click()
-    await expect(page.locator('.origin-chip')).toContainText("Ageing by Party's Name, from")
-    await expect(page.locator('.result-meta')).toContainText('3 rows · 9 columns')
+    // As on a day (today to start with): the month's last day for month-end.
+    const dialog = page.getByRole('dialog', { name: "Pending Amount by Party's Name" })
+    await expect(dialog.getByLabel('As on')).toBeFocused()
+    await dialog.getByLabel('As on').fill('2026-09-30')
+    await dialog.getByRole('button', { name: 'Show the ageing' }).click()
+    await expect(page.locator('.origin-chip')).toContainText("Ageing by Party's Name as on")
+    await expect(page.locator('.result-meta')).toContainText('3 rows · 10 columns')
     const header = page.locator('.sr-grid [role=columnheader]')
     await expect(header.nth(1)).toContainText('Not yet due')
     await expect(header.nth(6)).toContainText('Over 180 days')
@@ -667,7 +674,25 @@ test.describe('open bills', () => {
     await expect(acme).toContainText('Acme Ltd')
     await expect(acme).toContainText('5,000')
     await expect(acme).toContainText('11,800')
-    await expect(acme).toContainText('16,800')
     await expect(page.locator('.sr-grid [role=row]').nth(3)).toContainText('Total')
+  })
+})
+
+test.describe('a bank’s own export', () => {
+  test('the statement summary below the transactions is offered for leaving out, with the balance lines', async ({ page }) => {
+    await openApp(page)
+    const rows = [
+      'Date,Narration,Chq./Ref.No.,Value Dt,Withdrawal Amt.,Deposit Amt.,Closing Balance',
+      ...Array.from({ length: 9 }, (_, i) => `0${i + 1}/04/24,UPI-${i},00004123${i},0${i + 1}/04/24,100.00,,"${(9900 - i * 100).toLocaleString('en-IN')}.00"`),
+      ',,,,,,',
+      'STATEMENT SUMMARY :-,,,,,,',
+      'Opening Balance,Dr Count,Cr Count,Debits,Credits,Closing Bal,',
+      '"10,000.00",9,0,900.00,0.00,"9,100.00",',
+      'Generated On: 18/10/2026,,,,,,',
+    ]
+    await page.locator('input[type=file]').setInputFiles([file('hdfc.csv', `${rows.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('14 rows')
+    await page.getByRole('button', { name: /^Leave out .*4 undated lines/ }).click()
+    await expect(page.locator('.result-meta')).toContainText('9 of 14 rows')
   })
 })

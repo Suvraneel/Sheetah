@@ -22,6 +22,7 @@ import {
 import type { DropRows } from './clean'
 import type { Ops } from './compose'
 import { getEngine } from './db'
+import { idCheckSql, idCheckText, idColumns, panMatchSql, readIdRow } from './ids'
 import type { MatchSide, MatchSpec } from './match'
 import { colRef, type ResultSet } from './result'
 import { isNumericType, isTemporal, LOCALE, quoteIdent } from './sql'
@@ -145,4 +146,18 @@ export async function reconcileQuery({ sql, spec }: { sql: string; spec: MatchSp
     }
   }
   return { sql: brsSql({ match: sql, spec, bank, closing, asOf }), bank: spec[bank].table, closing: !statement ? 'none' : closing === null ? 'unread' : 'found' }
+}
+
+/**
+ * GSTINs, PANs and IFSC codes, where a column is named for one: whether each is well formed, and (with both
+ * a GSTIN and a PAN column) whether each PAN is its GSTIN's. Null when the table has none.
+ */
+export async function idCheck(res: ResultSet): Promise<Check | null> {
+  const cols = idColumns(res.columns)
+  if (!cols.length || !res.table) return null
+  const table = res.table
+  const found = await Promise.all(cols.map(async ({ column, kind }) => readIdRow(column.name, kind, await first(idCheckSql(table, column, kind)))))
+  const [gstin, pan] = [cols.find((c) => c.kind === 'gstin'), cols.find((c) => c.kind === 'pan')]
+  const pans = gstin && pan ? readIdRow(pan.column.name, 'pan', await first(panMatchSql(table, gstin.column, pan.column))) : undefined
+  return idCheckText(found, pans)
 }

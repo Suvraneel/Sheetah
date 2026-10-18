@@ -128,11 +128,12 @@ export async function ingestFile(file: File, taken: Set<string> = new Set(), onN
   const kind = sniff(new Uint8Array(await file.slice(0, 1024).arrayBuffer()))
   const wrong = notATable(kind, file.name)
   if (wrong) throw new FileKindError(wrong)
+  // Tally's own XML (its vouchers, or a report, in an ENVELOPE), in UTF-8: its <BODY> isn't a web page's.
+  if ((kind === 'html' || kind === 'text') && /^\s*</.test((await file.slice(0, 1024).text()).replace(/^\uFEFF/, '')) && TALLY.test(await file.slice(0, 8192).text()))
+    return ingestTally(file, await textOf(file), taken, onNote)
   if (kind === 'html' || kind === 'xml-sheet') return ingestMarkup(file, kind, taken, onNote)
   if (kind === 'text' && /\.html?$/i.test(file.name)) return ingestMarkup(file, 'html', taken, onNote)
   if (kind === 'text' && /\.xml$/i.test(file.name)) {
-    // Tally's own XML (its vouchers, or a report, in an ENVELOPE): read as a table.
-    if (TALLY.test(await file.slice(0, 8192).text())) return ingestTally(file, await textOf(file), taken, onNote)
     throw new FileKindError(`${file.name} is XML, but not a spreadsheet. Sheetah opens XML saved by Excel (XML Spreadsheet 2003) or Tally; for other XML, export a CSV.`)
   }
   if (/\.xls$/i.test(file.name)) {

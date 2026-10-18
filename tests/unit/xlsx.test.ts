@@ -140,3 +140,13 @@ test('months written as text (a pivot’s "2024-04") become real dates, shown as
   // A report's own month names count too.
   expect((await readBack(await build([['Apr 2024', '1'], ['May 2024', '2']], cols))).rows[2][0]).toEqual(new Date(Date.UTC(2024, 4, 1)))
 })
+
+test('a column is as wide as its numbers will show (141544.3 is 1,41,544.30), so Excel never shows ###', async () => {
+  const { unzipSync, strFromU8 } = await import('fflate')
+  const buf = await build([['Balance as per bank statement', '141544.3'], ['Less: cheques', '-12400']], [{ name: 'Particulars', type: 'VARCHAR' }, { name: 'Total', type: 'DOUBLE' }])
+  const sheet = strFromU8(unzipSync(new Uint8Array(buf))['xl/worksheets/sheet1.xml'])
+  const widths = [...sheet.matchAll(/<col min="(\d+)" max="\d+" width="(\d+)"/g)].map((m) => Number(m[2]))
+  // "1,41,544.30" is 11 characters: a column of 9 (the raw value's) would show ###.
+  expect(widths[1]).toBeGreaterThanOrEqual(12)
+  expect(widths[0]).toBeGreaterThanOrEqual('Balance as per bank statement'.length)
+})

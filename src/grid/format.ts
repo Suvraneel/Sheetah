@@ -1,5 +1,5 @@
 import type { ColumnInfo } from '../engine/result'
-import { isIdLike, LOCALE } from '../engine/sql'
+import { isIdLike, LOCALE, nameKey } from '../engine/sql'
 
 /*
  * Display formatting for the grid, decided per column from the first rows that arrive. It only
@@ -79,8 +79,10 @@ export function makeFormatter(col: ColumnInfo, sample: (string | null | undefine
       }
     }
     // Whole numbers stay whole (8820.0 → 8,820); if any value has decimals, the column shows two, like
-    // money in a spreadsheet: 1,200.00 and 12,450.50 line up, never 1,200.0 next to 216.00.
-    const decimals = values.slice(0, 200).some((v) => /\.\d*[1-9]\d*$/.test(v)) ? 2 : 0
+    // money in a spreadsheet: 1,200.00 and 12,450.50 line up, never 1,200.0 next to 216.00. A column named
+    // for money (Withdrawal Amt., Balance, Debit) always shows two: its whole rupees beside another's paise.
+    const money = /(^|_)(amount|amt|balance|bal|debit|credit|dr|cr|withdrawals?|deposits?|price|tax|gst|igst|cgst|sgst|net|paid|received|pending|outstanding|due)(_|$)/.test(nameKey(col.name))
+    const decimals = money || values.slice(0, 200).some((v) => /\.\d*[1-9]\d*$/.test(v)) ? 2 : 0
     const f = fixed[decimals]
     return (v) => {
       const n = Number(v)

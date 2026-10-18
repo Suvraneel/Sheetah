@@ -187,6 +187,18 @@ test('total lines and empty rows are found and left out before cleaning', async 
     count(*) FILTER (WHERE ${total.drop})::INT AS total, count(*) FILTER (WHERE ${total.keep} AND ${p.blank.keep})::INT AS kept FROM rep`)
   // "Total" filling a whole row (a fuel brand) and "Total" outside the first text column are data.
   expect(counts).toEqual({ blank: 2, strong: 2, total: 3, kept: 6 })
+  // Unnamed columns (no names given) keep to the first text column; a first column of dates or codes
+  // (dates not converted yet, a Ref. No.) has its label looked for in the next one that names things.
+  const named = junkPredicates([
+    { ref: '"Date"', text: true, name: 'Date' },
+    { ref: '"Particulars"', text: true, name: 'Particulars' },
+    { ref: '"Debit"', text: true, name: 'Debit' },
+  ])
+  expect(named.label!.drop).toBe('(is_total_label("Date") OR is_total_label("Particulars"))')
+  expect(junkPredicates([{ ref: '"Ref. No."', text: true, name: 'Ref. No.' }, { ref: '"Party\'s Name"', text: true, name: "Party's Name" }]).label!.keep).toBe(
+    '(NOT is_total_label("Ref. No.") AND NOT is_total_label("Party\'s Name"))',
+  )
+  expect(junkPredicates([{ ref: '"Region"', text: true, name: 'Region' }, { ref: '"Item"', text: true, name: 'Item' }]).label!.drop).toBe('is_total_label("Region")')
   const drop = [
     { label: '3 total lines', keep: total.keep },
     { label: '2 empty rows', keep: p.blank.keep },
@@ -279,4 +291,8 @@ test('bank-statement amounts marked Cr and Dr read as plus and minus, and the su
   expect(s[0]).toMatchObject({ label: 'Convert to number (Cr +, Dr −)', note: expect.stringContaining('Cr counts as plus') })
   // Checked by hand first: never the one-click suggestion.
   expect(confidentConversion(s)).toBeNull()
+  // A balance in credit all month is all Cr (SBI, Axis): read as the bank means it when the column is a balance.
+  const allCr = ['2,11,150.00 Cr', '2,01,150.00 Cr', '1,99,500.00 Cr']
+  expect(await suggestionsFor(allCr, undefined, 'Balance')).toContainEqual(expect.objectContaining({ label: 'Convert to number (Cr +, Dr −)' }))
+  expect(await suggestionsFor(allCr, undefined, 'Amount')).not.toContainEqual(expect.objectContaining({ label: 'Convert to number (Cr +, Dr −)' }))
 })

@@ -193,6 +193,9 @@ test.describe('files that are something else inside', () => {
     await expect(page.locator('.checks .is-ok', { hasText: 'Debits and credits agree: 500,000.00 each' })).toBeVisible()
     await expect(page.locator('.sr-grid [role=columnheader]').nth(0)).toContainText('Particulars')
     await expect(page.locator('.sr-grid [role=row]').nth(2)).toContainText('Rent')
+    // Saved as UTF-8 (its <BODY> is Tally's, not a web page's), it opens the same.
+    await page.locator('input[type=file]').setInputFiles([buf('DayBook8.xml', `<?xml version="1.0" encoding="UTF-8"?>\n${vouchers}`)])
+    await expect(page.locator('.result-meta')).toContainText('9 rows · 8 columns')
   })
 })
 

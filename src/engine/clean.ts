@@ -247,7 +247,7 @@ export interface DropRows {
   /** The tie-out: whether their numbers come to the rows kept (sub-totals, a grand total), column by column. */
   checked?: TieOut
   /** What these rows are: total lines (the ones a tie-out adds up), a statement's balance lines, empty rows. */
-  kind?: 'totals' | 'balance' | 'empty'
+  kind?: 'totals' | 'balance' | 'undated' | 'empty'
 }
 
 export interface TieOut {

@@ -4,7 +4,10 @@
  * and the tie-out of total lines against the rows they total.
  */
 import { DATE_FORMATS, isConversion, numberText, textOf, type Clean, type TieOut } from './clean'
-import { LOCALE, nameKey, quoteLiteral } from './sql'
+import { isIdLike, LOCALE, nameKey, quoteLiteral } from './sql'
+
+/** A running balance's name ("Closing Balance", "Bal"), as statement.ts reads one. */
+const balanceName = (name: string) => /(^|_)(balance|bal|closing_balance|running_balance)(_|$)/.test(nameKey(name))
 
 /**
  * The tie-out, column by column: the total lines' sum (t) against the rows kept (d), exact to a hundredth
@@ -43,7 +46,7 @@ export interface Junk {
  * The keep forms are written out (not NOT(drop)) so a filter can stop at the first column that settles
  * it, and the patterns only run on the few values that mention "total".
  */
-export function junkPredicates(cols: { ref: string; text: boolean }[]): { blank: Junk; strong: Junk | null; weak: Junk | null; label: Junk | null; first: string | null } {
+export function junkPredicates(cols: { ref: string; text: boolean; name?: string }[]): { blank: Junk; strong: Junk | null; weak: Junk | null; label: Junk | null; first: string | null } {
   const empty = (r: string) => `NOT has_value(${r})`
   const filled = (r: string) => `has_value(${r})`
   // Each one is parenthesised, so it can be combined with AND / OR as it is.
@@ -52,15 +55,21 @@ export function junkPredicates(cols: { ref: string; text: boolean }[]): { blank:
   const texts = cols.filter((c) => c.text)
   if (!texts.length) return { blank, strong: null, weak: null, label: null, first: null }
   const first = texts[0].ref
+  // A first text column that's dates or codes (dates not converted yet, a Ref. No.): the label can be in the
+  // first one that names things instead (Tally's "Current Total" under Particulars, "Total" under Party).
+  const names = (c: { name?: string }) => c.name === undefined || !(/(^|_)(date|dt|on)$|^date/.test(nameKey(c.name)) || isIdLike(c.name))
+  const labels = [texts[0], ...(names(texts[0]) ? [] : texts.filter((c) => c !== texts[0] && names(c)).slice(0, 1))].map((c) => c.ref)
+  const labelled = all(labels.map((r) => `is_total_label(${r})`), 'OR')
+  const unlabelled = all(labels.map((r) => `NOT is_total_label(${r})`), 'AND')
   return {
     blank,
     strong: { drop: all(texts.map((c) => `is_grand_or_subtotal(${c.ref})`), 'OR'), keep: all(texts.map((c) => `NOT is_grand_or_subtotal(${c.ref})`), 'AND') },
     weak: {
-      drop: `(is_total_label(${first}) AND ${all(cols.map((c) => empty(c.ref)), 'OR')})`,
-      keep: `(NOT is_total_label(${first}) OR ${all(cols.map((c) => filled(c.ref)), 'AND')})`,
+      drop: `(${labelled} AND ${all(cols.map((c) => empty(c.ref)), 'OR')})`,
+      keep: `(${unlabelled} OR ${all(cols.map((c) => filled(c.ref)), 'AND')})`,
     },
-    // "Total" in the first text column, however full the row: trusted once its numbers add up (see totalsAddUp).
-    label: { drop: `is_total_label(${first})`, keep: `NOT is_total_label(${first})` },
+    // "Total" in the label column, however full the row: trusted once its numbers add up (see totalsAddUp).
+    label: { drop: labelled, keep: unlabelled },
     first,
   }
 }
@@ -268,8 +277,9 @@ export function suggestCleaning(column: string, s: CleanStats, locale = 'en-IN',
         ? 'Some values use a decimal point and others a decimal comma: check the result'
         : lost(numbers, 'numbers')
     out.push({ clean: { column, kind: 'number', comma }, label: `Convert to number${sep}`, note })
-  } else if (s.debits > 0 && s.drcrNumbers / s.values >= SOME) {
-    // A bank statement's balances: "50,000.00 Cr", "1,200.00 Dr". Some Dr: so Cr isn't crore here.
+  } else if ((s.debits > 0 && s.drcrNumbers / s.values >= SOME) || (balanceName(column) && s.drcrNumbers / s.values >= MOST)) {
+    // A bank statement's balances: "50,000.00 Cr", "1,200.00 Dr". Some Dr, or a column named for a balance:
+    // so Cr isn't crore here (a balance in credit all month is all Cr).
     const lostNote = lost(s.drcrNumbers, 'amounts')
     out.push({
       clean: { column, kind: 'number', drcr: true },

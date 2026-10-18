@@ -5,24 +5,29 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 ## Unreleased
 
 ### Added
-- **Bank reconciliation statement**: from the payments matched, *Reconciliation statement* starts at the bank's
-  closing balance (where its running balance ends, read the way round its rows run) and takes it to the balance the
-  books should show: deposits not yet credited, cheques not yet presented, the bank's own credits (interest) and
-  debits (charges), each with how many lines. Lines left over say where the same amount is on the other side, up to
-  a month away; a line with no date is listed, not dropped. Compare suggests matching when the two tables are a
-  statement and its books.
+- **Bank reconciliation statement**: from the payments matched, *Reconciliation statement* is laid out as an
+  accountant writes one (Particulars, Date, Amount, Total): from the bank's closing balance (where its running
+  balance ends, read the way round its rows run), each heading (deposits not yet credited, cheques not yet
+  presented, the bank's own credits and debits) with its lines under it, to the balance the books should show.
+  Lines left over say where the same amount is on the other side, up to a month away; a line with no date is
+  listed, not matched, and not counted in the statement (which says so). What's left is said as money in and money
+  out. A **cheque or reference number** on both sides pairs lines first, however late the cheque cleared. Compare
+  suggests matching when the two tables are a statement and its books (as tidied).
 - **Opening + in − out = closing**: a statement's opening and closing balance lines, once left out, check the rows
   between them (*Opening 10,000.00 + in 2,000.00 − out 5,000.00 = closing 7,000.00, as the file says*, or how far
   apart). A saved view keeps each period it has run on, so a month is checked against the one just before it,
   whichever ran last. Money in checks is shown to the paisa; passed checks fold into one line until shown.
 - **Ageing**: a list of open bills (Tally's Bills Receivable, an outstanding invoices export) is offered *Ageing by
-  Party's Name*: each party's money not yet due, 0–30 days, 31–60, 61–90, 91–180 and over 180, biggest first, as of
-  today. Dr and Cr are read (an advance counts against what's owed).
+  Party's Name*: each party's money not yet due, 0–30 days, 31–60, 61–90, 91–180 and over 180, biggest first, as on
+  the day asked (today, or the month's end). Dr and Cr are read; an advance shows on account.
 - **Totals by ledger**: a day book (each voucher's lines, each to its ledger) sums each ledger's debits and credits
   and its net, with a total where the debits meet the credits.
 - **GSTIN, PAN and IFSC checks**: a column named for one is checked as the table opens: a GSTIN by its check
-  character (a business's, a TDS deductor's, a UIN), a PAN and an IFSC code by their shape. A wrong one is named
-  above the rows (NA, URP and the like aren't counted).
+  character (a business's, a TDS deductor's, a UIN), a PAN and an IFSC code by their shape, and a PAN against its
+  GSTIN. A wrong one is named above the rows (NA, URP and the like aren't counted).
+- **A bank's own export, tidied**: a statement's summary below its transactions is offered for leaving out
+  (*undated lines*); an opening balance written in Debit or Credit is a balance line; a total label is found under
+  Particulars or Party when the first column is dates or codes; balances written *2,11,150.00 Cr* are checked.
 - **Financial years**: pivots group dates by financial year (April to March: *FY 2024-25*) and its quarters.
 - **Tally**: an item invoice's sales ledger is read from its stock lines, a foreign-currency amount in rupees; a
   voucher whose debits and credits don't agree is named, and a trial balance's totals are checked.

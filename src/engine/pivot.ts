@@ -212,14 +212,17 @@ export function pivotSql(sourceSql: string, spec: PivotSpec, cols: ColumnInfo[],
 
 export const groupable = (cols: ColumnInfo[]) => cols.filter((c) => !/\[\]$|^(STRUCT|MAP|BLOB|UNION)/i.test(c.type))
 
-/** Approximate distinct counts per column, so the picker can show sizes and pick sensible defaults. */
-export async function cardinalities(sourceSql: string, cols: ColumnInfo[]): Promise<Record<string, number>> {
+/**
+ * Distinct counts per column, so the picker can show sizes and pick sensible defaults: exact up to a few
+ * hundred thousand rows (68 invoices say 68, not an estimate of 62 that reads as 6 repeated), estimated past.
+ */
+export async function cardinalities(sourceSql: string, cols: ColumnInfo[], rows?: number): Promise<Record<string, number>> {
   const list = groupable(cols)
   if (!list.length) return {}
   const { conn } = await getEngine()
-  const res = await conn.query(
-    `${sourceCte({ sql: sourceSql })}SELECT ${list.map((c, i) => `least(approx_count_distinct(${quoteIdent(c.name)}), count(*))::DOUBLE AS c${i}`).join(', ')} FROM q`,
-  )
+  const exact = rows !== undefined && rows <= 300_000
+  const distinct = (c: string) => (exact ? `count(DISTINCT ${c})` : `least(approx_count_distinct(${c}), count(*))`)
+  const res = await conn.query(`${sourceCte({ sql: sourceSql })}SELECT ${list.map((c, i) => `${distinct(quoteIdent(c.name))}::DOUBLE AS c${i}`).join(', ')} FROM q`)
   const row = (res.toArray()[0]?.toJSON() ?? {}) as Record<string, number>
   return Object.fromEntries(list.map((c, i) => [c.name, Number(row[`c${i}`] ?? 0)]))
 }

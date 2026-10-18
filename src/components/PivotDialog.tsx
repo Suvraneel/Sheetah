@@ -47,13 +47,13 @@ export function PivotDialog({ sourceSql, columns, rowCount, initial, start, text
 
   useEffect(() => {
     let live = true
-    cardinalities(sourceSql, columns)
+    cardinalities(sourceSql, columns, rowCount)
       .then((c) => live && setCounts(c))
       .catch(() => live && setCounts({}))
     return () => {
       live = false
     }
-  }, [sourceSql, columns])
+  }, [sourceSql, columns, rowCount])
 
   const spec = edited ?? (counts ? defaultPivot(columns, counts) : null)
   const fields = useMemo(() => groupable(columns), [columns])

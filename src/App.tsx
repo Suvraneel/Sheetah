@@ -1,6 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getEngine, sqlName } from './engine/db'
-import { ageingColumns, ledgerColumn, monthlySql, signedAmount, signedNote, statementColumns } from './engine/statement'
+import { ageingColumns, ledgerColumn, type AgeingColumns, monthlySql, signedAmount, signedNote, statementColumns } from './engine/statement'
 import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent } from './engine/sql'
 import { ACCEPTED, FileKindError, cancelExcel, createDemo, dateOrders, ingestFile, listTables, type TableMeta } from './engine/ingest'
 import { CancelledError, cancelRunning, exportResult, holdResult, rangeStats, rowOf, runSql, splitStatements, type RangeStats, type ResultSet } from './engine/result'
@@ -68,6 +68,7 @@ import { BtnIcon, Icon, Logo } from './components/Icon'
 const loadViewDialogs = () => import('./components/ViewDialogs')
 const RemapDialog = lazy(() => loadViewDialogs().then((m) => ({ default: m.RemapDialog })))
 const SaveViewDialog = lazy(() => loadViewDialogs().then((m) => ({ default: m.SaveViewDialog })))
+const AgeingDialog = lazy(() => import('./components/AgeingDialog').then((m) => ({ default: m.AgeingDialog })))
 const SharedQueryDialog = lazy(() => loadViewDialogs().then((m) => ({ default: m.SharedQueryDialog })))
 import { MAX_PERSIST_ROWS, clearSaved, persistSupported, removeTable, restoreAll, saveTable } from './engine/persist'
 import { loadViews, newId, referencedTables, remapSteps, remapTables, stepsMake, stepsOf, storeViews, tableBase, viewNameFor, viewsThatFit, type SavedView } from './engine/views'
@@ -295,6 +296,8 @@ export default function App() {
   const [categorizing, setCategorizing] = useState<{ column?: string; edit?: string } | null>(null)
   // Payments matched across two tables (bank against books), by amount and date.
   const [matching, setMatching] = useState<{ a?: string; b?: string; sources: Record<string, string> } | null>(null)
+  // Ageing being asked for: the open bills' columns and rows (the dialog asks as on which day).
+  const [ageing, setAgeing] = useState<{ columns: AgeingColumns; rows: string; numeric: Record<string, boolean> } | null>(null)
   // The last match made (its query and what it matched): its result offers the reconciliation statement.
   const [matched, setMatched] = useState<{ sql: string; spec: MatchSpec } | null>(null)
   // A pivot to start from (categories by month, after adding categories), rather than the usual first guess.
@@ -617,14 +620,9 @@ export default function App() {
             namesRow(res).then((r) => setNamesHints((m) => ({ ...m, [key]: { sig, value: r === null ? [] : [r] } }))),
             fillDownColumns(res).then((cols) => setFillHints((m) => ({ ...m, [key]: { sig, value: cols } }))),
             // GSTINs, PANs and IFSC codes, where a column is named for one: a wrong one is said above the rows.
-            import('./engine/ids').then(async (m) => {
-              const cols = m.idColumns(res.columns)
-              if (!cols.length || !res.table) return
-              const { conn } = await getEngine()
-              const found = await Promise.all(cols.map(async ({ column, kind }) => m.readIdRow(column.name, kind, (await conn.query(m.idCheckSql(res.table!, column, kind))).toArray()[0]?.toJSON() ?? {})))
-              const check = m.idCheckText(found)
-              if (check) addChecks(res.sql, [check])
-            }),
+            import('./engine/month-end')
+              .then((m) => m.idCheck(res))
+              .then((check) => check && addChecks(res.sql, [check])),
             emptyTextColumns(res).then((cols) => setEmptyHints((m) => ({ ...m, [key]: { sig, value: cols } }))),
             // Dates the file reader read the other way round from how this reader writes them (01/02: 1 Feb or Jan 2).
             read && dateOrders.has(read) && dateOrders.get(read) !== DATE_HABIT
@@ -928,7 +926,7 @@ export default function App() {
   const originHere = origin
     ? {
         label: origin.label,
-        source: plainTable(origin.from.base) ?? 'the rows before',
+        source: plainTable(origin.from.base) ?? origins[origin.from.base.trim()]?.label.replace(/^./, (c) => c.toLowerCase()) ?? 'the rows before',
         onBack: () => {
           if (editsPending()) return
           // The step it came from is usually Undo's next one: taken off, so Undo doesn't go there twice.
@@ -2098,16 +2096,7 @@ export default function App() {
                 reconcile={!!reconcileHere}
                 onReconcile={() => void reconcile()}
                 ageing={ageingHere?.party ?? null}
-                onAgeing={() => {
-                  if (!ageingHere) return
-                  const rows = compose(base, { ...ops, sort: undefined, hidden: undefined })
-                  // As of today, in the reader's own calendar.
-                  const d = new Date()
-                  const asOf = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-                  void import('./engine/ageing')
-                    .then(({ ageingSql }) => runDerived(ageingSql(rows, ageingHere, asOf, isNum), { label: `Ageing by ${ageingHere.party}` }))
-                    .catch((e) => partFailed(e))
-                }}
+                onAgeing={() => ageingHere && setAgeing({ columns: ageingHere, rows: compose(base, { ...ops, sort: undefined, hidden: undefined }), numeric: Object.fromEntries((result?.columns ?? []).map((c) => [c.name, !!c.numeric])) })}
                 ledgers={ledgerHere}
                 onLedgers={() => {
                   if (!inOut || !ledgerHere) return
@@ -2496,6 +2485,7 @@ export default function App() {
             after={comparing.after}
             initial={editingCompare ? compareOrigin!.spec : undefined}
             onClose={() => setComparing(null)}
+            sources={Object.fromEntries([...tidiedRef.current.values()].map((t) => [t.table, t.sql]))}
             onMatch={(a, b) => {
               setComparing(null)
               // Once the Compare dialog has handed focus back (a frame after it closes), so this one keeps it.
@@ -2588,6 +2578,22 @@ export default function App() {
           />
         </Lazy>
       )}
+      {ageing && (
+        <Lazy onFail={(e) => partFailed(e, () => setAgeing(null))}>
+          <AgeingDialog
+            columns={ageing.columns}
+            onClose={() => setAgeing(null)}
+            onRun={(asOf) => {
+              const { columns, rows, numeric } = ageing
+              setAgeing(null)
+              const on = new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${asOf}T00:00:00Z`))
+              void import('./engine/ageing')
+                .then(({ ageingSql }) => runDerived(ageingSql(rows, columns, asOf, (n) => !!numeric[n]), { label: `Ageing by ${columns.party} as on ${on}` }))
+                .catch((e) => partFailed(e))
+            }}
+          />
+        </Lazy>
+      )}
       {matching && (
         <Lazy onFail={(e) => partFailed(e, () => setMatching(null))}>
           <MatchDialog
@@ -2602,7 +2608,7 @@ export default function App() {
               setMatched({ sql, spec })
               runDerived(sql, { label: 'Payments matched' })
               // What it found stays above the rows (a toast would be gone before the leftovers are looked at).
-              addChecks(sql, [{ kind: 'match', ok: all, text: summary }])
+              addChecks(sql, [{ kind: 'match', ok: all, note: true, text: summary }])
             }}
           />
         </Lazy>

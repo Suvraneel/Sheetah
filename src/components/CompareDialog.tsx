@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { compareSql, defaultCompare, keyHealth, schemaDiff, type CompareSpec, type KeyHealth, type TableColumns } from '../engine/compare'
+import { getEngine } from '../engine/db'
 import { isNumericType, LOCALE } from '../engine/sql'
 import { sideFor } from '../engine/match'
 import { statementColumns } from '../engine/statement'
@@ -15,13 +16,16 @@ interface Props {
   onCompare: (sql: string, spec: CompareSpec) => void
   /** Matching payments instead (a bank statement against the books): a dialog of its own. */
   onMatch?: (a: string, b: string) => void
+  /** Tables tidied by their steps, as SQL: their columns as tidied (dates converted) say whether they can be matched. */
+  sources?: Record<string, string>
   onClose: () => void
 }
+const NO_SOURCES: Record<string, string> = {}
 
 const nf = new Intl.NumberFormat(LOCALE)
 const list = (names: string[]) => (names.length > 4 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', '))
 
-export function CompareDialog({ tables, before, after, initial, onCompare, onMatch, onClose }: Props) {
+export function CompareDialog({ tables, before, after, initial, onCompare, onMatch, sources = NO_SOURCES, onClose }: Props) {
   const dialog = useDialog<HTMLDivElement>(onClose)
   const [pair, setPair] = useState(() => ({
     before: initial?.before ?? before ?? tables[0]?.name ?? '',
@@ -82,8 +86,30 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onMat
     update({ mode: 'key', keys, columns: spec.columns.filter((c) => !keys.includes(c)) })
   }
   const ready = !!spec && !same && (spec.mode === 'key' ? spec.keys.length > 0 : spec.columns.length > 0)
+  // A tidied table's columns as tidied (its dates converted by a step): what the match would read.
+  const [tidied, setTidied] = useState<Record<string, TableColumns['columns']>>({})
+  useEffect(() => {
+    let live = true
+    for (const name of [pair.before, pair.after]) {
+      if (!sources[name] || tidied[name]) continue
+      void getEngine()
+        .then(({ conn }) => conn.query(`DESCRIBE SELECT * FROM (\n${sources[name]}\n)`))
+        .then((res) => {
+          const columns = res.toArray().map((r) => ({ name: String(r.toJSON().column_name), type: String(r.toJSON().column_type) }))
+          if (live) setTidied((t) => ({ ...t, [name]: columns }))
+        })
+        .catch(() => {})
+    }
+    return () => {
+      live = false
+    }
+    // The two tables' tidied SQL is what's looked at (a new object each time the app draws isn't).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pair.before, pair.after, sources[pair.before], sources[pair.after]])
+  const asMatched = (t: TableColumns) => (tidied[t.name] ? { ...t, columns: tidied[t.name] } : t)
   // A bank statement and books (or two statements): their lines are matched by amount and date, not compared.
-  const payments = !!onMatch && !same && !!A && !!B && !!sideFor(A) && !!sideFor(B) && (!!statementColumns(A.columns) || !!statementColumns(B.columns))
+  const payments =
+    !!onMatch && !same && !!A && !!B && !!sideFor(asMatched(A)) && !!sideFor(asMatched(B)) && (!!statementColumns(asMatched(A).columns) || !!statementColumns(asMatched(B).columns))
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>

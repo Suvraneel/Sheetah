@@ -21,20 +21,22 @@ const ABOUT: Record<Check['kind'], string> = {
  */
 export function Checks({ items, onDismiss }: { items: Check[]; onDismiss: () => void }) {
   const [open, setOpen] = useState(false)
-  const passed = items.filter((c) => c.ok)
-  const failed = items.filter((c) => !c.ok)
+  const notes = items.filter((c) => c.note)
+  const passed = items.filter((c) => c.ok && !c.note)
+  const failed = items.filter((c) => !c.ok && !c.note)
   const fold = passed.length >= 2 && !open
   const one = (c: Check) => (
-    <span key={c.kind} className={`check ${c.ok ? 'is-ok' : 'is-off'}`}>
-      <Icon name={c.ok ? 'check' : 'alert'} size={14} />
+    <span key={c.kind} className={`check ${c.note ? 'is-note' : c.ok ? 'is-ok' : 'is-off'}`}>
+      <Icon name={c.note ? 'compare' : c.ok ? 'check' : 'alert'} size={14} />
       <span>
-        <span className="sr-only">{c.ok ? 'Check passed: ' : 'Check failed: '}</span>
+        <span className="sr-only">{c.note ? 'Found: ' : c.ok ? 'Check passed: ' : 'Check failed: '}</span>
         {c.text}
       </span>
     </span>
   )
   return (
     <div className="checks" role="status" aria-label="Checks on these rows">
+      {notes.map(one)}
       {failed.map(one)}
       {fold ? (
         <span className="check is-ok">

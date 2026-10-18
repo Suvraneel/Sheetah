@@ -13,6 +13,8 @@ export interface Check {
   kind: 'balance' | 'totals' | 'continuity' | 'rollforward' | 'match' | 'ids'
   ok: boolean
   text: string
+  /** What was found, not passed or failed (a match's lines left over are what's to be reconciled, not an error). */
+  note?: boolean
 }
 
 /**
@@ -23,7 +25,9 @@ export interface Check {
 /** Each row's balance (b) and amount (a, in less out), by the rows' order (r). */
 function balanceRows(table: string, s: StatementColumns & { balance: string }, numeric: (name: string) => boolean, ref: (name: string) => string): string {
   const n = (name: string) => (numeric(name) ? `${ref(name)}::DOUBLE` : `number_from_text(${ref(name)})`)
-  return `SELECT rowid AS r, ${n(s.balance)} AS b, coalesce(${n(s.credit)}, 0) - coalesce(${n(s.debit)}, 0) AS a FROM ${table}`
+  // A balance written "2,11,150.00 Cr" (in credit) or "Dr" (overdrawn), as the bank means it.
+  const b = numeric(s.balance) ? `${ref(s.balance)}::DOUBLE` : `number_from_cr_dr(${ref(s.balance)}::VARCHAR)`
+  return `SELECT rowid AS r, ${b} AS b, coalesce(${n(s.credit)}, 0) - coalesce(${n(s.debit)}, 0) AS a FROM ${table}`
 }
 
 export function balanceCheckSql(table: string, s: StatementColumns & { balance: string }, numeric: (name: string) => boolean, ref: (name: string) => string = sqlName): string {
@@ -169,8 +173,9 @@ export function rollForwardSql(table: string, s: StatementColumns & { balance: s
   if (!labels.length) return null
   const n = (name: string) => (numeric(name) ? `${sqlName(name)}::DOUBLE` : `number_from_text(${sqlName(name)}::VARCHAR)`)
   const is = (re: string) => `(${labels.map((c) => `regexp_matches(coalesce(${sqlName(c)}::VARCHAR, ''), ${re}, 'i')`).join(' OR ')})`
-  return `SELECT arg_min(${n(s.balance)}, rowid) FILTER (WHERE ${is(OPENING)})::DOUBLE AS opening,
-  arg_max(${n(s.balance)}, rowid) FILTER (WHERE ${is(CLOSING)})::DOUBLE AS closing,
+  const bal = numeric(s.balance) ? `${sqlName(s.balance)}::DOUBLE` : `number_from_cr_dr(${sqlName(s.balance)}::VARCHAR)`
+  return `SELECT arg_min(${bal}, rowid) FILTER (WHERE ${is(OPENING)})::DOUBLE AS opening,
+  arg_max(${bal}, rowid) FILTER (WHERE ${is(CLOSING)})::DOUBLE AS closing,
   sum(coalesce(${n(s.credit)}, 0)) FILTER (WHERE ${keep})::DOUBLE AS money_in,
   sum(coalesce(${n(s.debit)}, 0)) FILTER (WHERE ${keep})::DOUBLE AS money_out
 FROM ${sqlName(table)}`

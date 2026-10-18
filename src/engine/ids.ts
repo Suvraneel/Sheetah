@@ -12,7 +12,7 @@ export type IdKind = 'gstin' | 'pan' | 'ifsc'
 // The name ends with what it holds ("Supplier GSTIN", "GSTIN of Supplier", "PAN No."): not "GSTIN Status",
 // "GST Registration Type" or "Is GSTIN Valid", which are about one.
 const NAMES: [IdKind, RegExp][] = [
-  ['gstin', /(^|_)(gstin|gstn|gst_?(no|number|id|reg(istration)?_?(no|number)))(_uin)?(_of_[a-z_]+)?$/],
+  ['gstin', /(^|_)((gstin|gstn)(_(no|number))?|gst_?(no|number|id|reg(istration)?_?(no|number)))(_uin)?(_of_[a-z_]+)?$/],
   ['pan', /(^|_)pan(_?(no|number|card(_no)?))?(_of_[a-z_]+)?$/],
   ['ifsc', /(^|_)ifsc(_?code)?$/],
 ]
@@ -53,6 +53,18 @@ export function idCheckSql(table: string, column: ColumnInfo, kind: IdKind): str
 FROM (SELECT rowid AS r, v, ${idOk(kind, 'v')} AS ok FROM (SELECT rowid, nullif(${v}, '') AS v FROM ${table}) WHERE regexp_matches(v, '[0-9]'))`
 }
 
+/**
+ * Where a table has both, each well-formed GSTIN's PAN (its 3rd to 12th characters) against the PAN given:
+ * how many differ, and the first few, as "PAN (GSTIN …)". A GSTIN on a TAN (a TDS deductor's) isn't compared.
+ */
+export function panMatchSql(table: string, gstin: ColumnInfo, pan: ColumnInfo): string {
+  const ref = (c: ColumnInfo) => `upper(trim(${quoteIdent(c.ident ?? c.name)}::VARCHAR))`
+  const off = `substr(g, 3, 10) <> p`
+  return `SELECT count(*) FILTER (WHERE ${off})::DOUBLE AS bad, (list(p || ' (GSTIN ' || g || ')' ORDER BY r) FILTER (WHERE ${off}))[1:3] AS examples
+FROM (SELECT rowid AS r, ${ref(gstin)} AS g, ${ref(pan)} AS p FROM ${table})
+WHERE ${idOk('gstin', 'g')} AND ${idOk('pan', 'p')} AND ${idOk('pan', 'substr(g, 3, 10)')}`
+}
+
 export interface IdFinding {
   column: string
   kind: IdKind
@@ -61,12 +73,16 @@ export interface IdFinding {
   examples: string[]
 }
 
-/** What the identifiers' checks found, as one check: the columns with a wrong one, else that all are well formed. */
-export function idCheckText(found: IdFinding[]): Check | null {
+/**
+ * What the identifiers' checks found, as one check: the columns with a wrong one (and PANs that aren't
+ * their GSTIN's), else that all are well formed.
+ */
+export function idCheckText(found: IdFinding[], pans?: { bad: number; examples: string[] }): Check | null {
   const seen = found.filter((f) => f.n > 0)
   if (!seen.length) return null
   const off = seen.filter((f) => f.bad > 0)
-  if (off.length) {
+  const unlike = pans && pans.bad > 0 ? `${pans.bad} ${pans.bad === 1 ? 'PAN doesn’t' : 'PANs don’t'} match ${pans.bad === 1 ? 'its' : 'their'} GSTIN: ${pans.examples.join(', ')}${pans.bad > pans.examples.length ? '…' : ''}` : null
+  if (off.length || unlike) {
     const say = (f: IdFinding) => {
       // "1 GSTIN doesn't…" for a column that's only named for it; "in Supplier GSTIN" otherwise.
       const plain = /^(gstin|gstn|gst(no|number)?|pan(no|number|card)?|ifsc(code)?)$/.test(f.column.toLowerCase().replace(/[^a-z]/g, ''))
@@ -74,7 +90,7 @@ export function idCheckText(found: IdFinding[]): Check | null {
       const why = f.kind === 'gstin' ? ' (a character mistyped, or the wrong length)' : ''
       return `${f.bad} ${what} ${f.bad === 1 ? 'doesn’t' : 'don’t'} look right${why}: ${f.examples.join(', ')}${f.bad > f.examples.length ? '…' : ''}`
     }
-    return { kind: 'ids', ok: false, text: off.map(say).join('; ') }
+    return { kind: 'ids', ok: false, text: [...off.map(say), ...(unlike ? [unlike] : [])].join('; ') }
   }
   const kinds = [...new Set(seen.map((f) => LABEL[f.kind]))]
   return { kind: 'ids', ok: true, text: `Every ${kinds.join(' and ')} is well formed: ${seen.map((f) => `${f.column} ${f.n}`).join(' · ')}` }

@@ -303,8 +303,17 @@ function sheetXml(src: XlsxSource): AsyncIterable<string> {
       const vals = first.map((r) => r[i]).filter((v): v is string => typeof v === 'string')
       if (kinds[i] === 'text' && vals.some((v) => MONTH_LABEL.test(v)) && vals.every((v) => MONTH_LABEL.test(v) || v === 'Total')) kinds[i] = 'month'
     }
+    // A number as Excel will show it (141544.3 as 141,544.30, or 1,41,544.30 on an Indian computer): a
+    // column measured by the raw value shows ### instead.
+    const shown = (v: string, style: NumStyle) => {
+      const n = Number(v)
+      if (!style || !Number.isFinite(n)) return v.length
+      const digits = Math.trunc(Math.abs(n)).toString().length
+      const commas = Math.max(Math.floor((digits - 1) / 3), digits > 3 ? 1 + Math.floor((digits - 4) / 2) : 0)
+      return digits + commas + (style === 5 ? 3 : style === 6 ? 4 : 0) + (n < 0 ? 1 : 0)
+    }
     const widths = src.columns.map((c, i) => {
-      const longest = Math.max(c.name.length + 2, ...first.map((r) => (r[i] ?? '').length))
+      const longest = Math.max(c.name.length + 2, ...first.map((r) => shown(r[i] ?? '', numStyles[i]) + 1))
       return Math.min(60, Math.max(8, kinds[i] === 'datetime' ? 19 : kinds[i] === 'date' ? 11 : longest + 1))
     })
     yield `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`

@@ -20,6 +20,8 @@ test.describe('grid number formatting', () => {
     expect(whole('8820.0')).toBe('8,820')
     expect(whole('0.0012')).toBe('0.0012') // small fractions stay readable
     expect(whole('inf')).toBe('inf')
+    // Named for money: two decimals even when this column's are whole (beside one with paise).
+    expect(makeFormatter(col('Withdrawal Amt.', 'DOUBLE'), ['118000.0'])('118000.0')).toBe('118,000.00')
   })
 
   test('midnight-only timestamps show as dates; text is untouched', () => {

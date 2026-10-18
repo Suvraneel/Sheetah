@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { idCheckSql, idCheckText, idColumns, idOk, readIdRow } from '../../src/engine/ids'
+import { idCheckSql, idCheckText, idColumns, idOk, panMatchSql, readIdRow } from '../../src/engine/ids'
 import { q } from './duck'
 
 const col = (name: string, type = 'VARCHAR', numeric = false) => ({ name, type, numeric })
@@ -9,6 +9,7 @@ test('columns named for a GSTIN, a PAN or an IFSC code are found; others are not
     col('Supplier GSTIN'),
     col('GST No.'),
     col('GSTIN/UIN of Recipient'),
+    col('GSTIN No.'),
     col('PAN'),
     col('pan_number'),
     col('IFSC Code'),
@@ -25,6 +26,7 @@ test('columns named for a GSTIN, a PAN or an IFSC code are found; others are not
     ['Supplier GSTIN', 'gstin'],
     ['GST No.', 'gstin'],
     ['GSTIN/UIN of Recipient', 'gstin'],
+    ['GSTIN No.', 'gstin'],
     ['PAN', 'pan'],
     ['pan_number', 'pan'],
     ['IFSC Code', 'ifsc'],
@@ -67,4 +69,13 @@ test('a column’s identifiers are counted and the wrong ones named, in their or
   expect(idCheckText([{ column: 'GSTIN', kind: 'gstin', n: 0, bad: 0, examples: [] }])).toBe(null)
   // A column named only for what it holds isn't said twice.
   expect(idCheckText([{ column: 'GST No.', kind: 'gstin', n: 3, bad: 1, examples: ['27AAPFU0939F1ZW'] }])?.text).toBe('1 GSTIN doesn’t look right (a character mistyped, or the wrong length): 27AAPFU0939F1ZW')
+})
+
+test('a PAN that isn’t its GSTIN’s is named (a GSTIN on a TAN isn’t compared)', async () => {
+  await q(`CREATE OR REPLACE TABLE vm AS SELECT * FROM (VALUES
+    ('V001', '27AAPFU0939F1ZV', 'AAPFU0939F'), ('V006', '24AAACC1206D1ZM', 'AAACC1260D'), ('V007', '07DELA12345B1DE', 'AAPFU0939F'), ('V008', NULL, 'AAPFU0939F')
+  ) t(id, gstin, pan)`)
+  const pans = readIdRow('pan', 'pan', (await q(panMatchSql('vm', col('gstin'), col('pan'))))[0])
+  expect([pans.bad, pans.examples]).toEqual([1, ['AAACC1260D (GSTIN 24AAACC1206D1ZM)']])
+  expect(idCheckText([{ column: 'gstin', kind: 'gstin', n: 3, bad: 0, examples: [] }], pans)?.text).toBe('1 PAN doesn’t match its GSTIN: AAACC1260D (GSTIN 24AAACC1206D1ZM)')
 })

@@ -87,6 +87,19 @@ function SideFields({ label, name, table, side, tables, onTable, onSide }: { lab
               ))}
             </select>
           </label>
+          <label className="match-field">
+            <span className="fine">Cheque or reference no.</span>
+            <select value={side.ref ?? ''} onChange={(e) => onSide({ ...side, ref: e.target.value || undefined })}>
+              <option value="">None</option>
+              {cols
+                .filter((c) => !/^(DATE|TIMESTAMP|BOOL|DOUBLE|DECIMAL|FLOAT|REAL)/i.test(c.type))
+                .map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+            </select>
+          </label>
         </>
       ) : (
         <p className="fine">
@@ -180,14 +193,14 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
   }, [dirKey])
 
   // How many lines match, and what's left on each side, a moment after anything changes.
-  const [counts, setCounts] = useState<{ sql: string; rows?: { status: string; n: number; total: number; near: number }[]; error?: string } | null>(null)
+  const [counts, setCounts] = useState<{ sql: string; rows?: { status: string; n: number; total: number; money_in: number; money_out: number; near: number; undated: number }[]; error?: string } | null>(null)
   useEffect(() => {
     if (!sql) return
     let live = true
     const t = window.setTimeout(() => {
       void getEngine()
         .then(({ conn }) => conn.query(matchCountsSql(sql)))
-        .then((res) => live && setCounts({ sql, rows: res.toArray().map((r) => r.toJSON() as { status: string; n: number; total: number; near: number }) }))
+        .then((res) => live && setCounts({ sql, rows: res.toArray().map((r) => r.toJSON() as { status: string; n: number; total: number; money_in: number; money_out: number; near: number; undated: number }) }))
         .catch((e: unknown) => live && setCounts({ sql, error: e instanceof Error ? e.message : String(e) }))
     }, 300)
     return () => {
@@ -203,13 +216,19 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
     labels && shown
       ? [
           `${nf.format(of(labels.matched)?.n ?? 0)} matched`,
+          // What's left on each side as money in and money out (netted, they'd mean nothing).
           ...[labels.a, labels.b].map((l) => {
             const r = of(l)
-            return `${nf.format(r?.n ?? 0)} ${l}${r?.n ? ` (${money(r.total)})` : ''}`
+            const parts = [r?.money_in ? `in ${money(r.money_in)}` : '', r?.money_out ? `out ${money(r.money_out)}` : ''].filter(Boolean)
+            return `${nf.format(r?.n ?? 0)} ${l}${parts.length ? ` (${parts.join(', ')})` : ''}`
           }),
           ...(() => {
             const near = (of(labels.a)?.near ?? 0) + (of(labels.b)?.near ?? 0)
-            return near ? [`${nf.format(near)} with the same amount further apart (see maybe)`] : []
+            const undated = (of(labels.a)?.undated ?? 0) + (of(labels.b)?.undated ?? 0)
+            return [
+              ...(near ? [`${nf.format(near)} with the same amount further apart (see note)`] : []),
+              ...(undated ? [`${nf.format(undated)} with no date`] : []),
+            ]
           })(),
         ].join(' · ')
       : null
@@ -228,8 +247,9 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
             <span className="eyebrow">Match payments</span>
             <h2 id="match-title">Bank against books</h2>
             <p className="muted">
-              Each line is matched to one line of the other table with the same amount, dated up to {days} {days === 1 ? 'day' : 'days'} apart. What’s left
-              on either side is what to look into.
+              Each line is matched to one line of the other table with the same amount, dated up to {days} {days === 1 ? 'day' : 'days'} apart
+              {sideA?.ref && sideB?.ref ? ' (or with the same cheque or reference number, however late it cleared)' : ''}. What’s left on either side is what
+              to look into.
             </p>
             <div className="pivot-grid">
               <SideFields

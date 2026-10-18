@@ -6,7 +6,7 @@
 import { getEngine, quoteIdent, quoteLiteral } from './db'
 import type { Clean, DropRows } from './clean'
 import { confidentConversion, dataSumsSql, eitherJunk, fillDownSql, isTextColumn, looksFilledDown, junkPredicates, labelSumsSql, readTieOut, totalsAgree, readStats, statsSql, suggestCleaning, type CleanSuggestion } from './clean-scan'
-import { LOCALE } from './sql'
+import { LOCALE, nameKey } from './sql'
 import { balanceLineSql, isBalanceName, statementColumns } from './statement'
 import { colRef, type ColumnInfo, type ResultSet } from './result'
 
@@ -110,13 +110,13 @@ async function bigTableTotals(result: ResultSet): Promise<DropRows[]> {
   const texts = result.columns.filter((c) => isTextColumn(c.type))
   if (!result.table || !texts.length) return []
   const { conn } = await getEngine()
-  const p = junkPredicates(result.columns.map((c) => ({ ref: colRef(c), text: isTextColumn(c.type) })))
+  const p = junkPredicates(result.columns.map((c) => ({ ref: colRef(c), text: isTextColumn(c.type), name: c.name })))
   if (!p.strong || !p.weak) return []
   const mentions = texts.map((c) => `${colRef(c)}::VARCHAR ILIKE '%total%'`).join(' OR ')
   const row = (
     await conn.query(`SELECT count(*) FILTER (WHERE ${p.strong.drop})::DOUBLE AS strong, count(*) FILTER (WHERE ${eitherJunk(p.strong, p.weak).drop})::DOUBLE AS total FROM (SELECT * FROM ${result.table} WHERE ${mentions})`)
   ).toArray()[0]?.toJSON() as { strong: number; total: number } | undefined
-  const named = junkPredicates(result.columns.map((c) => ({ ref: quoteIdent(c.name), text: isTextColumn(c.type) })))
+  const named = junkPredicates(result.columns.map((c) => ({ ref: quoteIdent(c.name), text: isTextColumn(c.type), name: c.name })))
   if (!row || !named.strong || !named.weak) return []
   const strong = Number(row.strong)
   const total = Number(row.total)
@@ -135,7 +135,7 @@ export async function junkRows(result: ResultSet): Promise<DropRows[]> {
   const empty = new Set(await emptyTextColumns(result))
   const columns = result.columns.filter((c) => !empty.has(c.name))
   if (!columns.length) return []
-  const refs = columns.map((c) => ({ ref: colRef(c), text: isTextColumn(c.type), numeric: c.numeric }))
+  const refs = columns.map((c) => ({ ref: colRef(c), text: isTextColumn(c.type), numeric: c.numeric, name: c.name }))
   const p = junkPredicates(refs)
   const counts = [`count(*) FILTER (WHERE ${p.blank.drop})::DOUBLE AS blank`]
   if (p.strong && p.weak && p.label)
@@ -149,7 +149,7 @@ export async function junkRows(result: ResultSet): Promise<DropRows[]> {
     | undefined
   if (!row) return []
   // The same predicates written against the columns' own names, for the composed query.
-  const named = junkPredicates(columns.map((c) => ({ ref: quoteIdent(c.name), text: isTextColumn(c.type) })))
+  const named = junkPredicates(columns.map((c) => ({ ref: quoteIdent(c.name), text: isTextColumn(c.type), name: c.name })))
   const out: DropRows[] = []
   const n = (x: number, one: string) => `${x.toLocaleString(LOCALE)} ${one}${x === 1 ? '' : 's'}`
   const strong = Number(row.strong ?? 0)
@@ -210,9 +210,27 @@ export async function junkRows(result: ResultSet): Promise<DropRows[]> {
     const k = here && keep ? Number((await conn.query(`SELECT count(*) FILTER (WHERE ${here})::DOUBLE AS n FROM ${result.table}`)).toArray()[0]?.toJSON().n ?? 0) : 0
     if (k && keep) out.push({ label: n(k, 'balance line'), keep: `NOT ${keep}`, kind: 'balance' })
   }
+  // A date column (dates not converted yet) holding something else on a few lines: a statement's summary
+  // below its transactions ("STATEMENT SUMMARY :-", its figures), "Generated on…" notes. Not transactions.
+  const dateCol = columns.find((c) => isTextColumn(c.type) && /(^|_)(date|dt)(_|$)|^date/.test(nameKey(c.name)))
+  if (dateCol) {
+    const looks = (ref: string) => `regexp_matches(trim(${ref}::VARCHAR), ${DATE_LIKE})`
+    const u = (await conn.query(
+      `SELECT count(*) FILTER (WHERE has_value(${colRef(dateCol)}))::DOUBLE AS filled, count(*) FILTER (WHERE has_value(${colRef(dateCol)}) AND NOT ${looks(colRef(dateCol))})::DOUBLE AS other FROM ${result.table}`,
+    )).toArray()[0]?.toJSON() as { filled: number; other: number } | undefined
+    const [filled, other] = [Number(u?.filled ?? 0), Number(u?.other ?? 0)]
+    // A few such lines among many dated ones (a date column that's mostly something else isn't one).
+    if (other >= 1 && other <= 20 && filled - other >= 3 && filled - other >= 2 * other) {
+      const q = quoteIdent(dateCol.name)
+      out.push({ label: n(other, 'undated line'), keep: `(NOT has_value(${q}) OR ${looks(q)})`, kind: 'undated' })
+    }
+  }
   if (row.blank) out.push({ label: n(Number(row.blank), 'empty row'), keep: named.blank.keep, kind: 'empty' })
   return out
 }
+
+/** A date as statements write one (01/04/24, 2024-04-01, 1-Apr-26, 01 Apr 2026, Apr 1, 2026), a time after it or not. */
+const DATE_LIKE = `'^(\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}|\\d{4}[/.-]\\d{1,2}[/.-]\\d{1,2}|\\d{1,2}[ -]?[A-Za-z]{3,9}[ -]?\\d{2,4}|[A-Za-z]{3,9} \\d{1,2},? \\d{4})([ T].*)?$'`
 
 /**
  * Columns to fill down: a report's group names, written once at the top of each group. Only the first

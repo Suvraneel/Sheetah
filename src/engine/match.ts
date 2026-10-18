@@ -17,6 +17,8 @@ export interface MatchSide {
   amount: { column: string } | { credit: string; debit: string }
   /** Words to show beside each line (a narration, a party's name). */
   text?: string
+  /** A cheque or reference number: lines with the same one on both sides (and the same amount) pair first. */
+  ref?: string
 }
 
 export interface MatchSpec {
@@ -37,6 +39,8 @@ const isTime = (c: Col) => /^(DATE|TIMESTAMP)/i.test(c.type)
 const isText = (c: Col) => /CHAR|TEXT|STRING/i.test(c.type)
 const AMOUNT = /(^|[^a-z])(amount|amt|value|total|net|sum)([^a-z]|$)/i
 const TEXT = /narration|description|particulars|details|remarks|memo|party|payee|name|ledger|account/i
+/** A cheque or reference number's column: "Chq./Ref.No.", "Cheque No", "Instrument No", "UTR". */
+const REF = /(^|[^a-z])(chq|cheque|check|instrument|utr|ref)([^a-z]|$)/i
 /** Rounds of pairing: each pairs every line with the line that is nearest to it, if that one pairs back. */
 const ROUNDS = 4
 /** How far apart a line left over and one of the same amount on the other side are still said to be close. */
@@ -53,8 +57,9 @@ export function sideFor(table: { name: string; columns: Col[] }): MatchSide | nu
   const one = cols.find((c) => money(c) && AMOUNT.test(c.name) && (isNumericType(c.type) || isText(c))) ?? cols.find((c) => money(c) && isNumericType(c.type))
   const amount = st ? { credit: st.credit, debit: st.debit } : one ? { column: one.name } : null
   if (!amount) return null
-  const text = cols.find((c) => isText(c) && TEXT.test(c.name)) ?? cols.find(isText)
-  return { table: table.name, date: date.name, amount, ...(text ? { text: text.name } : {}) }
+  const ref = cols.find((c) => REF.test(c.name) && (isText(c) || /INT/i.test(c.type)))
+  const text = cols.find((c) => isText(c) && TEXT.test(c.name) && c !== ref) ?? cols.find((c) => isText(c) && c !== ref)
+  return { table: table.name, date: date.name, amount, ...(text ? { text: text.name } : {}), ...(ref ? { ref: ref.name } : {}) }
 }
 
 /** The rows a side reads, as SQL. */
@@ -88,7 +93,7 @@ function sides(spec: MatchSpec, numeric: (side: MatchSide, column: string) => bo
     return `${k} AS MATERIALIZED (
   SELECT * FROM (
     SELECT row_number() OVER () AS ${k}_row, ${sqlName(s.date)}::DATE AS ${k}_date, ${sign}${amt.value} AS amount, ${amt.written} AS written,
-      ${s.text ? `${sqlName(s.text)}::VARCHAR` : 'NULL'} AS ${k}_text
+      ${s.text ? `${sqlName(s.text)}::VARCHAR` : 'NULL'} AS ${k}_text, ${s.ref ? refSql(sqlName(s.ref)) : 'NULL'} AS ${k}_ref
     FROM ${from(s)}
   )
   WHERE amount <> 0 OR (amount IS NULL AND written)
@@ -100,17 +105,30 @@ function sides(spec: MatchSpec, numeric: (side: MatchSide, column: string) => bo
 const days = (n: number) => Math.max(0, Math.min(366, Math.floor(n)))
 
 /**
- * First, lines on the same day for the same amount, the first with the first, the second with the second
+ * A cheque or reference number as both sides would write it: its digits, without leading zeros (the bank's
+ * 000123456 is the books' 123456). Fewer than three digits say nothing ("0", "1").
+ */
+const refSql = (ref: string) => `CASE WHEN length(ltrim(regexp_replace(${ref}::VARCHAR, '[^0-9]', '', 'g'), '0')) >= 3 THEN ltrim(regexp_replace(${ref}::VARCHAR, '[^0-9]', '', 'g'), '0') END`
+
+/**
+ * First, lines with the same cheque or reference number and amount (however far apart: a cheque presented
+ * late). Then lines on the same day for the same amount, the first with the first, the second with the second
  * (five payments of 500 on one day pair up at once); then every other possible pair among the rest: the
  * same amount, dated up to `days` apart (found day by day, so repeated amounts stay cheap).
  */
-const candidates = (n: number) => `round0 AS (
+const candidates = (n: number) => `byref AS (
   SELECT a_row, b_row
-  FROM (SELECT a_row, amount, a_date, row_number() OVER (PARTITION BY amount, a_date ORDER BY a_row) AS o FROM a WHERE amount IS NOT NULL) AS x
-  JOIN (SELECT b_row, amount, b_date, row_number() OVER (PARTITION BY amount, b_date ORDER BY b_row) AS o FROM b WHERE amount IS NOT NULL) AS y
+  FROM (SELECT a_row, amount, a_ref, row_number() OVER (PARTITION BY amount, a_ref ORDER BY a_date, a_row) AS o FROM a WHERE amount IS NOT NULL AND a_ref IS NOT NULL) AS x
+  JOIN (SELECT b_row, amount, b_ref, row_number() OVER (PARTITION BY amount, b_ref ORDER BY b_date, b_row) AS o FROM b WHERE amount IS NOT NULL AND b_ref IS NOT NULL) AS y
+    ON x.amount = y.amount AND x.a_ref = y.b_ref AND x.o = y.o
+),
+round0 AS (
+  SELECT a_row, b_row
+  FROM (SELECT a_row, amount, a_date, row_number() OVER (PARTITION BY amount, a_date ORDER BY a_row) AS o FROM a WHERE amount IS NOT NULL AND a_row NOT IN (SELECT a_row FROM byref)) AS x
+  JOIN (SELECT b_row, amount, b_date, row_number() OVER (PARTITION BY amount, b_date ORDER BY b_row) AS o FROM b WHERE amount IS NOT NULL AND b_row NOT IN (SELECT b_row FROM byref)) AS y
     ON x.amount = y.amount AND x.a_date = y.b_date AND x.o = y.o
 ),
-done0 AS (SELECT * FROM round0),
+done0 AS (SELECT * FROM byref UNION ALL SELECT * FROM round0),
 pairs0 AS MATERIALIZED (
   SELECT a_row, b_row, abs(k) AS gap, a.amount
   FROM (SELECT * FROM a WHERE a_row NOT IN (SELECT a_row FROM done0)) AS a CROSS JOIN range(${-days(n)}, ${days(n) + 1}) AS r(k)
@@ -177,7 +195,8 @@ near_b AS (
   QUALIFY row_number() OVER (PARTITION BY b_row ORDER BY abs(date_diff('day', a_date, b_date)), a_row) = 1
 )
 SELECT * FROM (
-  SELECT ${quoteLiteral(st.matched)} AS status, a_date AS ${aDate}, b_date AS ${bDate}, a.amount, a_text AS ${aText}, b_text AS ${bText}, date_diff('day', a_date, b_date) AS days_apart, NULL AS maybe
+  SELECT ${quoteLiteral(st.matched)} AS status, a_date AS ${aDate}, b_date AS ${bDate}, a.amount, a_text AS ${aText}, b_text AS ${bText}, date_diff('day', a_date, b_date) AS "days apart",
+    CASE WHEN a_ref = b_ref AND NOT abs(date_diff('day', a_date, b_date)) <= ${n} THEN 'paired by reference ' || a_ref END AS note
   FROM pairs JOIN a USING (a_row) JOIN b USING (b_row)
   UNION ALL
   SELECT ${quoteLiteral(st.a)}, a_date, NULL, amount, a_text, NULL, NULL,
@@ -192,7 +211,11 @@ ORDER BY coalesce(${aDate}, ${bDate}), status`
 }
 
 /** How many lines, and how much, each status gets: for the dialog's preview. */
-export const matchCountsSql = (sql: string) => `SELECT status, count(*)::DOUBLE AS n, sum(amount)::DOUBLE AS total, count(maybe)::DOUBLE AS near FROM (\n${sql}\n) GROUP BY status`
+export const matchCountsSql = (sql: string) =>
+  `SELECT status, count(*)::DOUBLE AS n, sum(amount)::DOUBLE AS total, coalesce(sum(amount) FILTER (WHERE amount > 0), 0)::DOUBLE AS money_in,
+  coalesce(-sum(amount) FILTER (WHERE amount < 0), 0)::DOUBLE AS money_out, count(*) FILTER (WHERE note LIKE 'same amount%')::DOUBLE AS near,
+  count(*) FILTER (WHERE note LIKE 'no date%')::DOUBLE AS undated
+FROM (\n${sql}\n) GROUP BY status`
 
 /**
  * Which way round the other table records money: how many lines of the first have a line of the same

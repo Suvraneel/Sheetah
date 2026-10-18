@@ -60,15 +60,21 @@ const num = (name: string, numeric: boolean, ref: (name: string) => string = sql
 /** "Opening Balance", "Closing Balance", "Balance b/f", "Brought forward": a statement's lines about its balance. */
 const BALANCE_LINE = `'^\\s*((opening|closing)\\s+bal|bal(ance)?\\s+(b/?f|c/?f|brought|carried)|(brought|carried)\\s+(forward|fwd|over)\\b)'`
 
+/** A cell that says only that its line is a balance ("Opening Balance", "Balance b/f:"), however its amounts are written. */
+const BALANCE_ONLY = `'^\\s*((opening|closing)\\s+balance|bal(ance)?\\s+(b/?f|c/?f|brought\\s+forward|carried\\s+forward)|(brought|carried)\\s+(forward|fwd|over))\\s*:?\\s*$'`
+
 /**
- * A statement's balance lines, as SQL true for them: nothing in or out, and a label (in one of the text
- * columns) saying it's the opening or closing balance. They aren't transactions: an empty month in a pivot.
+ * A statement's balance lines, as SQL true for them: a label (in one of the text columns) saying it's the
+ * opening or closing balance, with nothing in or out; or a cell that says only that, whatever its amounts
+ * (the books write the opening balance in their Debit or Credit column). They aren't transactions: an
+ * empty month in a pivot, a line the books "don't have" in a match.
  */
 export function balanceLineSql(s: StatementColumns, text: string[], numeric: (name: string) => boolean, ref: (name: string) => string = sqlName): string | null {
   const labels = text.filter((c) => c !== s.credit && c !== s.debit && c !== s.balance)
   if (!labels.length) return null
   const none = (c: string) => `coalesce(${num(c, numeric(c), ref)}, 0) = 0`
-  return `(${none(s.credit)} AND ${none(s.debit)} AND (${labels.map((c) => `regexp_matches(coalesce(${ref(c)}::VARCHAR, ''), ${BALANCE_LINE}, 'i')`).join(' OR ')}))`
+  const says = (re: string) => labels.map((c) => `regexp_matches(coalesce(${ref(c)}::VARCHAR, ''), ${re}, 'i')`).join(' OR ')
+  return `((${none(s.credit)} AND ${none(s.debit)} AND (${says(BALANCE_LINE)})) OR ${says(BALANCE_ONLY)})`
 }
 
 /** The signed amount, as a formula column: money in less money out (an empty cell counts as nothing). */

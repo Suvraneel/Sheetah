@@ -46,7 +46,7 @@ test('lines match one to one by amount and nearest date; a missing line doesn’
   expect((await q(directionSql(spec, numeric(types))))[0]).toEqual({ same: 2, flipped: 0 })
   const rows = await q(matchSql(spec, numeric(types)))
   // Every line once; the unreadable "Rs. 500/-" is listed with no amount (not lost), the opening line left out.
-  expect(rows.map((r) => [r.status, r.amount, r.days_apart === null ? null : Number(r.days_apart)])).toEqual([
+  expect(rows.map((r) => [r.status, r.amount, r['days apart'] === null ? null : Number(r['days apart'])])).toEqual([
     ['only in bank', -500, null],
     ['matched', 50000, -1],
     ['only in bank', -118, null],
@@ -54,9 +54,9 @@ test('lines match one to one by amount and nearest date; a missing line doesn’
     ['matched', -500, -1],
     ['only in books', 2500, null],
   ])
-  expect(Object.keys(rows[0])).toEqual(['status', 'bank date', 'books date', 'amount', 'bank: Narration', 'books: Party', 'days_apart', 'maybe'])
+  expect(Object.keys(rows[0])).toEqual(['status', 'bank date', 'books date', 'amount', 'bank: Narration', 'books: Party', 'days apart', 'note'])
   // A line left over with the same amount on the other side within a month is said: Ravi's first payment.
-  expect(rows[0].maybe).toBe(null)
+  expect(rows[0].note).toBe(null)
   // Books that write money the other way round match once turned round.
   await q(`CREATE OR REPLACE TABLE cash AS SELECT "Posted", "Party", -"Amount" AS "Amount" FROM books`)
   const flipped = { ...spec, b: { ...spec.b, table: 'cash' } }
@@ -93,11 +93,30 @@ test('a line left over says where the same amount is on the other side, up to a 
   await q(`CREATE OR REPLACE TABLE ca AS SELECT * FROM (VALUES (DATE '2024-04-09', -85000.0), (NULL, -85000.0), (DATE '2024-04-20', 10.0)) t(d, amt)`)
   await q(`CREATE OR REPLACE TABLE cb AS SELECT * FROM (VALUES (DATE '2024-04-02', -85000.0), (DATE '2024-04-30', 99.0)) t(d, amt)`)
   const rows = await q(matchSql(simple('ca', 'cb'), numeric({ ca: ['amt'], cb: ['amt'] })))
-  expect(rows.map((r) => [r.status, r.maybe])).toEqual([
+  expect(rows.map((r) => [r.status, r.note])).toEqual([
     ['only in cb', 'same amount in ca on 2024-04-09 (7 days later)'],
     ['only in ca', 'same amount in cb on 2024-04-02 (7 days earlier)'],
     ['only in ca', null],
     ['only in cb', null],
     ['only in ca', 'no date, so not matched'],
   ])
+})
+
+test('a cheque presented late pairs by its number, not with a nearer cheque of the same amount', async () => {
+  // Two rent cheques of 25,000 written on the 5th and the 14th; the bank has the first, presented on the 15th.
+  await q(`CREATE OR REPLACE TABLE chqbank AS SELECT * FROM (VALUES (DATE '2024-04-15', 'CHQ PAID', '000000123', -25000.0)) t(d, narration, "Chq./Ref.No.", amt)`)
+  await q(`CREATE OR REPLACE TABLE chqbooks AS SELECT * FROM (VALUES (DATE '2024-04-05', 'Rent April', 123, -25000.0), (DATE '2024-04-14', 'Rent store', 124, -25000.0)) t(d, party, "Cheque No", amt)`)
+  const cols = (names: [string, string][]) => names.map(([name, type]) => ({ name, type }))
+  const a = sideFor({ name: 'chqbank', columns: cols([['d', 'DATE'], ['narration', 'VARCHAR'], ['Chq./Ref.No.', 'VARCHAR'], ['amt', 'DOUBLE']]) })!
+  const b = sideFor({ name: 'chqbooks', columns: cols([['d', 'DATE'], ['party', 'VARCHAR'], ['Cheque No', 'BIGINT'], ['amt', 'DOUBLE']]) })!
+  expect([a.ref, b.ref, a.text, b.text]).toEqual(['Chq./Ref.No.', 'Cheque No', 'narration', 'party'])
+  const spec: MatchSpec = { a, b, days: 3, flip: false }
+  const rows = await q(matchSql(spec, numeric({ chqbank: ['amt'], chqbooks: ['amt'] })))
+  expect(rows.map((r) => [r.status, r['chqbooks: party'], r.note])).toEqual([
+    ['only in chqbooks', 'Rent store', null],
+    ['matched', 'Rent April', 'paired by reference 123'],
+  ])
+  // Without the numbers, the nearer cheque would have been taken.
+  const plain = await q(matchSql({ a: { ...a, ref: undefined }, b: { ...b, ref: undefined }, days: 3, flip: false }, numeric({ chqbank: ['amt'], chqbooks: ['amt'] })))
+  expect(plain.find((r) => r.status === 'matched')?.['chqbooks: party']).toBe('Rent store')
 })
