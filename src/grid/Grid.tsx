@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
-import { LOCALE } from '../engine/sql'
+import { LOCALE, pasteSafe } from '../engine/sql'
 import { friendlyType, makeFormatter, type Formatter } from './format'
 import type { ColumnInfo, Row } from '../engine/result'
 
@@ -722,8 +722,9 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     let count = 0
     const text = src.fetch(r0, r1 + 1).then((rows) => {
       count = rows.length
-      const header = multi ? src.columns.slice(c0, c1 + 1).map((c) => c.name).join('\t') + '\n' : ''
-      return header + rows.map((row) => row.slice(c0, c1 + 1).map((v) => (v ?? '').replace(/[\t\r\n]+/g, ' ')).join('\t')).join('\n')
+      // Pasted into a spreadsheet, nothing in it runs as a formula (see pasteSafe).
+      const header = multi ? src.columns.slice(c0, c1 + 1).map((c) => pasteSafe(c.name)).join('\t') + '\n' : ''
+      return header + rows.map((row) => row.slice(c0, c1 + 1).map((v) => pasteSafe((v ?? '').replace(/[\t\r\n]+/g, ' '))).join('\t')).join('\n')
     })
     // The clipboard write starts now, inside the key press, with the text to follow: Safari refuses
     // a write that only starts after an await.

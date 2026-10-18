@@ -164,3 +164,15 @@ test('a browser on US English in India reads numbers and dates as India does', a
   expect(readerLocale('hi-IN', 'Asia/Kolkata')).toBe('hi-IN')
   expect(readerLocale(undefined, undefined)).toBe('en-US')
 })
+
+test('a cell that would start a formula is pasted as text; a plain negative and a dash aren’t touched', async () => {
+  const { pasteSafe } = await import('../../src/engine/sql')
+  expect(pasteSafe('=HYPERLINK("http://x")')).toBe('\'=HYPERLINK("http://x")')
+  expect(pasteSafe('+919876543210')).toBe("'+919876543210")
+  expect(pasteSafe("@SUM(A1)")).toBe("'@SUM(A1)")
+  expect(pasteSafe('-12.50')).toBe('-12.50')
+  expect(pasteSafe('-1,200')).toBe('-1,200')
+  expect(pasteSafe('-')).toBe('-')
+  expect(pasteSafe('-cmd')).toBe("'-cmd")
+  expect(pasteSafe('Pune')).toBe('Pune')
+})

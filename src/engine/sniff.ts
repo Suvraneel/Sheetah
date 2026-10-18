@@ -104,7 +104,7 @@ function fields(line: string, sep: string): number {
  * Inc", "January 2024"): the file reader takes the first as the only column. The separator and how many
  * lines come before the column names (the first line with as many fields as most of the lines), or null.
  */
-export function titleLines(text: string, headerFirst = false): { sep: string; skip: number } | null {
+export function titleLines(text: string, headerFirst = false): { sep: string; skip: number; fields: number } | null {
   const lines = text.split(/\r?\n/).slice(0, 60).filter((l, i, all) => l.trim() !== '' || i < all.length - 1)
   for (const sep of [',', ';', '\t', '|']) {
     const counts = lines.map((l) => (l.trim() ? fields(l, sep) : 0))
@@ -114,10 +114,10 @@ export function titleLines(text: string, headerFirst = false): { sep: string; sk
     if (common < 2 || times < 2) continue
     // Title lines have no separator at all; the column names are the first line with them, as many as most.
     const skip = counts.findIndex((c) => c > 1)
-    if (skip > 0 && counts[skip] === common && counts.slice(0, skip).every((c) => c <= 1)) return { sep, skip }
+    if (skip > 0 && counts[skip] === common && counts.slice(0, skip).every((c) => c <= 1)) return { sep, skip, fields: common }
     // (Or, asked for when the file reader gave up on a file whose names are its first line: group names
     // without separators between its rows, a QuickBooks report exported without its titles.)
-    if (headerFirst && skip === 0 && counts[0] === common) return { sep, skip: 0 }
+    if (headerFirst && skip === 0 && counts[0] === common) return { sep, skip: 0, fields: common }
   }
   return null
 }

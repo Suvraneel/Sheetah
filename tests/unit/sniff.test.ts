@@ -34,7 +34,7 @@ test('what isn’t a table says what to do instead', () => {
 test('a report’s title lines without separators are found above its table', async () => {
   const { titleLines } = await import('../../src/engine/sniff')
   const qb = ['Sales by Customer Detail', 'Acme Inc', 'January - June 2024', '', ',Date,Transaction Type,Num,Amount', 'Wayne Enterprises,,,,', ',06/18/2024,Sales Receipt,1001,"1,200.00"', ',06/19/2024,Invoice,1002,300.00', 'Total for Wayne Enterprises,,,,"1,500.00"'].join('\n')
-  expect(titleLines(qb)).toEqual({ sep: ',', skip: 4 })
+  expect(titleLines(qb)).toMatchObject({ sep: ',', skip: 4 })
   // A plain table: nothing above its names.
   expect(titleLines('a,b\n1,2\n3,4\n')).toBe(null)
   expect(titleLines('just one line of text\nand another\n')).toBe(null)
@@ -74,5 +74,5 @@ test('a report whose names are its first line, with group lines among its rows, 
   const { titleLines } = await import('../../src/engine/sniff')
   const qb = [',Date,Type,Num,Amount', 'Acme Corp', ',06/10/2024,Invoice,1000,100.00', 'Total for Acme Corp,,,,100.00', 'Globex LLC', ',06/11/2024,Invoice,1001,50.00'].join('\r\n')
   expect(titleLines(qb)).toBe(null)
-  expect(titleLines(qb, true)).toEqual({ sep: ',', skip: 0 })
+  expect(titleLines(qb, true)).toMatchObject({ sep: ',', skip: 0 })
 })

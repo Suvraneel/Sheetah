@@ -120,6 +120,11 @@ const num = (n: number | null) => (n === null ? '—' : Math.abs(n) >= 1e6 ? com
 
 const HISTORY_KEY = 'sheetah:history'
 const REMEMBER_KEY = 'sheetah:remember-history'
+/** Whether queries are kept in this browser: asked for, or kept already before it was asked about. */
+const remembering = () => {
+  const said = store.get(REMEMBER_KEY)
+  return said === 'on' || (said === null && store.get(HISTORY_KEY) !== null)
+}
 const KEEP_KEY = 'sheetah:keep-tables'
 /** With tables kept: where the work was (the query on screen and its steps, each table's steps), to come back to. */
 const WORK_KEY = 'sheetah:kept-work'
@@ -334,8 +339,10 @@ export default function App() {
   const [saving, setSaving] = useState(false)
   const [remap, setRemap] = useState<{ view: SavedView; missing: string[] } | null>(null)
   const [undo, setUndo] = useState<{ label: string; run: () => void } | null>(null)
-  const [rememberHistory, setRememberHistory] = useState(() => store.get(REMEMBER_KEY) !== 'off')
-  const [history, setHistory] = useState<HistoryItem[]>(() => (store.get(REMEMBER_KEY) === 'off' ? [] : loadHistory()))
+  // Queries can hold names and numbers typed into them: kept on this computer only if asked (history from
+  // before this was asked about is kept, as it was).
+  const [rememberHistory, setRememberHistory] = useState(remembering)
+  const [history, setHistory] = useState<HistoryItem[]>(() => (remembering() ? loadHistory() : []))
   // Pinned editor height in px, or null to fit the query (see EditorResizer).
   const [editorHeight, setEditorHeight] = useState<number | null>(() => {
     const h = Number(store.get(EDITOR_KEY))
@@ -551,7 +558,7 @@ export default function App() {
           setHistory((h) => {
             const next = [{ sql: sql.trim(), at: Date.now(), rows: res.rowCount }, ...h.filter((x) => x.sql !== sql.trim())].slice(0, 30)
             // Queries can contain sensitive literals (WHERE email = …): only persist if the user wants that.
-            if (store.get(REMEMBER_KEY) !== 'off') store.set(HISTORY_KEY, JSON.stringify(next))
+            if (remembering()) store.set(HISTORY_KEY, JSON.stringify(next))
             return next
           })
         }
@@ -1296,7 +1303,9 @@ export default function App() {
       runDerived(
         [
           `-- Row ${r + 1} as the column names`,
-          `SELECT ${row.columns.map((c, i) => `${sqlName(c)} AS ${quoteIdent(names[i])}`).join(', ')}`,
+          // By position (#1, #2…), not by the names the file gave them: next year's file titles its columns
+          // "… 2015 to 2024", and a saved view of this still runs on it.
+          `SELECT ${row.columns.map((_, i) => `#${i + 1} AS ${quoteIdent(names[i])}`).join(', ')}`,
           `FROM (SELECT *, row_number() OVER () AS __sheetah_row FROM (\n${rows}\n))`,
           `WHERE __sheetah_row > ${r + 1}`,
           'ORDER BY __sheetah_row',
@@ -1509,6 +1518,14 @@ export default function App() {
     const shapes = learn ? Object.fromEntries(view.tables.map((t) => [t, meta(t)!.columns.map((c) => c.name)])) : undefined
     // Only what's learnt is written: a view re-pointed a moment ago keeps its re-pointed shapes.
     updateViews((v) => v.map((x) => (x.id === view.id ? { ...x, lastRunAt: Date.now(), ...(shapes ? { shapes } : {}) } : x)))
+    // Columns this file has that the view's table didn't (next year's 2024): the view doesn't know them, said.
+    const fresh = Object.entries(mapping)
+      .map(([from, to]) => {
+        const had = new Set((view.shapes?.[from] ?? []).map((c) => c.toLowerCase()))
+        const extra = had.size ? (meta(to)?.columns.map((c) => c.name).filter((c) => !had.has(c.toLowerCase())) ?? []) : []
+        return extra.length ? ` · new in ${to}, not in the view: ${extra.slice(0, 4).join(', ')}${extra.length > 4 ? ` and ${extra.length - 4} more` : ''}` : ''
+      })
+      .join('')
     // Saved from a table's steps: they come back as chips (each removable), on this month's table.
     const steps = stepsOf(view)
     const s = steps && remapSteps(steps, mapping)
@@ -1525,12 +1542,14 @@ export default function App() {
         const n = stepCount(s.ops)
         const sameName = !!prev && prev.table.toLowerCase() === on.name.toLowerCase()
         const vs = prev && (!sameName || prev.rows !== res.rowCount) ? ` · ${nf.format(res.rowCount)} rows (${sameName ? `${nf.format(prev.rows)} last time` : `${prev.table} had ${nf.format(prev.rows)}`})` : ''
-        say(`Ran “${view.name}” on ${on.name}: ${n} ${n === 1 ? 'step' : 'steps'}, shown above the rows${vs}`)
+        say(`Ran “${view.name}” on ${on.name}: ${n} ${n === 1 ? 'step' : 'steps'}, shown above the rows${vs}${fresh}`)
         void recheck(on.name, s.ops, res, view)
       })
       return
     }
-    void execute(sql, { base: sql, ops: emptyOps() })
+    void execute(sql, { base: sql, ops: emptyOps() }).then((res) => {
+      if (res && fresh) say(`Ran “${view.name}”${fresh}`)
+    })
   }
 
   // For the "your view fits this file" offer, made when a file loads (refs, so loading needn't re-subscribe).
@@ -1741,7 +1760,8 @@ export default function App() {
   const piiHere = !isAnonymized ? hintFor(piiHints) : null
   // A freshly opened table laid out one column per month (quarter, year): offer to turn them into rows.
   // Still offered after the tidy-up suggestions (total lines left out, text converted): they come first.
-  const onlyTidy = !shownOps.filters.length && !shownOps.sort && !shownOps.computed.length && !shownOps.search && !shownOps.dedupe && !shownOps.lookups?.length && !shownOps.hidden?.length
+  // (Empty columns hidden first still leave the months: hiding them is tidying too.)
+  const onlyTidy = !shownOps.filters.length && !shownOps.sort && !shownOps.computed.length && !shownOps.search && !shownOps.dedupe && !shownOps.lookups?.length
   const seriesHere = result && (openName || tableLike.has(base.trim())) && onlyTidy && !result.message ? seriesColumns(result.columns) : null
   const junkHere = !ops.drop?.length ? hintFor(junkHints) : null
   const junkChecking = !ops.drop?.length && !junkHere && junkPending.has(base.trim())

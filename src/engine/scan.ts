@@ -250,9 +250,21 @@ export async function junkRows(result: ResultSet): Promise<DropRows[]> {
       out.push({ label: n(other, 'undated line'), keep: `(NOT has_value(${q}) OR ${looks(q)})`, kind: 'undated' })
     }
   }
+  // Notes in the table, a line each with nothing else on it: "Source: ONS", "[note 3] Figure revised…",
+  // "Notes", a legend, a copyright, QuickBooks' "Accrual Basis …" footer.
+  if (columns.length >= 2) {
+    const one = (ref: (c: ColumnInfo) => string) => `(${columns.map((c) => `has_value(${ref(c)})::INTEGER`).join(' + ')}) = 1`
+    const says = (ref: (c: ColumnInfo) => string) => `regexp_matches(concat_ws(' ', ${columns.map((c) => `${ref(c)}::VARCHAR`).join(', ')}), ${NOTE_LINE}, 'i')`
+    const k = Number((await conn.query(`SELECT count(*) FILTER (WHERE ${one(colRef)} AND ${says(colRef)})::DOUBLE AS n FROM ${result.table}`)).toArray()[0]?.toJSON().n ?? 0)
+    const q = (c: ColumnInfo) => quoteIdent(c.name)
+    if (k && k <= Math.max(20, result.rowCount * 0.2)) out.push({ label: n(k, 'note line'), keep: `NOT (${one(q)} AND ${says(q)})`, kind: 'notes' })
+  }
   if (row.blank) out.push({ label: n(Number(row.blank), 'empty row'), keep: named.blank.keep, kind: 'empty' })
   return out
 }
+
+/** A note's first words: a source, a licence, a footnote ("[note 3]", "1) …", "* …"), a legend, a report's footer. */
+const NOTE_LINE = `'^\\s*(notes?\\b|\\[note|\\[x\\]|sources?\\s*:|©|\\(c\\)\\s|copyright|licen[cs]e|footnotes?\\b|symbols?\\b|zeichenerkl|quelle\\s*:|stand\\s*:|legend\\b|key\\s*:|accrual basis|cash basis|\\*+\\s|\\d{1,2}\\)\\s|(data|figures?|this table|these figures)\\s+(are|is|have|were|was|may|do|does)\\b)'`
 
 /** A date as statements write one (01/04/24, 2024-04-01, 1-Apr-26, 01 Apr 2026, Apr 1, 2026), a time after it or not. */
 const DATE_LIKE = `'^(\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}|\\d{4}[/.-]\\d{1,2}[/.-]\\d{1,2}|\\d{1,2}[ -]?[A-Za-z]{3,9}[ -]?\\d{2,4}|[A-Za-z]{3,9} \\d{1,2},? \\d{4})([ T].*)?$'`
@@ -344,7 +356,7 @@ export async function cleaningFor(result: ResultSet, column: ColumnInfo, locale 
  * "Kabir  Khan"), to tidy: they group and look up as different values.
  */
 export async function textFindings(result: ResultSet, locale = LOCALE): Promise<{ convert: Clean[]; spaces: string[] }> {
-  const cols = result.columns.filter((c) => isTextColumn(c.type)).slice(0, 40)
+  const cols = result.columns.filter((c) => isTextColumn(c.type)).slice(0, 120)
   if (!result.table || !cols.length) return { convert: [], spaces: [] }
   const { conn } = await getEngine()
   // Ten columns a query: each column's counts are a few KB of SQL, and a wide table's in one would run the

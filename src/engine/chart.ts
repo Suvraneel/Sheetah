@@ -1,5 +1,5 @@
 import { getEngine, quoteIdent } from './db'
-import { LOCALE, isTemporal } from './sql'
+import { LOCALE, isTemporal, nameKey } from './sql'
 import { colRef, splitStatements, type ColumnInfo, type ResultSet } from './result'
 
 /*
@@ -57,19 +57,25 @@ export const timeExpr = (c: ColumnInfo, ref = quoteIdent(c.name)) => (isZoned(c)
 export const TOP_N = 20
 const BINS = 20
 
-/** Columns that make a sensible x-axis: anything that isn't a plain number. */
-export const xCandidates = (cols: ColumnInfo[]) => cols.filter((c) => !c.numeric && !/\[\]$|^(STRUCT|MAP|BLOB|UNION)/i.test(c.type))
+/** A column of years by its name (year, FY, Year of sale): a time axis, whether it holds numbers or text. */
+export const yearName = (c: { name: string }) => /(^|_)(year|years|yr|yyyy|fy|fiscal_year|financial_year)(_|$)/.test(nameKey(c.name))
+/** Columns that make a sensible x-axis: anything that isn't a plain number (a year is one). */
+export const xCandidates = (cols: ColumnInfo[]) => cols.filter((c) => (!c.numeric || yearName(c)) && !/\[\]$|^(STRUCT|MAP|BLOB|UNION)/i.test(c.type))
 
 /** A reasonable first chart for a result, or null if nothing is chartable. */
 export function defaultSpec(cols: ColumnInfo[]): ChartSpec | null {
   const xs = xCandidates(cols)
-  const measures = cols.filter((c) => c.numeric && !/^(id|.*_id|year|month|day)$/i.test(c.name))
+  const measures = cols.filter((c) => c.numeric && !/^(id|.*_id|year|month|day)$/i.test(c.name) && !yearName(c))
+  // A rate or a share summed means nothing (a sum of rates per 1,000): the amounts first.
+  const rate = (c: ColumnInfo) => /%|(^|_)(rate|ratio|pct|percent|percentage|share|per|avg|average|mean|median)(_|$)/i.test(`${c.name.includes('%') ? '%' : ''}${nameKey(c.name)}`)
+  const sums = measures.filter((c) => !rate(c))
   const y =
-    ['total', 'amount', 'revenue', 'sales', 'value', 'price', 'cost'].map((w) => measures.find((c) => c.name.toLowerCase().includes(w))).find(Boolean) ??
-    measures.find((c) => /^(DOUBLE|FLOAT|REAL|DECIMAL)/i.test(c.type)) ??
+    ['total', 'amount', 'revenue', 'sales', 'value', 'price', 'cost'].map((w) => sums.find((c) => c.name.toLowerCase().includes(w))).find(Boolean) ??
+    sums.find((c) => /^(DOUBLE|FLOAT|REAL|DECIMAL)/i.test(c.type)) ??
+    sums[0] ??
     measures[0] ??
-    cols.find((c) => c.numeric)
-  const x = xs.find(isTemporal) ?? xs[0]
+    cols.find((c) => c.numeric && !yearName(c))
+  const x = xs.find(isTemporal) ?? xs.find(yearName) ?? xs[0]
   if (x) return { x: x.name, y: y?.name ?? null, agg: y ? 'sum' : 'count' }
   if (y) return { x: y.name, y: null, agg: 'count' } // all numeric: show a distribution
   return null
@@ -129,6 +135,29 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
     const c = result.columns.find((k) => k.name === name)
     return c ? colRef(c) : quoteIdent(name)
   })
+
+  // Years (2015 … 2023, numbers or text, as an unpivot leaves them): a line over time, every year on it, not a
+  // histogram of the numbers or the top 20 of them as categories.
+  const yearly =
+    yearName(col) &&
+    !!(
+      await rows(
+        `SELECT bool_and(regexp_full_match(trim(${xr}::VARCHAR), '(1[89]|2[0-2])[0-9]{2}')) AS ok FROM ${result.table} WHERE ${xr} IS NOT NULL AND trim(${xr}::VARCHAR) <> ''`,
+      )
+    )[0]?.ok
+  if (yearly) {
+    const label = (e: string) => `make_date(trim(${e}::VARCHAR)::INTEGER, 1, 1)::VARCHAR`
+    const nonEmpty = (e: string) => `${e} IS NOT NULL AND trim(${e}::VARCHAR) <> ''`
+    const data = await rows(`SELECT ${label(xr)} AS __x, ${vr}::DOUBLE AS __v FROM ${result.table} WHERE ${nonEmpty(xr)} GROUP BY 1 ORDER BY 1 LIMIT 5000`)
+    return {
+      kind: 'line',
+      bucket: 'year',
+      points: data.map((r) => ({ label: String(r.__x), value: Number(r.__v) })),
+      groups: data.length,
+      title: `${measureLabel(spec)} by ${col.name}`,
+      sql: `${sourceCte(result)}SELECT trim(${x}::VARCHAR)::INTEGER AS ${x}, ${value}::DOUBLE AS value FROM q WHERE ${nonEmpty(x)} GROUP BY 1 ORDER BY 1`,
+    }
+  }
 
   if (col.numeric) {
     const h = await histogram(result.table, col)

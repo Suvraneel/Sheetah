@@ -283,6 +283,34 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   says to tap for exact values.
 
 ### Fixed
+- **Open data, as statistics offices publish it** (ONS, Destatis, Eurostat, the Census):
+  - A note below the table written with another separator ("Source: ONS | Licence: OGL v3", a legend with
+    semicolons) made the file reader take it for the header: no rows, or every line one column. The file is read
+    by its own columns, and notes in the table (*Source:*, *[note 3] …*, *©*, a legend) are offered for leaving out.
+  - Figures with notes on them (*92,338[note 3]*, *108,021 (p)*, *56\**) and thousands grouped by spaces (*1 234 567*)
+    became empty; they're read as the figures they are. Placeholders for no figure (*x*, *..*, *:*, *-*, *c*) become
+    empty in the one-click conversion, and the column menu says how many.
+  - One suppressed "x" on line 350,003 stopped a file opening: that column is read as text (said), nothing lost.
+  - Codes with zeros in front only further down a big file (ZIP 00020, FIPS 01001 after 56001) lost them: read as
+    text, said so.
+  - A browser that writes decimal commas read a UK file's *194,661* as 194.661 in one click (1000× too small), and
+    an English one a German *1.500* as 1.5: values in groups of three that only the browser's habit reads as decimals
+    are said, and left out of the one-click conversion.
+  - Years with notes (*2023 [note 3]*) are part of the series to turn into rows, named without the notes; years
+    chart as a line over time (not a histogram, or the top 20 of them); a rate isn't summed by default.
+  - Hiding an empty column no longer takes away *Turn N year columns into rows*; *CSV* writes 224918, not 224918.0,
+    and leaves a lone "-" alone.
+  - A saved view with *Use row 4 as column names* runs on next year's release (its columns are taken by position,
+    not by the title the file gave them), and running a view says which columns the new file has that the view
+    doesn't (*new in mye_2024, not in the view: 2024*).
+  - A Census file's NAME column of counties isn't flagged as people's names.
+- **Security**: a script could define a macro named for a built-in (*sha256* as md5, *lower*) or for one of Sheetah's
+  own, so Anonymize's pseudonyms or masks quietly stopped protecting anything while their SQL read the same. Such a
+  macro is removed straight away (and said), Sheetah's own are put back, and pseudonym() calls the built-ins by their
+  catalog name. *CSV* (safe for Excel) now also quotes a column name that would start a formula and every column
+  that isn't a number, date or true/false (a union, a list); cells copied from the grid are pasted the same way.
+  Query history is kept on the computer only when *Remember queries in this browser* is ticked (history kept before
+  stays). Community extensions and persistent secrets are switched off before the engine is sealed.
 - **Decimal commas read 1000× too big**: a column of 1,500 and 0,750 (kilograms) beside a price of 2,49 was read as
   thousands. A value only a decimal comma explains (0,750; 1,2345) settles a column, and a column that can't tell
   is read the way the file's other columns of amounts write decimals (not codes: "1001,1002" in a cell), before

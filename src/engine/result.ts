@@ -1,6 +1,6 @@
 import { DataType, type Table } from 'apache-arrow'
-import { CancelledError, RESULTS_SCHEMA, ensureExtension, getEngine, isCancel, quoteIdent, quoteLiteral, restorePseudonym, sandboxPath, sendAll, withRunLock } from './db'
-import { isNumericType, splitStatements } from './sql'
+import { CancelledError, RESULTS_SCHEMA, ensureExtension, getEngine, isCancel, quoteIdent, quoteLiteral, restorePseudonym, sandboxPath, sendAll, unshadow, withRunLock } from './db'
+import { isNumericType, pasteSafe, splitStatements } from './sql'
 
 export { CancelledError, cancelRunning } from './db'
 export { splitStatements } from './sql'
@@ -115,7 +115,22 @@ export function runSql(sql: string, opts: { isCurrent?: () => boolean } = {}): P
   return withRunLock(async () => {
     // Queued behind a file load or another query and superseded meanwhile: don't run it at all.
     if (opts.isCurrent && !opts.isCurrent()) throw new CancelledError()
-    return runLocked(sql)
+    if (!/\b(MACRO|FUNCTION)\b/i.test(sql)) return runLocked(sql)
+    // A script that makes macros: none may stand in for a built-in or for Sheetah's own (see unshadow).
+    let res: ResultSet | undefined
+    let failed: unknown
+    try {
+      res = await runLocked(sql)
+    } catch (e) {
+      failed = e
+    }
+    const names = await unshadow(sql).catch(() => [] as string[])
+    if (names.length)
+      throw new Error(
+        `Sheetah doesn’t let a macro take the name of ${names.length === 1 ? 'a built-in function or one of its own' : 'built-in functions or its own'} (${names.join(', ')}): it would quietly change what Anonymize and the clean-up steps compute. ${names.length === 1 ? 'It was' : 'They were'} removed.`,
+      )
+    if (failed !== undefined) throw failed
+    return res!
   }, 'query')
 }
 
@@ -295,14 +310,18 @@ export async function exportResult(result: ResultSet, format: 'csv' | 'parquet',
   const cols = result.columns
     .map((c) => {
       const ref = colRef(c)
-      const out = quoteIdent(c.name)
-      if (safe && /^(VARCHAR|ENUM|JSON)/i.test(c.type)) {
+      // A column name that would start a formula is text too (a hostile file's =HYPERLINK(…) header).
+      const out = quoteIdent(safe ? pasteSafe(c.name) : c.name)
+      // Everything that isn't a number, a date or true/false is written as text, and checked as text: a
+      // UNION, a list, a type of the user's own all print as anything.
+      if (safe && !c.numeric && !/^(DATE|TIME|TIMESTAMP|INTERVAL|BOOLEAN)/i.test(c.type)) {
         const v = `${ref}::VARCHAR`
-        // A plain negative (−12.50, −1,200): not a phone number written +91…, which Excel would turn into 9.19877E+11.
-        return `CASE WHEN regexp_matches(${v}, ${FORMULA_START}) AND NOT regexp_full_match(${v}, '-([0-9]{1,3}(,[0-9]{3})+|[0-9]{1,15})(\\.[0-9]+)?') THEN '''' || ${v} ELSE ${v} END AS ${out}`
+        // A plain negative (−12.50, −1,200) or a lone dash: not a phone number written +91…, which Excel would turn into 9.19877E+11.
+        return `CASE WHEN regexp_matches(${v}, ${FORMULA_START}) AND NOT regexp_full_match(${v}, '-([0-9]{1,3}(,[0-9]{3})+|[0-9]{1,15})(\\.[0-9]+)?|[-+]') THEN '''' || ${v} ELSE ${v} END AS ${out}`
       }
       if (safe && /^(DOUBLE|FLOAT|REAL)$/i.test(c.type)) {
-        return `CASE WHEN ${ref} = 0 OR NOT isfinite(${ref}) THEN ${ref} ELSE round(${ref}, 14 - floor(log10(abs(${ref})))::INTEGER) END AS ${out}`
+        // Whole numbers as whole numbers (224918, not 224918.0).
+        return `CASE WHEN NOT isfinite(${ref}) THEN ${ref}::VARCHAR WHEN ${ref} = trunc(${ref}) AND abs(${ref}) < 1e15 THEN ${ref}::BIGINT::VARCHAR ELSE round(${ref}, 14 - floor(log10(abs(${ref})))::INTEGER)::VARCHAR END AS ${out}`
       }
       return ref === out ? ref : `${ref} AS ${out}`
     })

@@ -103,12 +103,18 @@ test.describe('saved views and local data', () => {
     await other.context().close()
   })
 
-  test('history can be switched off and everything can be wiped', async ({ page }) => {
+  test('history is kept only when asked, can be switched off, and everything can be wiped', async ({ page }) => {
     await openApp(page)
     await openFiles(page, fixture('sales_oct.csv'))
+    await runSql(page, "SELECT * FROM sales_oct WHERE region = 'East'")
+    await expect(page.locator('.result-meta')).toBeVisible()
+    // Queries can hold names and numbers: in this tab's history, not on the computer, until asked.
+    await page.locator('.side-tabs button', { hasText: 'History' }).click()
+    await expect(page.locator('.side-history').first()).toContainText('East')
+    expect(await page.evaluate(() => localStorage.getItem('sheetah:history'))).toBeNull()
+    await page.locator('.history-controls input').check()
     await runSql(page, "SELECT * FROM sales_oct WHERE region = 'North'")
     await expect(page.locator('.result-meta')).toBeVisible()
-    await page.locator('.side-tabs button', { hasText: 'History' }).click()
     expect(await page.evaluate(() => localStorage.getItem('sheetah:history'))).toContain('North')
 
     await page.locator('.history-controls input').uncheck()

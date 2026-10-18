@@ -48,3 +48,15 @@ test('the column profile shows a histogram for numeric columns', async ({ page }
   await expect(page.locator('.colmenu-hist')).toBeVisible()
   await expect(page.locator('.colmenu-hist .chart-mark')).toHaveCount(5) // one bar per value 1..5
 })
+
+test('years (as an unpivot leaves them, text) chart as a line over time; a rate isn’t summed by default', async ({ page }) => {
+  await openDemo(page)
+  await runSql(page, "SELECT * FROM (VALUES ('2015', 10.0, 1.5), ('2016', 12.0, 1.7), ('2018', 9.0, 1.2), ('2017', 11.0, 1.1)) t(year, value, rate_per_1000)")
+  await expect(page.locator('.result-meta')).toContainText('4 rows')
+  await page.getByRole('button', { name: 'Chart', exact: true }).click()
+  const caption = page.locator('.chart-figure figcaption')
+  await expect(caption).toContainText('Sum of value by year')
+  // Every year, in order, as a line (not the top 20 of them as bars).
+  await expect(page.getByRole('img', { name: /Sum of value by year/ })).toBeVisible()
+  await expect(caption).not.toContainText('Top')
+})

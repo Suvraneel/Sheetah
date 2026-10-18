@@ -1,4 +1,4 @@
-import { numberText, textOf } from './clean'
+import { textOf } from './clean'
 import { commentText, isIdLike, isNumericType, quoteIdent, quoteLiteral, sqlName } from './sql'
 import type { TableColumns } from './compare-sql'
 
@@ -61,7 +61,7 @@ function modeOf(c: { name: string; types: Set<string> }, forced: Set<string>): '
   return c.types.size > 1 && ![...c.types].every(isNumericType) && ![...c.types].every(isTime) ? 'text' : 'as-is'
 }
 /** A text value read as a number, the way people write them (1,234.50, (250), ₹99): empty if it isn't one. */
-const asNumber = (ref: string) => `TRY_CAST(${numberText(textOf(ref), false)} AS DOUBLE)`
+const asNumber = (ref: string) => `number_from_text(${ref})`
 
 /** A name for the source column that no table already uses: "source", then "source_table", … */
 export function sourceName(tables: TableColumns[]): string {

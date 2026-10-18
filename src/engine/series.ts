@@ -14,8 +14,12 @@ const YEAR = /^(fy[\s\-_']*)?(19|20)\d{2}([-/](\d{2}|\d{4}))?$/
 /** Indian financial years: 2023-24, 2008-09 (not September 2008). */
 const FINANCIAL_YEAR = /^(fy[\s\-_']*)?((19|20)\d{2})[-/](\d{2})$/
 
+/** A period's column name without a statistics office's marks: "2023 [note 3]", "2022 (p)", "2021*" → 2023, 2022, 2021. */
+export const periodName = (name: string) =>
+  name.replace(/\s*(\[[^\]]{1,30}\]|\((p|r|e|f|est|prov|provisional|revised|estimated?)\)|\*+)\s*/gi, ' ').trim()
+
 function kindOf(name: string): SeriesKind | null {
-  const n = name.trim().toLowerCase()
+  const n = periodName(name).toLowerCase()
   const fy = FINANCIAL_YEAR.exec(n)
   if (fy && Number(fy[4]) === (Number(fy[2]) + 1) % 100) return 'year'
   if (MONTH.test(n) || YEAR_MONTH.test(n)) return 'month'

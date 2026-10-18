@@ -173,7 +173,7 @@ Canvas grid ◀── 200-row chunks ── SELECT cols::VARCHAR FROM __result W
 | Random jumps, 10M rows | 16.7 ms median frame |
 | Export 2M rows to CSV | 61 MB file, a few seconds |
 | Import a 100,000-row .xlsx (2.9 MB) | ~2.4 s, types preserved |
-| JavaScript before first paint | 186 KB gzip, everything `index.html` loads and preloads (CI budget 190 KB); the engine (WASM), the editor, dialogs, the column menu, charts, error explanations and file sniffing load after |
+| JavaScript before first paint | 170 KB gzip, every script `index.html` loads and preloads (CI budget 180 KB; the 19 KB stylesheet is budgeted on its own); the engine (WASM), the editor, dialogs, the column menu, charts, error explanations and file sniffing load after |
 
 ## Testing
 

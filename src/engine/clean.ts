@@ -62,16 +62,22 @@ export const textOf = (ref: string) => `trim(${ref}::VARCHAR)`
 /**
  * A number written the way people write them, as SQL text DuckDB can cast. Currency signs go, "(250)"
  * means −250, and separators must be where a thousands separator can be (groups of three): otherwise
- * the value is left unreadable, so "12,5" can't turn into 125. Spaces inside are kept unless commas mark
- * decimals (1 234,56), so a phone number like "98200 12345" isn't mistaken for one.
+ * the value is left unreadable, so "12,5" can't turn into 125. Spaces inside go when they group threes
+ * (1 234 567; any, when commas mark decimals: 1 234,56), so a phone number like "98200 12345" isn't
+ * mistaken for one. A statistics office's marks after a figure go too: 1,234[note 3], 108,021 (p), 56*.
  */
 export function numberText(t: string, comma: boolean, drcr = false): string {
   // "50,000.00 Cr" / "1,200.00 Dr": a bank statement's credit and debit, plus and minus. Only when asked
   // for: on its own, "₹12 Cr" is twelve crore.
   const debit = drcr ? `regexp_matches(${t}, '[0-9)]\\s*[dD][rR]\\.?$')` : 'false'
-  const unmarked = drcr ? `regexp_replace(${t}, '([0-9)])\\s*([cC][rR]|[dD][rR])\\.?$', '\\1')` : t
+  const crdr = drcr ? `regexp_replace(${t}, '([0-9)])\\s*([cC][rR]|[dD][rR])\\.?$', '\\1')` : t
+  // Footnote marks and flags: [note 3], [x], (p) provisional, (r) revised, (e) estimated, a trailing *.
+  const unmarked = `regexp_replace(${crdr}, '\\s*(\\[[^\\]]{1,20}\\]|\\((p|r|e|f|est|prov|provisional|revised|estimated?)\\)|\\*+)\\s*$', '', 'i')`
   const noCurrency = `regexp_replace(${unmarked}, '[₹$€£¥${comma ? '\\s\u00a0\u202f' : ''}]', '', 'g')`
-  const negative = `regexp_replace(trim(${noCurrency}), '^\\(\\s*(.*?)\\s*\\)$', '-\\1')`
+  const grouped = comma
+    ? noCurrency
+    : `CASE WHEN regexp_full_match(trim(${noCurrency}), '[-+(]?[0-9]{1,3}([ \u00a0\u202f][0-9]{3})+(\\.[0-9]+)?\\)?') THEN regexp_replace(${noCurrency}, '[ \u00a0\u202f]', '', 'g') ELSE ${noCurrency} END`
+  const negative = `regexp_replace(trim(${grouped}), '^\\(\\s*(.*?)\\s*\\)$', '-\\1')`
   // A separator followed by anything but three digits isn't a thousands separator (two are allowed
   // before another comma: Indian grouping, 1,00,000).
   const badGroup = comma ? `'\\.([0-9]{0,2}([^0-9]|$)|[0-9]{4})'` : `',([0-9]?([^0-9]|$)|[0-9]{2}([^0-9,]|$)|[0-9]{4})'`
@@ -248,7 +254,7 @@ export interface DropRows {
   /** The tie-out: whether their numbers come to the rows kept (sub-totals, a grand total), column by column. */
   checked?: TieOut
   /** What these rows are: total lines (the ones a tie-out adds up), a statement's balance lines, empty rows. */
-  kind?: 'totals' | 'balance' | 'undated' | 'empty'
+  kind?: 'totals' | 'balance' | 'undated' | 'notes' | 'empty'
 }
 
 export interface TieOut {

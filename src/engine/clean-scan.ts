@@ -3,7 +3,7 @@
  * numbers or dates stored as text and how sure that is, total lines and empty rows, groups to fill down,
  * and the tie-out of total lines against the rows they total.
  */
-import { DATE_FORMATS, isConversion, numberText, textOf, type Clean, type TieOut } from './clean'
+import { DATE_FORMATS, isConversion, textOf, type Clean, type TieOut } from './clean'
 import { isIdLike, LOCALE, nameKey, quoteLiteral } from './sql'
 
 /** A running balance's name ("Closing Balance", "Bal"), as statement.ts reads one. */
@@ -145,7 +145,7 @@ export function confidentConversion(suggestions: CleanSuggestion[]): Clean | nul
   // reader does (the column menu has the other).
   const swap = (f = '') => f.replace(/%d|%m/g, (x) => (x === '%d' ? '%m' : '%d'))
   if (convert.length === 2 && convert.every((s) => s.clean.kind === 'date') && convert[0].clean.format === swap(convert[1].clean.format)) convert = [convert[0]]
-  if (convert.length !== 1 || convert[0].note || CODE_NAME.test(nameKey(convert[0].clean.column))) return null
+  if (convert.length !== 1 || (convert[0].note && !convert[0].quiet) || CODE_NAME.test(nameKey(convert[0].clean.column))) return null
   return convert[0].clean
 }
 
@@ -158,6 +158,11 @@ export interface CleanStats {
   /** Values only one of the readings can explain (12.5 / 12,5). */
   pointOnly: number
   commaOnly: number
+  /** Values in groups of three either way could be thousands or decimals (1,234 / 1.234). */
+  ambComma?: number
+  ambPoint?: number
+  /** Placeholders for a figure that isn't there: x, .., :, -, c (suppressed), n/a. */
+  placeholders?: number
   percents: number
   commaPercents: number
   /** Values that parse with each of DATE_FORMATS, in order. */
@@ -191,18 +196,25 @@ function decimalItems(ref: string, p: string): string[] {
   ]
 }
 
+/** What statistics offices and spreadsheets write where there's no figure: x, .., :, -, c, z, n/a, [x]. */
+const PLACEHOLDER = `'(x|\\.\\.?|:|-|–|—|c|z|u|n|s|n/?a|nil|none|null|\\*|\\?|\\[[a-z]\\]|\\([a-z]\\)|tbc|tba)'`
+
 /** The counts for one column (refs are SQL for the column), as select-list items prefixed `p`. */
 function statsItems(ref: string, p: string): string[] {
   const v = textOf(ref)
-  const parses = (expr: string) => `count(TRY_CAST(${expr} AS DOUBLE))::DOUBLE`
-  const pct = `rtrim(${v}, '%')`
+  // The clean-up steps' own macros (number_from_text…): what a conversion would do, and short SQL however
+  // many columns are counted.
+  const parses = (expr: string) => `count(${expr})::DOUBLE`
   return [
     `count(nullif(${v}, ''))::DOUBLE AS ${p}values`,
-    `${parses(numberText(v, false))} AS ${p}numbers`,
-    `${parses(numberText(v, true))} AS ${p}comma_numbers`,
+    `${parses(`number_from_text(${ref})`)} AS ${p}numbers`,
+    `${parses(`number_from_text_comma(${ref})`)} AS ${p}comma_numbers`,
     ...decimalItems(ref, p),
-    `count(*) FILTER (WHERE ${v} LIKE '%\\%' ESCAPE '\\' AND TRY_CAST(${numberText(pct, false)} AS DOUBLE) IS NOT NULL)::DOUBLE AS ${p}percents`,
-    `count(*) FILTER (WHERE ${v} LIKE '%\\%' ESCAPE '\\' AND TRY_CAST(${numberText(pct, true)} AS DOUBLE) IS NOT NULL)::DOUBLE AS ${p}comma_percents`,
+    `count(*) FILTER (WHERE regexp_full_match(regexp_replace(${v}, '[₹$€£¥\\s]', '', 'g'), '[-+(]?[0-9]{1,3}(,[0-9]{3})+\\)?'))::DOUBLE AS ${p}amb_comma`,
+    `count(*) FILTER (WHERE regexp_full_match(lower(${v}), ${PLACEHOLDER}))::DOUBLE AS ${p}placeholders`,
+    `count(*) FILTER (WHERE regexp_full_match(regexp_replace(${v}, '[₹$€£¥\\s]', '', 'g'), '[-+(]?[0-9]{1,3}(\\.[0-9]{3})+\\)?'))::DOUBLE AS ${p}amb_point`,
+    `count(*) FILTER (WHERE ${v} LIKE '%\\%' ESCAPE '\\' AND percent_from_text(${ref}) IS NOT NULL)::DOUBLE AS ${p}percents`,
+    `count(*) FILTER (WHERE ${v} LIKE '%\\%' ESCAPE '\\' AND percent_from_text_comma(${ref}) IS NOT NULL)::DOUBLE AS ${p}comma_percents`,
     ...DATE_FORMATS.map((f, i) => {
       const hit = `try_strptime(${v}, ${quoteLiteral(f.format)}) IS NOT NULL`
       return `count(*) FILTER (WHERE ${hit}${f.format.includes('%Y') ? ` AND regexp_matches(${v}, '[0-9]{4}')` : ''})::DOUBLE AS ${p}d${i}`
@@ -211,7 +223,7 @@ function statsItems(ref: string, p: string): string[] {
     `count(*) FILTER (WHERE ${ref} IS NOT NULL AND ${v} = '')::DOUBLE AS ${p}blanks`,
     // 007, 0456: codes, not quantities (converting would drop the zeros).
     `count(*) FILTER (WHERE regexp_full_match(${v}, '0[0-9]+'))::DOUBLE AS ${p}zeros`,
-    `${parses(numberText(v, false, true))} AS ${p}drcr_numbers`,
+    `${parses(`number_from_cr_dr(${ref})`)} AS ${p}drcr_numbers`,
     `count(*) FILTER (WHERE regexp_matches(${v}, '[0-9)]\\s*[dD][rR]\\.?$'))::DOUBLE AS ${p}debits`,
   ]
 }
@@ -231,8 +243,8 @@ export function decimalsSql(table: string, refs: string[], sampleRows = 5000): s
     const v = textOf(ref)
     return [
       `count(nullif(${v}, ''))::DOUBLE AS c${i}_values`,
-      `count(TRY_CAST(${numberText(v, false)} AS DOUBLE))::DOUBLE AS c${i}_numbers`,
-      `count(TRY_CAST(${numberText(v, true)} AS DOUBLE))::DOUBLE AS c${i}_comma_numbers`,
+      `count(number_from_text(${ref}))::DOUBLE AS c${i}_numbers`,
+      `count(number_from_text_comma(${ref}))::DOUBLE AS c${i}_comma_numbers`,
       ...decimalItems(ref, `c${i}_`),
     ]
   })
@@ -260,6 +272,9 @@ export function readStats(row: Record<string, unknown>, i = 0): CleanStats {
     commaNumbers: n('comma_numbers'),
     pointOnly: n('point_only'),
     commaOnly: n('comma_only'),
+    ambComma: n('amb_comma'),
+    placeholders: n('placeholders'),
+    ambPoint: n('amb_point'),
     percents: n('percents'),
     commaPercents: n('comma_percents'),
     dates: DATE_FORMATS.map((_, j) => n(`d${j}`)),
@@ -276,6 +291,8 @@ export interface CleanSuggestion {
   label: string
   /** e.g. "3 of 40 sampled values aren't numbers and become empty" */
   note?: string
+  /** The note is for information (placeholders that become empty, as they mean): still a one-click conversion. */
+  quiet?: boolean
 }
 
 const MOST = 0.9
@@ -313,18 +330,30 @@ export function suggestCleaning(column: string, s: CleanStats, locale = 'en-IN',
   const sampled = (n: number, one: string, many: string) => `${nf(n)}${whole ? '' : ` of ${nf(s.values)}`} ${n === 1 && whole ? 'value' : 'values'}${of} ${n === 1 ? one : many}`
   const comma = s.commaOnly > 0 && s.pointOnly === 0 ? true : s.pointOnly > 0 ? false : (fileComma ?? usesDecimalComma(locale))
   const mixed = s.commaOnly > 0 && s.pointOnly > 0
+  // Nothing in the file said, and this browser's way reads the groups of three as decimals: 194,661 in a
+  // German browser, 1.500 in an English one. Said, and never in the one-click conversion (1000× off if wrong).
+  const byHabit = s.commaOnly === 0 && s.pointOnly === 0 && fileComma === undefined
+  const amb = byHabit ? (comma ? (s.ambComma ?? 0) : (s.ambPoint ?? 0)) : 0
+  const guessed = amb
+    ? `${nf(amb)} ${amb === 1 ? 'value is' : 'values are'} written like ${comma ? '1,234' : '1.234'}: read with a decimal ${comma ? 'comma' : 'point'} (1 and 234 thousandths), as this browser writes numbers, not as 1234. Check that’s what the file means`
+    : undefined
   const numbers = comma ? s.commaNumbers : s.numbers
   const percents = comma ? s.commaPercents : s.percents
   const sep = comma ? ' (decimal comma)' : ''
+  // Placeholders count as numbers to come (they become empty, as they mean): "x" for a suppressed figure.
+  const known = s.placeholders ?? 0
+  const lostOnlyPlaceholders = (ok: number) => known > 0 && s.values - ok <= known && ok > 0
+  const placeholderNote = `${nf(known)} ${known === 1 ? 'value is a placeholder' : 'values are placeholders'} for no figure (x, .., :, -) and ${known === 1 ? 'becomes' : 'become'} empty`
   if (percents / s.values >= MOST) {
     out.push({ clean: { column, kind: 'percent', comma }, label: `Convert to number (12% → 0.12)${sep}`, note: lost(percents, 'percentages') })
-  } else if (numbers / s.values >= MOST) {
+  } else if (numbers / s.values >= MOST || ((numbers + known) / s.values >= MOST && lostOnlyPlaceholders(numbers))) {
+    const quiet = !s.zeros && !mixed && !guessed && lostOnlyPlaceholders(numbers)
     const note = s.zeros
       ? `${sampled(s.zeros, 'starts', 'start')} with 0 (like a code): the zeros would be dropped`
       : mixed
         ? 'Some values use a decimal point and others a decimal comma: check the result'
-        : lost(numbers, 'numbers')
-    out.push({ clean: { column, kind: 'number', comma }, label: `Convert to number${sep}`, note })
+        : (guessed ?? (quiet ? placeholderNote : lost(numbers, 'numbers')))
+    out.push({ clean: { column, kind: 'number', comma }, label: `Convert to number${sep}`, note, ...(quiet ? { quiet } : {}) })
   } else if ((s.debits > 0 && s.drcrNumbers / s.values >= SOME) || (balanceName(column) && s.drcrNumbers / s.values >= MOST)) {
     // A bank statement's balances: "50,000.00 Cr", "1,200.00 Dr". Some Dr, or a column named for a balance:
     // so Cr isn't crore here (a balance in credit all month is all Cr).

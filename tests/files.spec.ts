@@ -103,6 +103,11 @@ test.describe('opening and exporting files', () => {
     dl = await exportAs(page, 'CSV')
     // (A phone number written +91… stays text: Excel would make a number of it.)
     expect(readFileSync((await dl.path())!, 'utf8')).toBe("\ufeffrefund,note,total,phone\n-12.50,£12.50 René,0.3,'+919876543210\n")
+    // A hostile column name, and a type that prints as anything (a union): text all the same.
+    await runSql(page, `SELECT 'safe' AS "=1+1", union_value(t := '=7+7') AS u, '-' AS dash`)
+    await expect(page.locator('.result-meta')).toContainText('1 row')
+    dl = await exportAs(page, 'CSV')
+    expect(readFileSync((await dl.path())!, 'utf8')).toBe("\ufeff'=1+1,u,dash\nsafe,'=7+7,-\n")
   })
 
   test('Excel export keeps numbers, dates and text apart, and never turns text into formulas', async ({ page }) => {
@@ -291,6 +296,47 @@ test.describe('a report with title lines above its table', () => {
     await page.locator('input[type=file]').setInputFiles([buf('qb_four.csv', `${lines.join('\r\n')}\n`)])
     await expect(page.locator('.result-meta')).toContainText('17 rows')
     await expect(page.getByRole('button', { name: /^Leave out 5 total lines/ })).toBeVisible()
+  })
+})
+
+test.describe('open data, as statistics offices publish it', () => {
+  test.use({ locale: 'en-GB', timezoneId: 'Europe/London' })
+
+  test('a note below the table in another separator doesn’t take over the columns; it’s offered for leaving out', async ({ page }) => {
+    await openApp(page)
+    const lines = ['area_code,area,2021,2022,2023']
+    for (let i = 0; i < 20; i++) lines.push(`E0${6000000 + i},Area ${i},${1000 + i},${1100 + i},${1200 + i}`)
+    lines.push('Source: ONS | Licence: OGL v3')
+    await page.locator('input[type=file]').setInputFiles([buf('mye_la_2023.csv', `${lines.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('21 rows · 5 columns')
+    await expect(page.locator('.toast', { hasText: 'don’t fit its columns' })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Leave out 1 note line/ })).toBeVisible()
+  })
+
+  test('figures with notes on them ([note 3], (p)) and placeholders (x, ..) convert in one click, placeholders empty', async ({ page }) => {
+    await openApp(page)
+    const csv = ['area,2022,2023', 'A,"92,338[note 3]","1,000"', 'B,x,"108,021 (p)"', 'C,..,"2,500"', 'D,"1,500",x']
+    await page.locator('input[type=file]').setInputFiles([buf('ons.csv', `${csv.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('4 rows')
+    await page.getByRole('button', { name: /^Convert 2 text columns to numbers/ }).click()
+    await expect(page.locator('.side-type', { hasText: 'number (converted)' }).first()).toBeVisible()
+    const row = (i: number) => page.locator('.sr-grid [role=row]').nth(i)
+    await expect(row(1)).toContainText('92,338') // the note mark gone, the figure kept
+    await expect(row(2)).toContainText('108,021')
+    await expect(row(2)).not.toContainText('x') // a suppressed figure is empty, never 0
+  })
+
+  test('a suppressed figure far down doesn’t stop the file opening; codes with zeros further down stay codes', async ({ page }) => {
+    await openApp(page)
+    const lines = ['area_code,population']
+    for (let i = 0; i < 30_000; i++) lines.push(`${56001 + i},${1000 + i}`)
+    lines.push('01001,x')
+    await page.locator('input[type=file]').setInputFiles([buf('pop_long.csv', `${lines.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('30,001 rows')
+    await expect(page.locator('.toast', { hasText: 'read as text, so nothing is lost' })).toBeVisible()
+    await expect(page.locator('.toast', { hasText: 'area_code in pop_long.csv is a code' })).toBeVisible()
+    await runSql(page, "SELECT count(*) FILTER (WHERE area_code = '01001') AS zeros_kept, typeof(any_value(population)) AS t FROM pop_long")
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('1VARCHAR')
   })
 })
 

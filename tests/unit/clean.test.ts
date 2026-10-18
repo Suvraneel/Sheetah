@@ -21,6 +21,11 @@ test.describe('clean a column (run on DuckDB)', () => {
   test('numbers stored as text: currency, separators, Indian grouping, accounting negatives', async () => {
     expect(await clean({ kind: 'number' }, ['₹ 1,234.50', '$99', ' 12 ', '1,00,000', '(1,200)', 'n/a', null])).toEqual(['1234.5', '99.0', '12.0', '100000.0', '-1200.0', null, null])
     expect(await clean({ kind: 'percent' }, ['12%', '7.5 %'])).toEqual(['0.12', '0.075'])
+    // A statistics office's figures: marks after them, thousands grouped by spaces; placeholders stay empty.
+    expect(await clean({ kind: 'number' }, ['92,338[note 3]', '108,021 (p)', '56*', '1 234 567', '55 259 929.5', 'x', '..', '[x]', '98200 12345'])).toEqual([
+      '92338.0', '108021.0', '56.0', '1234567.0', '55259929.5', null, null, null, null,
+    ])
+    expect(await clean({ kind: 'number', comma: true }, ['1 234,5 (r)', '718.420[note 1]'])).toEqual(['1234.5', '718420.0'])
   })
 
   test('a separator in the wrong place is never read as a thousands separator', async () => {
@@ -53,7 +58,7 @@ test.describe('clean a column (run on DuckDB)', () => {
 
   test('suggestions follow the data', async () => {
     expect((await suggestionsFor(['₹1,200', '₹950', '₹3,400'])).map((s) => s.label)).toEqual(['Convert to number'])
-    expect((await suggestionsFor(['12.5', '3', 'x', '4', '5', '6', '7', '8', '9', '10']))[0]).toMatchObject({ label: 'Convert to number', note: expect.stringContaining('1 of 10') })
+    expect((await suggestionsFor(['12.5', '3', 'pending', '4', '5', '6', '7', '8', '9', '10']))[0]).toMatchObject({ label: 'Convert to number', note: expect.stringContaining('1 of 10') })
     expect((await suggestionsFor(['10%', '12.5%'])).map((s) => s.clean.kind)).toEqual(['percent'])
     // A day above 12 settles the layout; otherwise both are offered, the reader's own first.
     expect((await suggestionsFor(['25/01/2024', '03/02/2024'])).map((s) => s.clean.format)).toEqual(['%d/%m/%Y'])
@@ -74,6 +79,11 @@ test.describe('clean a column (run on DuckDB)', () => {
     expect(de[0]).toMatchObject({ clean: { kind: 'number', comma: true }, label: 'Convert to number (decimal comma)' })
     expect((await suggestionsFor(['1.234,56', '€ 7,10'])).map((s) => s.clean.comma)).toEqual([true])
     expect((await suggestionsFor(['1,234', '5,678'], 'de-DE'))[0].clean.comma).toBe(true)
+    // …but said, and never one click: a UK file's 194,661 in a German browser would be 1000× too small.
+    const uk = await suggestionsFor(['194,661', '61,234', '12'], 'de-DE')
+    expect(uk[0].note).toContain('read with a decimal comma')
+    expect(confidentConversion(uk)).toBeNull()
+    expect(confidentConversion(await suggestionsFor(['194,661', '12'], 'en-GB'))).toMatchObject({ kind: 'number', comma: false })
     expect((await suggestionsFor(['1,234', '5,678'], 'en-IN'))[0].clean.comma).toBe(false)
     expect((await suggestionsFor(['1,234', '5.5'], 'de-DE'))[0].clean.comma).toBe(false)
     // 0,750 and 1,2345 are never a thousands separator: kilograms to three places are decimals.
@@ -163,6 +173,15 @@ test.describe('what counts as numbers stored as text', () => {
     expect(confidentConversion(await suggestionsFor(['01/04/24', '05/04/24', '12/04/24'], 'en-IN'))).toMatchObject({ kind: 'date', format: '%d/%m/%y' })
     expect(confidentConversion(await suggestionsFor(['01/04/2024', '05/04/2024'], 'en-US'))).toMatchObject({ kind: 'date', format: '%m/%d/%Y' })
     expect(confidentConversion(await suggestionsFor(['25/04/24', '30/04/24'], 'en-US'))).toMatchObject({ kind: 'date', format: '%d/%m/%y' })
+  })
+
+  test('a column of figures with placeholders (x, .., :) converts in one click; the placeholders become empty, said', async () => {
+    const s = await suggestionsFor(['1,200', 'x', '350', '..', ':', '4,100'], 'en-GB')
+    expect(s[0]).toMatchObject({ clean: { kind: 'number' }, quiet: true })
+    expect(s[0].note).toContain('placeholders for no figure')
+    expect(confidentConversion(s)).toMatchObject({ kind: 'number' })
+    // Something else among them: still said, never one click.
+    expect(confidentConversion(await suggestionsFor(['1,200', 'x', '350', 'pending review', '4,100', '9'], 'en-GB'))).toBeNull()
   })
 
   test('one query covers every column', async () => {

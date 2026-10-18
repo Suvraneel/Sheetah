@@ -2,6 +2,7 @@ import * as duckdb from '@duckdb/duckdb-wasm'
 import { Schema, Table, type RecordBatch } from 'apache-arrow'
 import { CLEAN_MACROS } from './clean'
 import { FileKindError } from './load-errors'
+import { quoteIdent as qi } from './sql'
 // Self-hosted engine: Vite emits these as static assets, so nothing loads from a CDN.
 // Only the "eh" (wasm exceptions) build is shipped; every current browser supports it.
 import ehModuleUrl from '@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url'
@@ -68,6 +69,9 @@ export function getEngine(): Promise<Engine> {
     }
     const [parquet, json] = await Promise.all([load('parquet'), load('json')])
 
+    // Nothing else from outside either: no community extensions, no secrets kept on disk.
+    await conn.query(`SET allow_community_extensions = false`)
+    await conn.query(`SET allow_persistent_secrets = false`)
     await conn.query(`SET allowed_directories = ['${SANDBOX_DIR}']`)
     await conn.query(`SET enable_external_access = false`)
     await conn.query(`SET lock_configuration = true`)
@@ -107,9 +111,36 @@ function pseudonymKey(): string {
 
 async function definePseudonym(c: duckdb.AsyncDuckDBConnection, key: string) {
   await c.query(`SET VARIABLE sheetah_key = '${key}'`)
+  // The built-ins by their catalog name: a macro of the same name (sha256 as md5) can't stand in for them.
   await c.query(
-    `CREATE OR REPLACE TEMP MACRO pseudonym(v) AS CASE WHEN v IS NULL THEN NULL ELSE left(sha256(getvariable('sheetah_key') || lower(trim(v::VARCHAR))), 12) END`,
+    `CREATE OR REPLACE TEMP MACRO pseudonym(v) AS CASE WHEN v IS NULL THEN NULL ELSE system.main.left(system.main.sha256(system.main.getvariable('sheetah_key') || system.main.lower(system.main.trim(v::VARCHAR))), 12) END`,
   )
+}
+
+/** Sheetah's own macros: the clean-up steps' (number_from_text…) and pseudonym(). */
+const OWN_MACROS = new Set(['pseudonym', ...CLEAN_MACROS.map((m) => /MACRO\s+(\w+)/i.exec(m)?.[1]?.toLowerCase() ?? '')])
+
+/**
+ * After SQL that makes macros: one named for a built-in (a "sha256" that's really md5, a "lower" that isn't)
+ * or for one of Sheetah's own would quietly change what Anonymize and the clean-up steps compute, though
+ * their SQL reads the same. Such macros are dropped and Sheetah's own put back; the names are returned so
+ * the user is told. (Call inside the run lock.)
+ */
+export async function unshadow(sql: string): Promise<string[]> {
+  const { runConn } = await getEngine()
+  const found = (
+    await runConn.query(
+      `SELECT DISTINCT database_name AS db, schema_name AS s, function_name AS f, function_type AS t FROM duckdb_functions() WHERE NOT internal AND function_name IN (SELECT function_name FROM duckdb_functions() WHERE internal)`,
+    )
+  )
+    .toArray()
+    .map((r) => r.toJSON() as { db: string; s: string; f: string; t: string })
+  for (const m of found) await runConn.query(`DROP MACRO ${m.t === 'table_macro' ? 'TABLE ' : ''}IF EXISTS ${qi(m.db)}.${qi(m.s)}.${qi(m.f)}`)
+  // Ours, made again whatever the SQL did to them.
+  const mine = [...sql.matchAll(/\b(?:MACRO|FUNCTION)\s+(?:TABLE\s+)?(?:[\w"]+\.)*"?(\w+)"?/gi)].map((x) => x[1].toLowerCase()).filter((n) => OWN_MACROS.has(n))
+  for (const m of CLEAN_MACROS) await runConn.query(m)
+  await definePseudonym(runConn, sessionKey)
+  return [...new Set([...found.map((m) => m.f), ...mine])]
 }
 
 export function keepsPseudonymKey(): boolean {

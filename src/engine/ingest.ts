@@ -1,7 +1,7 @@
 import { DuckDBDataProtocol } from '@duckdb/duckdb-wasm'
 import { CancelledError, ensureExtension, getEngine, isCancel, quoteIdent, quoteLiteral, sandboxPath, sendAll, withRunLock } from './db'
 import { FileKindError } from './load-errors'
-import { LOCALE, tableNameFor } from './sql'
+import { isIdLike, LOCALE, nameKey, tableNameFor } from './sql'
 import { dateOrders, datesGuessed } from './tables'
 import type { XlsxReply, XlsxSheet } from './xlsx.worker'
 
@@ -165,6 +165,32 @@ async function readDates(name: string, path: string, read: (opts: string) => str
   if (order) dateOrders.set(name.toLowerCase(), order)
 }
 
+/** Codes by their names: ZIP and FIPS codes, area codes, IDs. */
+const CODE_COLUMN = /(^|_)(fips|geoid|geo_id|zcta|ags|ars|nuts\d?|lsoa\w*|msoa\w*|lad\w*|area_code|ons_code|code|zip|pin|postcode)(_|$)/
+
+/**
+ * The file reader types a column from its first 20,000 or so rows: codes that start with 0 only further
+ * down (a ZIP code file sorted the other way, FIPS 01001 after 56001) were read as numbers, their zeros
+ * gone. A column named for a code that holds one is read again as text, said so: added to `textColumns`,
+ * which every reader of the file reads as text from then on.
+ */
+async function keepZeros(name: string, read: (opts: string) => string, textColumns: string[], fileName: string, onNote?: Noted): Promise<void> {
+  const ints = (await columnTypes(name)).filter((c) => /^(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT|UTINYINT|USMALLINT|UINTEGER|UBIGINT)$/.test(c.type) && (isIdLike(c.name) || CODE_COLUMN.test(nameKey(c.name))))
+  if (!ints.length) return
+  // A file the reader looked over whole (its sample is 20,480 rows) has its codes typed right already.
+  const rows = Number((await sendAll(`SELECT count(*)::DOUBLE AS n FROM ${quoteIdent(name)}`)).toArray()[0]?.toJSON().n ?? 0)
+  if (rows <= 20_000) return
+  const r = (await sendAll(`SELECT ${ints.map((c, i) => `bool_or(regexp_matches(${quoteIdent(c.name)}, '^\\s*0[0-9]'))::INTEGER AS z${i}`).join(', ')} FROM ${read('all_varchar = true')}`)).toArray()[0]?.toJSON() as
+    | Record<string, number | null>
+    | undefined
+  const lead = ints.filter((_, i) => Number(r?.[`z${i}`]) === 1)
+  if (!lead.length) return
+  textColumns.push(...lead.map((c) => c.name))
+  await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(name)} AS SELECT * FROM ${read('')}`)
+  const list = lead.map((c) => c.name).join(', ')
+  onNote?.(`${list} in ${fileName} ${lead.length === 1 ? 'is a code' : 'are codes'} with zeros in front further down the file (01001): read as text, so they stay.`)
+}
+
 /**
  * Registers the File with DuckDB (it reads straight from disk, nothing is uploaded) and
  * creates a table. CSV/JSON are materialised so scrolling and sorting stay fast;
@@ -245,17 +271,36 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
     const source = `${fn}(${quoteLiteral(virtualPath)})`
     // A report's title lines above its table, with no separators (QuickBooks' "Sales by Customer Detail"),
     // its group names too: the file reader gives up, or reads it all as one column. Read from the names on.
-    let titled: { sep: string; skip: number } | null | undefined
-    let ragged: { sep: string; skip: number } | null = null
+    let titled: { sep: string; skip: number; fields: number } | null | undefined
+    let ragged: { sep: string; skip: number; fields: number } | null = null
     const titles = async () => (titled === undefined ? (titled = (await import('./sniff')).titleLines(await file.slice(0, 64 * 1024).text())) : titled)
+    // Columns typed from the first rows the reader looked at that hold something else further down (a
+    // statistics office's "x" for a suppressed figure on line 350,003; a code with zeros in front): read
+    // as text, nothing lost. Every way of reading the file reads them so.
+    const asText: { column: string; line: string; value: string }[] = []
+    const textColumns: string[] = []
+    const typesOpt = () => (textColumns.length ? `types = {${textColumns.map((c) => `${quoteLiteral(c)}: 'VARCHAR'`).join(', ')}}` : '')
+    const withTypes = (opts: string) => [typesOpt(), opts].filter(Boolean).join(', ')
     const fromNames = (t: { sep: string; skip: number }, opts = '') =>
-      `read_csv(${quoteLiteral(virtualPath)}, delim = ${quoteLiteral(t.sep)}, header = true, skip = ${t.skip}, null_padding = true, strict_mode = false${opts ? `, ${opts}` : ''})`
+      `read_csv(${quoteLiteral(virtualPath)}, delim = ${quoteLiteral(t.sep)}, header = true, skip = ${t.skip}, null_padding = true, strict_mode = false${withTypes(opts) ? `, ${withTypes(opts)}` : ''})`
     try {
-      await sendAll(
-        materialize
-          ? `CREATE TABLE ${quoteIdent(name)} AS SELECT * FROM ${source}`
-          : `CREATE VIEW ${quoteIdent(name)} AS SELECT * FROM ${source}`,
-      )
+      for (;;) {
+        const from = fn === 'read_csv_auto' && asText.length ? `read_csv_auto(${quoteLiteral(virtualPath)}, ${typesOpt()})` : source
+        try {
+          await sendAll(materialize ? `CREATE TABLE ${quoteIdent(name)} AS SELECT * FROM ${from}` : `CREATE VIEW ${quoteIdent(name)} AS SELECT * FROM ${from}`)
+          break
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          const late = fn === 'read_csv_auto' && !isCancel(e) ? /Error when converting column "([^"]+)"\. Could not convert string "([^"]*)"/.exec(msg) : null
+          if (!late || asText.length >= 8 || asText.some((c) => c.column === late[1])) throw e
+          asText.push({ column: late[1], value: late[2], line: /CSV Error on Line: (\d+)/.exec(msg)?.[1] ?? '' })
+          textColumns.push(late[1])
+        }
+      }
+      if (asText.length)
+        onNote?.(
+          `${asText.map((c) => c.column).join(', ')} in ${file.name} ${asText.length === 1 ? 'has' : 'have'} something other than numbers further down (“${asText[0].value}”${asText[0].line ? ` on line ${Number(asText[0].line).toLocaleString(LOCALE)}` : ''}): read as text, so nothing is lost. Convert to numbers from the column’s menu.`,
+        )
     } catch (e) {
       const sniffed = !isCancel(e) && fn === 'read_csv_auto' ? await import('./sniff').catch(() => null) : null
       const head = sniffed ? await file.slice(0, 64 * 1024).text() : ''
@@ -275,14 +320,14 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
       try {
         const cols = (await columnTypes(name)).map((c) => c.name)
         const sep = cols.length === 1 ? [',', ';', '\t', '|'].find((d) => cols[0].includes(d)) : undefined
-        let read = (opts: string) => `read_csv_auto(${quoteLiteral(virtualPath)}${opts ? `, ${opts}` : ''})`
+        let read = (opts: string) => `read_csv_auto(${quoteLiteral(virtualPath)}${withTypes(opts) ? `, ${withTypes(opts)}` : ''})`
         if (ragged) {
           const r = ragged
           read = (opts) => fromNames(r, opts)
           onNote?.(`Some rows of ${file.name} have more or fewer fields than its header: missing ones are left empty.`)
         } else if (sep) {
           read = (opts) =>
-            `read_csv(${quoteLiteral(virtualPath)}, delim = ${quoteLiteral(sep)}, header = true, null_padding = true, strict_mode = false${opts ? `, ${opts}` : ''})`
+            `read_csv(${quoteLiteral(virtualPath)}, delim = ${quoteLiteral(sep)}, header = true, null_padding = true, strict_mode = false${withTypes(opts) ? `, ${withTypes(opts)}` : ''})`
           await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(name)} AS SELECT * FROM ${read('')}`)
           onNote?.(`Some rows of ${file.name} have more or fewer fields than its header: missing ones are left empty.`)
         } else if (titled || (cols.length === 1 && (await titles()))) {
@@ -290,7 +335,28 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
           read = (opts) => fromNames(found, opts)
           if (!titled || cols.length === 1) await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(name)} AS SELECT * FROM ${read('')}`)
           onNote?.(`Left out ${found.skip === 1 ? 'a title line' : `${found.skip} title lines`} above the column names in ${file.name}.`)
+        } else {
+          // A note below the table written with another separator ("Source: ONS | Licence: OGL v3", a legend with
+          // semicolons) can make the file reader take that for the columns: no rows, or every line as one
+          // column. Fewer columns than most of the lines have: read again by the lines' own separator.
+          const t = (await import('./sniff')).titleLines(await file.slice(0, 64 * 1024).text(), true)
+          const rows = t ? Number((await sendAll(`SELECT count(*)::DOUBLE AS n FROM ${quoteIdent(name)}`)).toArray()[0]?.toJSON().n ?? 0) : 0
+          if (t && t.fields >= 2 && (rows === 0 || cols.length < t.fields)) {
+            const again = (opts: string) => fromNames(t, opts)
+            const fits = await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(`__fit_${name}`)} AS SELECT * FROM ${again('')}`).then(
+              () => true,
+              (e: unknown) => (isCancel(e) ? Promise.reject(e) : false),
+            )
+            const better = fits && (await columnTypes(`__fit_${name}`)).length === t.fields
+            if (better) {
+              await sendAll(`DROP TABLE ${quoteIdent(name)}`)
+              await sendAll(`ALTER TABLE ${quoteIdent(`__fit_${name}`)} RENAME TO ${quoteIdent(name)}`)
+              read = again
+              onNote?.(`Some lines of ${file.name} don’t fit its columns (a note below the table, say): read by its columns, they’re rows you can leave out.`)
+            } else await sendAll(`DROP TABLE IF EXISTS ${quoteIdent(`__fit_${name}`)}`).catch(() => {})
+          }
         }
+        await keepZeros(name, read, textColumns, file.name, onNote)
         await readDates(name, virtualPath, read)
       } catch (e) {
         if (isCancel(e)) {

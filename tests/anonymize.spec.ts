@@ -89,3 +89,12 @@ test('a US customer list: phone numbers and ZIP codes are personal; company name
   await expect(flagged.locator('.anon-name', { hasText: /^ZIP$/ })).toHaveCount(1)
   await expect(flagged.locator('.anon-name', { hasText: /^Customer$/ })).toHaveCount(0)
 })
+
+test('a Census file’s NAME column of counties isn’t a person’s name', async ({ page }) => {
+  await openApp(page)
+  const csv = ['GEO_ID,NAME,population', '0500000US01001,"Autauga County, Alabama",58805', '0500000US01003,"Baldwin County, Alabama",231767', '0500000US01005,"Barbour County, Alabama",25223']
+  await page.locator('input[type=file]').setInputFiles([file('census.csv', `${csv.join('\n')}\n`)])
+  await expect(page.locator('.result-meta')).toContainText('3 rows')
+  await expect(page.getByRole('button', { name: 'Run query' })).toBeVisible({ timeout: 60_000 })
+  await expect(page.locator('.pii-chip', { hasText: 'Personal data' })).toHaveCount(0)
+})

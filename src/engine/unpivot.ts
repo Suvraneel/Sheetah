@@ -1,5 +1,5 @@
-import { commentText, isNumericType, quoteIdent, sqlName } from './sql'
-import { seriesColumns, type SeriesKind } from './series'
+import { commentText, isNumericType, quoteIdent, quoteLiteral, sqlName } from './sql'
+import { periodName, seriesColumns, type SeriesKind } from './series'
 
 /*
  * Unpivot: a report laid out one column per month (Jan, Feb, … Dec) becomes one row per month, so it
@@ -55,6 +55,7 @@ export function unpivotSql(src: string, spec: UnpivotSpec, types: { name: string
     commentText(`-- Turn ${spec.columns.length} columns into rows: one per ${spec.name}`),
     'SELECT *',
     `FROM ${from}`,
-    `UNPIVOT${spec.keepEmpty ? ' INCLUDE NULLS' : ''} (${quoteIdent(spec.value)} FOR ${quoteIdent(spec.name)} IN (${spec.columns.map(sqlName).join(', ')}))`,
+    // Each period named without its marks ("2023 [note 3]" is 2023 in the rows).
+    `UNPIVOT${spec.keepEmpty ? ' INCLUDE NULLS' : ''} (${quoteIdent(spec.value)} FOR ${quoteIdent(spec.name)} IN (${spec.columns.map((c) => (periodName(c) !== c && periodName(c) ? `${sqlName(c)} AS ${quoteLiteral(periodName(c))}` : sqlName(c))).join(', ')}))`,
   ].join('\n')
 }

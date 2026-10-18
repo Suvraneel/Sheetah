@@ -12,6 +12,8 @@ export interface Detection {
 }
 
 /** Words that make a name a company's: Inc, LLC, Ltd, Pvt, Corp, Enterprises, Industries, Traders… */
+/** Places, not people: a NAME column of counties and districts ("Autauga County, Alabama", "Hartlepool UA"). */
+const PLACE = '(^|[^a-z])(county|district|borough|parish|city|town|village|region|province|state|municipality|council|ward|census tract|tract|ua|lad|kreis|landkreis|gemeinde|stadt)([^a-z]|$)'
 const COMPANY = '(^|[^a-z])(inc|llc|llp|ltd|limited|pvt|plc|corp|corporation|co|company|gmbh|enterprises?|industries|traders|trading|associates|solutions|services|systems|technologies|group|holdings|bank|store|shop|foods|bakery|motors|labs?|studio|agency|partners)([^a-z]|$)'
 
 export const SAMPLE_ROWS = 5000
@@ -41,6 +43,7 @@ export async function detectPii(result: ResultSet): Promise<Detection[]> {
       patterned.forEach((r, j) => parts.push(`count(*) FILTER (WHERE regexp_full_match(${v}, ${quoteLiteral(r.pattern!)}))::DOUBLE AS "m${i}_${j}"`))
       // Companies, not people ("Wayne Enterprises", "Acme Pvt Ltd"): a Customer column of them isn't personal.
       parts.push(`count(*) FILTER (WHERE regexp_matches(lower(${v}), ${quoteLiteral(COMPANY)}))::DOUBLE AS "co${i}"`)
+      parts.push(`count(*) FILTER (WHERE regexp_matches(lower(${v}), ${quoteLiteral(PLACE)}))::DOUBLE AS "pl${i}"`)
     }
     const row = (await conn.query(`WITH s AS (SELECT * FROM ${result.table} USING SAMPLE ${SAMPLE_ROWS} ROWS) SELECT ${parts.join(', ')} FROM s`)).toArray()[0]?.toJSON()
     Object.assign(counts, row ?? {})
@@ -69,8 +72,8 @@ export async function detectPii(result: ResultSet): Promise<Detection[]> {
       // Kinds recognised by name: names, birth dates, addresses (and the others when the column name says so).
       const named = RULES.find((r) => nameSuggests(r, c.name) && (r.kind === 'birthdate' ? true : TEXTY.test(c.type) && !TEMPORAL.test(c.type)))
       // A phone or postal code column by its name alone (written any country's way); names unless nearly all are
-      // companies (a few people among them are still people).
-      const companies = nonEmpty > 0 && Number(counts[`co${i}`] ?? 0) / nonEmpty >= 0.9
+      // companies (a few people among them are still people), or most are places (counties, districts).
+      const companies = nonEmpty > 0 && (Number(counts[`co${i}`] ?? 0) / nonEmpty >= 0.9 || Number(counts[`pl${i}`] ?? 0) / nonEmpty >= 0.6)
       if (named && !(named.kind === 'name' && companies) && (named.kind === 'birthdate' || named.kind === 'phone' || named.kind === 'postcode' || !named.pattern || nonEmpty === 0))
         best = { column: c.name, kind: named.kind, ratio: null }
     }

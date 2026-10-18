@@ -153,3 +153,12 @@ export function stackLabel(names: string[]): string {
   while (i > 0 && /\d/.test(a[i - 1])) i--
   return i >= 3 && i < a.length && i < b.length ? `${a}-${b.slice(i)}` : `${sorted[0]}-and-${sorted.length - 1}-more`
 }
+
+/**
+ * A cell's text as it's safe to paste into a spreadsheet: one that would start a formula there (=, +, -, @,
+ * a tab) gets a quote in front, so it stays text (=HYPERLINK(…) from a hostile file can't run). A plain
+ * negative number (−12.50) and a lone dash are left as they are.
+ */
+export function pasteSafe(v: string): string {
+  return /^[=+\-@\t\r]/.test(v) && !/^(-(\d{1,3}(,\d{3})+|\d{1,15})(\.\d+)?|[-+])$/.test(v) ? `'${v}` : v
+}
