@@ -513,6 +513,21 @@ test.describe('bank statements', () => {
     await expect(page.locator('.sr-grid [role=columnheader]').nth(1)).toContainText('2024-04')
   })
 
+  test('a statement’s money in and out, month by month', async ({ page }) => {
+    await openApp(page)
+    const csv = ['Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance', '13/04/24,Rent,"3,000.00",,"7,000.00"', '25/04/24,Salary,,"50,000.00","57,000.00"', '14/05/24,UPI,700.00,,"56,300.00"']
+    await page.locator('input[type=file]').setInputFiles([file('summary.csv', `${csv.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    await page.getByRole('button', { name: /^Add signed amount/ }).click()
+    await page.getByRole('button', { name: 'Money in and out by month' }).click()
+    await expect(page.locator('.result-meta')).toContainText('2 rows · 5 columns')
+    await expect(page.locator('.origin-chip')).toContainText('Money in and out by month, from summary')
+    const april = page.locator('.sr-grid [role=row]').nth(1)
+    await expect(april).toContainText('2024-04-01')
+    await expect(april).toContainText('50,000')
+    await expect(april).toContainText('47,000')
+  })
+
   test('a statement that keeps its file name each month is still checked against last month’s', async ({ page }) => {
     await openApp(page)
     const head = 'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance'

@@ -10,15 +10,18 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   balance, each balance is checked against the one before (oldest or newest first): *Every Closing Balance follows
   from the row above*, or the row where a line is missing or doubled, and by how much. Its *Opening Balance* and
   *Closing Balance* lines (and *Balance b/f*, *Carried forward*) are offered for leaving out with the total line.
+  *Money in and out by month* summarises it: each month's money in, money out, the net and how many lines.
 - **Checks that travel with a saved view**: running a view on next month's file checks it again, the running
   balance and the total lines against the rows, and says what passed or which line is missing. A statement is
   checked to open where the last one closed (*Opens at 7,000, where stmt_apr closed*, or how far apart: a statement
-  missing in between), and the rows are counted against last time. Checks sit above the rows (not in a passing
+  missing in between), whether or not each month's file has the same name, and the rows are counted against last
+  time. Checks sit above the rows (not in a passing
   toast) while the step they checked is there. What a view last ran on stays in this browser, never in a views file.
 - **Categories from words**: *Group Narration into categories* (offered once a statement's amount is signed, and in
   any text column's menu) adds a category column from rules like *swiggy, zomato → Food and dining*: matched where a
   word starts (*ola* is Ola and OLACABS, not COLA), the first rule winning, the rest *Other*. The column's common words
-  are listed to pick from (payment rails and banks left out), the usual categories are one click, and each says how
+  are listed to pick from (payment rails and banks left out; words in any script, and a word starts after a digit
+  or _ too, so HDFC0MERCHANT and UPI_ZOMATO match), the usual categories are one click, and each says how
   many rows it gets. The rules are readable SQL, kept with a saved view; *Pivot by month* then lays each category out
   month by month. *Edit these categories…* in the column's menu changes them.
 - **Two-digit years read the right way round**: `01/04/24` is 1 April 2024, not 24 April 2001 (the file reader's

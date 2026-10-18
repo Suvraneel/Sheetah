@@ -53,3 +53,22 @@ export function balanceLineSql(s: StatementColumns, text: string[], numeric: (na
 export function signedAmount(s: StatementColumns, numeric: (name: string) => boolean): string {
   return `coalesce(${num(s.credit, numeric(s.credit))}, 0) - coalesce(${num(s.debit, numeric(s.debit))}, 0)`
 }
+
+/**
+ * Money in, money out and the net for each month, with how many lines: a statement's summary, from the
+ * rows as tidied (`rows` is their query). Months by the date column; lines without a date are left out.
+ */
+export function monthlySql(rows: string, s: StatementColumns, date: string, numeric: (name: string) => boolean): string {
+  const v = (name: string) => `coalesce(${num(name, numeric(name))}, 0)`
+  return `SELECT date_trunc('month', ${sqlName(date)})::DATE AS month,
+  sum(${v(s.credit)}) AS money_in,
+  sum(${v(s.debit)}) AS money_out,
+  sum(${v(s.credit)}) - sum(${v(s.debit)}) AS net,
+  count(*) AS lines
+FROM (
+${rows}
+)
+WHERE ${sqlName(date)} IS NOT NULL
+GROUP BY 1
+ORDER BY 1`
+}

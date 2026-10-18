@@ -1,6 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getEngine, sqlName } from './engine/db'
-import { isBalanceName, signedAmount, statementColumns } from './engine/statement'
+import { isBalanceName, monthlySql, signedAmount, statementColumns } from './engine/statement'
 import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent } from './engine/sql'
 import { ACCEPTED, FileKindError, cancelExcel, createDemo, dateOrders, ingestFile, listTables, type TableMeta } from './engine/ingest'
 import { CancelledError, cancelRunning, colRef, exportResult, holdResult, rangeStats, rowOf, runSql, splitStatements, type RangeStats, type ResultSet } from './engine/result'
@@ -1613,7 +1613,9 @@ export default function App() {
   const isNum = (name: string) => !!result?.columns.find((c) => c.name === name)?.numeric
   const amountExpr = statement ? signedAmount(statement, isNum) : null
   const amountHere = statement && !ops.computed.some((c) => c.expr === amountExpr) ? statement : null
-  // Once a statement's amount is signed, its narrations grouped into categories (for a pivot by month).
+  // Once a statement's amount is signed: its month-by-month summary (by its date column), and its narrations
+  // grouped into categories (for a pivot by month).
+  const monthlyHere = statement && !amountHere && plainTable(base) ? (result?.columns.find(isTemporal)?.name ?? null) : null
   const narrationHere =
     statement && !amountHere && !ops.computed.some((c) => c.categorize) ? (result?.columns.find((c) => !c.numeric && /narration|description|particulars|details|remarks|memo/i.test(c.name))?.name ?? null) : null
   const fillHere = hintFor(fillHints)?.filter((c) => result?.columns.some((x) => x.name === c) && !ops.clean?.some((x) => x.kind === 'filldown' && x.column === c)) ?? []
@@ -2036,6 +2038,12 @@ export default function App() {
                 onAmount={() => void addSignedAmount()}
                 categorize={narrationHere}
                 onCategorize={(column) => setCategorizing({ column })}
+                monthly={!!monthlyHere}
+                onMonthly={() => {
+                  if (!statement || !monthlyHere) return
+                  const rows = compose(base, { ...ops, sort: undefined, hidden: undefined })
+                  runDerived(monthlySql(rows, statement, monthlyHere, isNum), { label: 'Money in and out by month' })
+                }}
                 series={seriesHere}
                 text={textHere}
                 personal={piiHere}

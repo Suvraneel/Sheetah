@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { balanceLineSql, signedAmount, statementColumns } from '../../src/engine/statement'
+import { balanceLineSql, monthlySql, signedAmount, statementColumns } from '../../src/engine/statement'
 import { readTieOut } from '../../src/engine/clean-scan'
 import { balanceCheckSql, balanceText, continuityText, endsSql, readBalanceCheck, readEnds, readOrder, readTieOutRow, tieOutSql, tieOutText } from '../../src/engine/checks'
 import { q } from './duck'
@@ -123,4 +123,15 @@ test('the way round a statement runs, from one pair of balances up', async () =>
   expect(readEnds((await q(endsSql('two', s, () => false)))[0] as Record<string, unknown>, readOrder(check)!)).toEqual({ opening: 1000, closing: 1300 })
   // Shuffled rows: neither way round fits, so there are no ends to speak of.
   expect(readOrder({ pairs: 4, bad_down: 3, bad_up: 3 })).toBeNull()
+})
+
+test('a statement month by month: money in, money out, the net and the lines', async () => {
+  await q(`CREATE OR REPLACE TABLE mon AS SELECT * FROM (VALUES
+    (DATE '2024-04-02', '500.00', NULL), (DATE '2024-04-20', NULL, '2,000.00'), (DATE '2024-05-01', '1,500.00', NULL), (NULL, NULL, NULL)
+  ) t("Date", withdrawal, deposit)`)
+  const sql = monthlySql('SELECT * FROM mon', { credit: 'deposit', debit: 'withdrawal' }, 'Date', () => false)
+  expect((await q(sql)).map((r) => [r.money_in, r.money_out, r.net, Number(r.lines)])).toEqual([
+    [2000, 500, 1500, 2],
+    [0, 1500, -1500, 1],
+  ])
 })
