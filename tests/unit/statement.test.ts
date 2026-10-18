@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { balanceLineSql, signedAmount, statementColumns } from '../../src/engine/statement'
-import { readTieOut } from '../../src/engine/clean'
-import { balanceCheckSql, balanceText, continuityText, endsSql, readBalanceCheck, readEnds, readTieOutRow, tieOutSql, tieOutText } from '../../src/engine/checks'
+import { readTieOut } from '../../src/engine/clean-scan'
+import { balanceCheckSql, balanceText, continuityText, endsSql, readBalanceCheck, readEnds, readOrder, readTieOutRow, tieOutSql, tieOutText } from '../../src/engine/checks'
 import { q } from './duck'
 
 const col = (name: string, type = 'VARCHAR') => ({ name, type })
@@ -104,11 +104,23 @@ test('a statement’s ends: where it opened and closed, either way round, and wh
     ('500.00', NULL, '9,500.00'), (NULL, '2,000.00', '11,500.00'), ('1,500.00', NULL, '10,000.00')
   ) t(withdrawal, deposit, balance)`)
   const row = (await q(endsSql('ends', s, () => false)))[0] as Record<string, unknown>
-  expect(readEnds(row)).toEqual({ opening: 10000, closing: 10000 })
+  expect(readEnds(row, 'oldest first')).toEqual({ opening: 10000, closing: 10000 })
   // Newest first: the last row is the oldest.
   expect(readEnds(row, 'newest first')).toEqual({ opening: 10000 + 1500, closing: 9500 })
   expect(readEnds({ b0: null })).toBeNull()
   const nf = (n: number) => n.toFixed(2)
   expect(continuityText(10000, { table: 'apr', closing: 10000 }, nf)).toEqual({ kind: 'continuity', ok: true, text: 'Opens at 10000.00, where apr closed' })
   expect(continuityText(10000, { table: 'apr', closing: 9200 }, nf).text).toBe('Opens at 10000.00, but apr closed at 9200.00: 800.00 apart. A statement missing in between?')
+})
+
+test('the way round a statement runs, from one pair of balances up', async () => {
+  const s = { credit: 'deposit', debit: 'withdrawal', balance: 'balance' }
+  // Newest first, two lines: 1,000 + 500 = 1,500, then 1,500 − 200 = 1,300 on top.
+  await q(`CREATE OR REPLACE TABLE two AS SELECT * FROM (VALUES ('200.00', NULL, '1,300.00'), (NULL, '500.00', '1,500.00')) t(withdrawal, deposit, balance)`)
+  const check = (await q(balanceCheckSql('two', s, () => false)))[0] as Record<string, number | null>
+  expect(readBalanceCheck(check)).toBeNull() // too few to say anything about
+  expect(readOrder(check)).toBe('newest first')
+  expect(readEnds((await q(endsSql('two', s, () => false)))[0] as Record<string, unknown>, readOrder(check)!)).toEqual({ opening: 1000, closing: 1300 })
+  // Shuffled rows: neither way round fits, so there are no ends to speak of.
+  expect(readOrder({ pairs: 4, bad_down: 3, bad_up: 3 })).toBeNull()
 })

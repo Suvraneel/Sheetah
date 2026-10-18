@@ -119,3 +119,18 @@ test('steps and SQL are compared without comments, but quoted text exactly', asy
   const moved = remapTables(compose(tableBase('sales_sep'), inColumn.ops), mapping)
   expect(stepsMake(remapSteps(inColumn, mapping), moved)).toBe(false)
 })
+
+test('a views file’s category rules are kept only when they are exactly the column’s formula', async () => {
+  const { categorizeExpr } = await import('../../src/engine/categorize')
+  const { compose } = await import('../../src/engine/compose')
+  const rules = { column: 'Narration', rules: [{ category: 'Food', words: ['swiggy'] }], otherwise: 'Other' }
+  const steps = (categorize: unknown) => ({ table: 'april', ops: { filters: [], computed: [{ name: 'category', expr: categorizeExpr(rules), categorize }] } })
+  const sql = compose('SELECT * FROM april', steps(rules).ops as never)
+  const file = (categorize: unknown) => JSON.stringify({ format: 'sheetah-views', version: 1, views: [{ name: 'Tidy', sql, tables: ['april'], steps: steps(categorize) }] })
+  expect(parseViews(file(rules))[0].steps?.ops.computed[0].categorize).toEqual(rules)
+  // Rules that say something else than the formula, or aren't rules at all: the column stays, its rules go.
+  for (const odd of [{ ...rules, otherwise: 'Misc' }, { rules: 'nope' }, 42]) {
+    const [v] = parseViews(file(odd))
+    expect(v.steps?.ops.computed[0]).toEqual({ name: 'category', expr: categorizeExpr(rules) })
+  }
+})

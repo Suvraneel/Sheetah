@@ -24,6 +24,8 @@ interface Props {
   columns: ColumnInfo[]
   rowCount: number
   initial?: PivotSpec
+  /** A pivot to start from (not one being edited): categories by month, say. */
+  start?: PivotSpec
   /** Number columns stored as text (not offered as values until converted), and the one-click conversion. */
   textNumbers?: string[]
   onConvert?: () => void
@@ -34,10 +36,12 @@ interface Props {
 const nf = new Intl.NumberFormat(LOCALE)
 const MAX_VALUES = 3
 
-export function PivotDialog({ sourceSql, columns, rowCount, initial, textNumbers, onConvert, onCreate, onClose }: Props) {
+export function PivotDialog({ sourceSql, columns, rowCount, initial, start, textNumbers, onConvert, onCreate, onClose }: Props) {
   const dialog = useDialog<HTMLDivElement>(onClose)
   const [counts, setCounts] = useState<Record<string, number> | null>(null)
-  const [edited, setEdited] = useState<PivotSpec | null>(initial ?? null)
+  // A pivot to start from only if its fields are here (the rows may have changed since it was offered).
+  const fits = (s: PivotSpec) => [...s.rows, ...(s.columns ? [s.columns] : [])].every((f) => columns.some((c) => c.name === f.column)) && s.values.every((v) => !v.column || columns.some((c) => c.name === v.column && c.numeric))
+  const [edited, setEdited] = useState<PivotSpec | null>(initial ?? (start && fits(start) ? start : null))
   const [error, setError] = useState<string | null>(null)
   const [working, setWorking] = useState(false)
 

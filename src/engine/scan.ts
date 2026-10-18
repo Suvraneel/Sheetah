@@ -4,7 +4,8 @@
  * so the first screen doesn't wait for it.
  */
 import { getEngine, quoteIdent, quoteLiteral } from './db'
-import { confidentConversion, dataSumsSql, eitherJunk, fillDownSql, isTextColumn, looksFilledDown, junkPredicates, labelSumsSql, readTieOut, totalsAgree, readStats, statsSql, suggestCleaning, type Clean, type CleanSuggestion, type DropRows } from './clean'
+import type { Clean, DropRows } from './clean'
+import { confidentConversion, dataSumsSql, eitherJunk, fillDownSql, isTextColumn, looksFilledDown, junkPredicates, labelSumsSql, readTieOut, totalsAgree, readStats, statsSql, suggestCleaning, type CleanSuggestion } from './clean-scan'
 import { LOCALE } from './sql'
 import { balanceLineSql, isBalanceName, statementColumns } from './statement'
 import { colRef, type ColumnInfo, type ResultSet } from './result'

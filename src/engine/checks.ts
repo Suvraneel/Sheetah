@@ -3,7 +3,8 @@
  * and a report's total lines against the rows they total. Run when the step is taken, and again each
  * time a saved view runs on next month's file (loaded when needed).
  */
-import { readTieOut, type DropRows, type TieOut } from './clean'
+import type { DropRows, TieOut } from './clean'
+import { readTieOut } from './clean-scan'
 import { sqlName } from './sql'
 import type { StatementColumns } from './statement'
 
@@ -67,6 +68,20 @@ export function readBalanceCheck(row: Record<string, number | null>): BalanceChe
   }
 }
 
+/**
+ * Which way round the rows are, for finding where the statement starts: from a single pair of balances
+ * up (too few to report as a check). Null when no way round fits most of the balances (the rows aren't in a
+ * statement's order), so its ends would mean nothing.
+ */
+export function readOrder(row: Record<string, number | null>): BalanceCheck['order'] | null {
+  const pairs = Number(row.pairs ?? 0)
+  if (!pairs) return 'oldest first' // one balance at most: either way round, the same ends
+  const down = Number(row.bad_down ?? 0)
+  const up = Number(row.bad_up ?? 0)
+  if (Math.min(up, down) * 2 > pairs) return null
+  return up < down ? 'newest first' : 'oldest first'
+}
+
 /** A statement's two ends, in its rows' order: the first and last balances, and those rows' amounts. */
 export function endsSql(table: string, s: StatementColumns & { balance: string }, numeric: (name: string) => boolean, ref: (name: string) => string = sqlName): string {
   return `WITH t AS (${balanceRows(table, s, numeric, ref)})
@@ -74,7 +89,7 @@ SELECT arg_min(b, r)::DOUBLE AS b0, arg_min(a, r)::DOUBLE AS a0, arg_max(b, r)::
 }
 
 /** Where the statement opened (the balance before its first line) and where it closed. */
-export function readEnds(row: Record<string, unknown>, order: BalanceCheck['order'] = 'oldest first'): { opening: number; closing: number } | null {
+export function readEnds(row: Record<string, unknown>, order: BalanceCheck['order']): { opening: number; closing: number } | null {
   const [b0, a0, b1, a1] = ['b0', 'a0', 'b1', 'a1'].map((k) => row[k])
   if (![b0, a0, b1, a1].every((v) => typeof v === 'number' && Number.isFinite(v))) return null
   const [f, fa, l, la] = [b0, a0, b1, a1] as number[]

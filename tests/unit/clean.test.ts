@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
-import { addClean, dataSumsSql, fillDownSql, looksFilledDown, labelSumsSql, totalsAgree, percentColumns, cleanExpr, describeClean, eitherJunk, junkPredicates, cleanSql, confidentConversion, readStats, statsSql, suggestCleaning, type Clean } from '../../src/engine/clean'
+import { addClean, percentColumns, cleanExpr, describeClean, cleanSql, type Clean } from '../../src/engine/clean'
+import { dataSumsSql, fillDownSql, looksFilledDown, labelSumsSql, totalsAgree, eitherJunk, junkPredicates, confidentConversion, readStats, statsSql, suggestCleaning } from '../../src/engine/clean-scan'
 import { compose, emptyOps } from '../../src/engine/compose'
 import { q } from './duck'
 

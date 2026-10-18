@@ -1,7 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getEngine, sqlName } from './engine/db'
 import { isBalanceName, signedAmount, statementColumns } from './engine/statement'
-import { isNumericType, isTemporal, LOCALE, quoteIdent } from './engine/sql'
+import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent } from './engine/sql'
 import { ACCEPTED, FileKindError, cancelExcel, createDemo, dateOrders, ingestFile, listTables, type TableMeta } from './engine/ingest'
 import { CancelledError, cancelRunning, colRef, exportResult, holdResult, rangeStats, rowOf, runSql, splitStatements, type RangeStats, type ResultSet } from './engine/result'
 import { addFilter, compose, describeFilter, emptyOps, hasOps, onTidiedRows, pickedValues, plainTable, removePick, removePickAll, stepCount, stepMarks, tidySteps, type Filter, type Ops } from './engine/compose'
@@ -26,6 +26,8 @@ const loadColumnMenu = () => import('./components/ColumnMenu')
 const ColumnMenu = lazy(() => loadColumnMenu().then((m) => ({ default: m.ColumnMenu })))
 const loadChartPanel = () => import('./components/ChartPanel')
 const ChartPanel = lazy(() => loadChartPanel().then((m) => ({ default: m.ChartPanel })))
+const loadCategorizeDialog = () => import('./components/CategorizeDialog')
+const CategorizeDialog = lazy(() => loadCategorizeDialog().then((m) => ({ default: m.CategorizeDialog })))
 const loadUnpivotDialog = () => import('./components/UnpivotDialog')
 const UnpivotDialog = lazy(() => loadUnpivotDialog().then((m) => ({ default: m.UnpivotDialog })))
 import type { Lookup } from './engine/lookup'
@@ -263,6 +265,10 @@ export default function App() {
   // The Look up dialog, and the column it was opened from (if any).
   const [lookingUp, setLookingUp] = useState<{ here?: string } | null>(null)
   const [unpivoting, setUnpivoting] = useState<{ around?: string } | null>(null)
+  // Categories from a text column's words: a new column, or (edit) the rules of one added before.
+  const [categorizing, setCategorizing] = useState<{ column?: string; edit?: string } | null>(null)
+  // A pivot to start from (categories by month, after adding categories), rather than the usual first guess.
+  const [pivotStart, setPivotStart] = useState<PivotSpec | null>(null)
   // The anonymizing query behind the current result (for export file names).
   const [anonSql, setAnonSql] = useState<string | null>(null)
   const [nudge, setNudge] = useState<Offer | null>(null)
@@ -957,6 +963,30 @@ export default function App() {
     }
   }
 
+  /** Categories added as a column (or their rules changed); then a pivot of them by month is offered. */
+  const addCategories = (name: string, expr: string, c: import('./engine/categorize').Categorize) => {
+    setCategorizing(null)
+    const editing = ops.computed.some((x) => x.name === name)
+    const added = { name, expr, note: `by ${c.column}`, categorize: c }
+    reveal.current = name
+    applyOps({ ...ops, computed: editing ? ops.computed.map((x) => (x.name === name ? added : x)) : [...ops.computed, added] })
+    const n = c.rules.length
+    const label = `${editing ? 'Updated' : 'Added'} ${name}: ${n} ${n === 1 ? 'category' : 'categories'} by words in ${c.column}`
+    // What people do next: each category month by month, when there's a date and an amount.
+    const date = result?.columns.find(isTemporal)
+    const money = result?.columns.find((x) => x.numeric && /^(amount|net_amount|signed_amount)$/i.test(x.name)) ?? result?.columns.find((x) => x.numeric && !isIdLike(x.name))
+    if (!date || !money || editing) return say(label)
+    setNudge({
+      label: `${label}.`,
+      action: 'Pivot by month',
+      run: () => {
+        setPivotStart({ rows: [{ column: name, grain: 'none' }], columns: { column: date.name, grain: 'month' }, values: [{ agg: 'sum', column: money.name }], totals: true, sort: 'label' })
+        setPivoting(true)
+      },
+    })
+    window.setTimeout(() => setNudge((x) => (x?.label === `${label}.` ? null : x)), 20_000)
+  }
+
   /**
    * The checks again, on a saved view's rows (next month's file): the total lines its steps leave out
    * against the rows they keep, a statement's running balance (while the rows are in their own order), and
@@ -981,13 +1011,18 @@ export default function App() {
         const s = { ...st, balance: st.balance }
         const isN = (n: string) => !!col(n).numeric
         const ref = (n: string) => colRef(col(n))
-        const check = m.readBalanceCheck((await conn.query(m.balanceCheckSql(rows.table, s, isN, ref))).toArray()[0]?.toJSON() ?? {})
-        found.push(m.balanceText(check, st.balance, nf.format))
-        const ends = m.readEnds((await conn.query(m.endsSql(rows.table, s, isN, ref))).toArray()[0]?.toJSON() ?? {}, check?.order)
+        const counts = (await conn.query(m.balanceCheckSql(rows.table, s, isN, ref))).toArray()[0]?.toJSON() ?? {}
+        found.push(m.balanceText(m.readBalanceCheck(counts), st.balance, nf.format))
+        // Where it starts and ends, read the way round the rows run (not at all if they don't run either way).
+        const order = m.readOrder(counts)
+        const ends = order && m.readEnds((await conn.query(m.endsSql(rows.table, s, isN, ref))).toArray()[0]?.toJSON() ?? {}, order)
         const prev = view && (viewsRef.current.find((x) => x.id === view.id) ?? view).last
-        if (ends && prev && typeof prev.closing === 'number' && prev.table.toLowerCase() !== table.toLowerCase())
-          found.push(m.continuityText(ends.opening, { table: prev.table, closing: prev.closing }, nf.format))
-        closing = ends?.closing
+        // Last time's rows again (the same file run twice), or another month's: a file can keep its name each month.
+        const sameName = !!prev && prev.table.toLowerCase() === table.toLowerCase()
+        const again = sameName && prev.rows === rows.rowCount && (!ends || (typeof prev.closing === 'number' && Math.abs(prev.closing - ends.closing) < 0.005))
+        if (ends && prev && typeof prev.closing === 'number' && !again)
+          found.push(m.continuityText(ends.opening, { table: sameName ? `the last ${prev.table}` : prev.table, closing: prev.closing }, nf.format))
+        closing = ends?.closing ?? undefined
       }
       if (view) updateViews((v) => v.map((x) => (x.id === view.id ? { ...x, last: { table, rows: rows.rowCount, ...(closing !== undefined ? { closing } : {}) } } : x)))
       if (!quiet) addChecks(tableBase(table), found)
@@ -1331,7 +1366,8 @@ export default function App() {
       void execute(composed, { base: b, ops: s.ops }).then((res) => {
         if (!res) return
         const n = stepCount(s.ops)
-        const vs = prev && prev.table.toLowerCase() !== on.name.toLowerCase() ? ` · ${nf.format(res.rowCount)} rows (${prev.table} had ${nf.format(prev.rows)})` : ''
+        const sameName = !!prev && prev.table.toLowerCase() === on.name.toLowerCase()
+        const vs = prev && (!sameName || prev.rows !== res.rowCount) ? ` · ${nf.format(res.rowCount)} rows (${sameName ? `${nf.format(prev.rows)} last time` : `${prev.table} had ${nf.format(prev.rows)}`})` : ''
         say(`Ran “${view.name}” on ${on.name}: ${n} ${n === 1 ? 'step' : 'steps'}, shown above the rows${vs}`)
         void recheck(on.name, s.ops, res, view)
       })
@@ -1577,6 +1613,9 @@ export default function App() {
   const isNum = (name: string) => !!result?.columns.find((c) => c.name === name)?.numeric
   const amountExpr = statement ? signedAmount(statement, isNum) : null
   const amountHere = statement && !ops.computed.some((c) => c.expr === amountExpr) ? statement : null
+  // Once a statement's amount is signed, its narrations grouped into categories (for a pivot by month).
+  const narrationHere =
+    statement && !amountHere && !ops.computed.some((c) => c.categorize) ? (result?.columns.find((c) => !c.numeric && /narration|description|particulars|details|remarks|memo/i.test(c.name))?.name ?? null) : null
   const fillHere = hintFor(fillHints)?.filter((c) => result?.columns.some((x) => x.name === c) && !ops.clean?.some((x) => x.kind === 'filldown' && x.column === c)) ?? []
   const headerNotes = unconverted?.length ? Object.fromEntries(unconverted.map((c) => [c.column, c.kind === 'date' ? 'date as text' : 'number as text'])) : null
   const ofRows = baseRows?.base === base && (shownOps.filters.length || shownOps.search || shownOps.dedupe || shownOps.drop?.length) ? ` of ${nf.format(baseRows.rows)}` : ''
@@ -1995,6 +2034,8 @@ export default function App() {
                 onFill={(cols) => applyOps(withCleans(cols.map((column): Clean => ({ column, kind: 'filldown' })).reduce(addClean, ops.clean ?? [])))}
                 amount={amountHere}
                 onAmount={() => void addSignedAmount()}
+                categorize={narrationHere}
+                onCategorize={(column) => setCategorizing({ column })}
                 series={seriesHere}
                 text={textHere}
                 personal={piiHere}
@@ -2288,19 +2329,31 @@ export default function App() {
       </main>
 
       {pivoting && result && (
-        <Lazy onFail={(e) => partFailed(e, () => setPivoting(false))}>
+        <Lazy
+          onFail={(e) =>
+            partFailed(e, () => {
+              setPivoting(false)
+              setPivotStart(null)
+            })
+          }
+        >
           <PivotDialog
             sourceSql={editingPivot ? pivotOrigin!.sql : result.sql}
             columns={editingPivot ? pivotOrigin!.columns : result.columns}
             rowCount={editingPivot ? pivotOrigin!.rowCount : result.rowCount}
             initial={editingPivot ? pivotOrigin!.spec : undefined}
+            start={editingPivot ? undefined : (pivotStart ?? undefined)}
             textNumbers={editingPivot ? undefined : textNumbersHere.map((c) => c.column)}
             onConvert={!editingPivot && textNumbersHere.length ? () => applyOps(withCleans(textNumbersHere.reduce(addClean, ops.clean ?? []))) : undefined}
-            onClose={() => setPivoting(false)}
+            onClose={() => {
+              setPivoting(false)
+              setPivotStart(null)
+            }}
             onCreate={(sql, spec) => {
               const origin = editingPivot ? pivotOrigin! : { sql: result.sql, columns: result.columns, rowCount: result.rowCount }
               setPivotOrigin({ ...origin, spec, pivotSql: sql })
               setPivoting(false)
+              setPivotStart(null)
               setView('grid')
               setEditor(sql)
               void execute(sql, { base: sql, ops: emptyOps() }).then((res) => res && say(`Pivot: ${res.rowCount.toLocaleString(LOCALE)} rows × ${res.columns.length} columns`))
@@ -2422,6 +2475,35 @@ export default function App() {
               setMenu(null)
               setUnpivoting({ around: menuCol.name })
             } : undefined}
+            onCategorize={
+              base && !isTemporal(menuCol) && !menuCol.numeric && !ops.computed.some((x) => x.name === menuCol.name && !x.categorize)
+                ? () => {
+                    setMenu(null)
+                    const added = ops.computed.find((x) => x.name === menuCol.name && x.categorize)
+                    setCategorizing(added ? { edit: added.name } : { column: menuCol.name })
+                  }
+                : undefined
+            }
+            categorized={ops.computed.some((x) => x.name === menuCol.name && x.categorize)}
+          />
+        </Lazy>
+      )}
+      {categorizing && result?.table && (
+        <Lazy onFail={(e) => partFailed(e, () => setCategorizing(null))}>
+          <CategorizeDialog
+            table={result.table}
+            // Words are looked for in the rows' own columns (not in another added column).
+            columns={result.columns.filter((c) => !ops.computed.some((x) => x.name === c.name))}
+            rowCount={result.rowCount}
+            column={categorizing.column}
+            initial={(() => {
+              const added = categorizing.edit ? ops.computed.find((x) => x.name === categorizing.edit) : undefined
+              return added?.categorize ? { ...added.categorize, name: added.name } : undefined
+            })()}
+            // Every name in use: shown, hidden, and added columns still on their way.
+            taken={[...result.columns.map((c) => c.name), ...(ops.hidden ?? []), ...ops.computed.map((c) => c.name)]}
+            onClose={() => setCategorizing(null)}
+            onAdd={addCategories}
           />
         </Lazy>
       )}

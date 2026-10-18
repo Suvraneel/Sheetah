@@ -5,7 +5,8 @@ import type { ColumnInfo, ResultSet } from '../engine/result'
 import { cleaningFor, distinctValues, profileColumn, splitParts, topValues, type ColumnProfile } from '../engine/scan'
 import { lookAlikes, type Alike } from '../engine/alike'
 import { isIdLike, LOCALE, quoteLiteral, sqlName } from '../engine/sql'
-import { describeClean, isConversion, isTextColumn, visibleSpaces, type Clean, type CleanSuggestion } from '../engine/clean'
+import { describeClean, isConversion, visibleSpaces, type Clean } from '../engine/clean'
+import { isTextColumn, type CleanSuggestion } from '../engine/clean-scan'
 import { Icon } from './Icon'
 import { Chart } from './Chart'
 import { histogram, isTemporal, type Point } from '../engine/chart'
@@ -42,6 +43,9 @@ interface Props {
   onCountBy?: () => void
   /** Turn this column (and others like it) into rows. */
   onUnpivot?: () => void
+  /** Group the rows into categories by words in this column (or, if it's such a column, edit its rules). */
+  onCategorize?: () => void
+  categorized?: boolean
   onClose: () => void
 }
 
@@ -79,7 +83,7 @@ const OPS: Record<'number' | 'time' | 'text', { op: FilterOp; label: string }[]>
   ],
 }
 
-export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, picked = [], valuesSql, onUnpick, onDedupe, onClean, onCleans, cleaned, onUnclean, onInsert, onLookup, onHide, onCountBy, onUnpivot, onAddColumns, onClose }: Props) {
+export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, picked = [], valuesSql, onUnpick, onDedupe, onClean, onCleans, cleaned, onUnclean, onInsert, onLookup, onHide, onCountBy, onUnpivot, onCategorize, categorized, onAddColumns, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [profile, setProfile] = useState<ColumnProfile | null>(null)
   const [hist, setHist] = useState<Point[] | null>(null)
@@ -554,6 +558,11 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
         {onCountBy && (
           <button className="link-btn" onClick={onCountBy}>
             {kind === 'time' ? `Count rows by month of “${column.name}”` : `Count rows by “${column.name}”`}
+          </button>
+        )}
+        {onCategorize && (
+          <button className="link-btn" onClick={onCategorize}>
+            {categorized ? 'Edit these categories…' : `Group into categories by words in “${column.name}”…`}
           </button>
         )}
         {onLookup && (

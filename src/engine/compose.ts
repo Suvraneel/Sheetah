@@ -1,3 +1,4 @@
+import type { Categorize } from './categorize'
 import { cleanExpr, cleanSql, type Clean, type DropRows } from './clean'
 import { lookupSql, type Lookup } from './lookup'
 import { LOCALE, quoteIdent, quoteLiteral, splitStatements, sqlName } from './sql'
@@ -42,8 +43,8 @@ export interface Filter {
 export interface Ops {
   sort?: { column: string; dir: 'asc' | 'desc' }
   filters: Filter[]
-  /** Added columns: a name and its formula (and, for one Sheetah wrote, what it is in words). */
-  computed: { name: string; expr: string; note?: string }[]
+  /** Added columns: a name and its formula (and, for one Sheetah wrote, what it is in words; for categories, their rules). */
+  computed: { name: string; expr: string; note?: string; categorize?: Categorize }[]
   /** Find: rows where any column contains this text. */
   search?: string
   /** Duplicates by a column: show only repeated values, or keep the first row of each. */

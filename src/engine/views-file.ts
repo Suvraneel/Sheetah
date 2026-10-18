@@ -2,7 +2,19 @@
  * Views files: saved views exported to hand to someone or move to another browser, and imported from
  * one (loaded only when a file is exported or picked).
  */
+import { categorizeExpr, type Categorize } from './categorize'
 import { cleanShapes, newId, stepsOf, strings, tablesIn, type SavedView, type ViewSteps } from './views'
+
+/** An added column's category rules, kept only if they are exactly its formula (what runs is what's edited). */
+function rulesThatFit(c: { expr: string; categorize?: unknown }): Categorize | undefined {
+  const r = c.categorize as Categorize | undefined
+  try {
+    const ok = !!r && typeof r.column === 'string' && Array.isArray(r.rules) && r.rules.every((x) => x && typeof x.category === 'string' && Array.isArray(x.words) && x.words.every((w) => typeof w === 'string'))
+    return ok && (r.otherwise === undefined || typeof r.otherwise === 'string') && categorizeExpr(r) === c.expr ? r : undefined
+  } catch {
+    return undefined
+  }
+}
 
 /*
  * Views travel as a small JSON file (Saved › Export), so a tidy-up made once can be handed to a colleague
@@ -67,7 +79,13 @@ export function parseViews(text: string): SavedView[] {
       // Kept only if they're exactly the SQL (checked again whenever the view runs).
       ...(v.steps && typeof v.steps === 'object' ? { steps: v.steps as ViewSteps } : {}),
     })
-    if (out.at(-1)!.steps && !stepsOf(out.at(-1)!)) delete out.at(-1)!.steps
+    const last = out.at(-1)!
+    if (last.steps && !stepsOf(last)) delete last.steps
+    if (last.steps)
+      last.steps = {
+        ...last.steps,
+        ops: { ...last.steps.ops, computed: last.steps.ops.computed.map(({ categorize, ...c }) => ({ ...c, ...(rulesThatFit({ ...c, categorize }) ? { categorize } : {}) })) },
+      }
   }
   if (!out.length) throw new Error('That views file has no views in it.')
   return out

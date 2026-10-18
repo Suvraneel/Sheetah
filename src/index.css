@@ -805,8 +805,11 @@ h1, h2, h3 { margin: 0; }
   width: 28px !important;
   height: 28px;
   padding: 0 !important;
+  border: 0;
   border-radius: 99px !important;
+  background: transparent;
   color: var(--muted);
+  cursor: pointer;
 }
 .icon-btn:hover { color: var(--text); background: var(--surface) !important; box-shadow: 0 0 0 1px var(--hair); }
 .chip.static { cursor: default; }
@@ -1790,3 +1793,18 @@ body:has(.modal-backdrop) .toast-stack { z-index: 29; }
 .check.is-ok svg { color: var(--ok); }
 .check.is-off { color: var(--danger); font-weight: 600; }
 .check-dismiss { margin-left: auto; border: 0; background: transparent; cursor: pointer; }
+
+/* ---------- Categories by words ---------- */
+.cat-col { display: flex; align-items: center; gap: 8px; max-width: 22em; margin: 4px 0 12px; padding: 0; background: none; box-shadow: none; }
+.cat-rules { display: grid; gap: 8px; }
+.cat-rule { display: grid; grid-template-columns: minmax(0, 12em) minmax(0, 1fr) 6em auto; align-items: center; gap: 8px; }
+.cat-count { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cat-actions { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.cat-other { display: grid; grid-template-columns: auto minmax(0, 12em); align-items: center; justify-content: start; gap: 8px; margin-top: 4px; }
+.cat-words { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 14px 0 4px; }
+.cat-n { color: var(--faint); font-weight: 500; font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) {
+  .cat-rule { grid-template-columns: minmax(0, 1fr) auto; }
+  .cat-rule .input:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+  .cat-count { display: none; }
+}

@@ -15,6 +15,12 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   checked to open where the last one closed (*Opens at 7,000, where stmt_apr closed*, or how far apart: a statement
   missing in between), and the rows are counted against last time. Checks sit above the rows (not in a passing
   toast) while the step they checked is there. What a view last ran on stays in this browser, never in a views file.
+- **Categories from words**: *Group Narration into categories* (offered once a statement's amount is signed, and in
+  any text column's menu) adds a category column from rules like *swiggy, zomato → Food and dining*: matched where a
+  word starts (*ola* is Ola and OLACABS, not COLA), the first rule winning, the rest *Other*. The column's common words
+  are listed to pick from (payment rails and banks left out), the usual categories are one click, and each says how
+  many rows it gets. The rules are readable SQL, kept with a saved view; *Pivot by month* then lays each category out
+  month by month. *Edit these categories…* in the column's menu changes them.
 - **Two-digit years read the right way round**: `01/04/24` is 1 April 2024, not 24 April 2001 (the file reader's
   guess), and `01/04/24 10:30` is a time, not the year 1. A file read the other way would put its dates years
   from today, so one that really is year first (`24/01/31`) stays as it is.

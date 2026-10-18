@@ -477,6 +477,67 @@ test.describe('bank statements', () => {
     await expect(page.locator('.checks .is-off', { hasText: 'Closing Balance on row 2 doesn’t follow from the row above: off by 500' })).toBeVisible()
   })
 
+  test('narrations become categories by their words, then a pivot of each category by month', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance',
+      '13/04/24,UPI-SWIGGY-swiggy@icici,500.00,,"9,500.00"',
+      '15/04/24,NEFT CR-ACME-SALARY,,"50,000.00","59,500.00"',
+      '19/04/24,UPI-UBER-trip,300.00,,"59,200.00"',
+      '14/05/24,UPI-ZOMATO-order,400.00,,"58,800.00"',
+      '22/05/24,UPI-Mystery Shop,100.00,,"58,700.00"',
+    ].join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('stmt.csv', `${csv}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('5 rows')
+    await page.getByRole('button', { name: /^Add signed amount/ }).click()
+    await page.getByRole('button', { name: 'Group Narration into categories' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Group Narration into categories' })
+    await dialog.getByRole('button', { name: /^Start with the usual ones/ }).click()
+    await expect(dialog.getByLabel('Category 1 name')).toHaveValue('Food and dining')
+    await expect(dialog.getByLabel('Category 1 words')).toHaveValue('swiggy, zomato')
+    // A word of its own, picked from the column's common words, goes to the category being edited.
+    await dialog.getByLabel('Category 1 words').focus()
+    await dialog.getByRole('group', { name: 'Common words in Narration' }).getByRole('button', { name: /^mystery/ }).click()
+    await expect(dialog.getByLabel('Category 1 words')).toHaveValue('swiggy, zomato, mystery')
+    await expect(dialog.getByRole('status')).toHaveText('5 rows: 5 in 3 categories, 0 as Other.')
+    await dialog.getByRole('button', { name: 'Add category' }).click()
+    await expect(page.locator('.op-chip', { hasText: 'category (by Narration)' })).toBeVisible()
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('Food and dining')
+    await page.locator('.toast', { hasText: 'Added category: 3 categories by words in Narration' }).getByRole('button', { name: 'Pivot by month' }).click()
+    const pivot = page.getByRole('dialog', { name: 'Summarize this result' })
+    await expect(pivot.locator('.pivot-name')).toHaveText(['category'])
+    await expect(pivot.getByLabel('Column field')).toHaveValue('Date')
+    await pivot.getByRole('button', { name: 'Create pivot' }).click()
+    // Food and dining, Salary, Travel, and the total; April and May across.
+    await expect(page.locator('.result-meta')).toContainText('4 rows · 4 columns')
+    await expect(page.locator('.sr-grid [role=columnheader]').nth(1)).toContainText('2024-04')
+  })
+
+  test('a statement that keeps its file name each month is still checked against last month’s', async ({ page }) => {
+    await openApp(page)
+    const head = 'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance'
+    const april = [head, '13/04/24,UPI to Ravi,500.00,,"9,500.00"', '19/04/24,ATM,"1,500.00",,"8,000.00"']
+    await page.locator('input[type=file]').setInputFiles([file('Statement.csv', `${april.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('2 rows')
+    await page.getByRole('button', { name: /^Add signed amount/ }).click()
+    await expect(page.getByRole('button', { name: 'Run query' })).toBeVisible({ timeout: 60_000 })
+    await page.getByRole('main').getByRole('button', { name: 'Save view' }).click()
+    await page.fill('#view-name', 'Monthly')
+    await page.locator('.modal .btn-primary').click()
+    await expect(page.locator('.side-view')).toContainText('Monthly')
+
+    // May's file, same name; it opens at 7,500, not the 8,000 April closed at.
+    await page.reload()
+    await expect(page.locator('.engine-pill.is-ready')).toBeVisible({ timeout: 90_000 })
+    const may = [head, '14/05/24,Salary,,"10,000.00","17,500.00"', '20/05/24,Rent,"3,000.00",,"14,500.00"', '22/05/24,UPI,100.00,,"14,400.00"']
+    await page.locator('input[type=file]').setInputFiles([file('Statement.csv', `${may.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    await page.locator('.side-tabs button', { hasText: 'Saved' }).click()
+    await page.locator('.side-view', { hasText: 'Monthly' }).click()
+    await expect(page.locator('.toast', { hasText: '· 3 rows (2 last time)' })).toBeVisible()
+    await expect(page.locator('.checks .is-off', { hasText: 'Opens at 7,500, but the last statement closed at 8,000: 500 apart' })).toBeVisible()
+  })
+
   test('next month’s statement is checked when a saved view runs on it: a missing line is named', async ({ page }) => {
     await openApp(page)
     const head = 'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance'
