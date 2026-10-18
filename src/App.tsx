@@ -1802,6 +1802,7 @@ export default function App() {
             <TablesPanel
               tables={tables}
               openName={openName}
+              converted={ops.clean?.length && result && !result.message ? Object.fromEntries(result.columns.map((c) => [c.name, c.type])) : undefined}
               onOpen={(name) => {
                 if (sheet) pickFromSheet()
                 void openAndScan(name)

@@ -29,9 +29,11 @@ interface TablesProps {
   /** Column lists shown or hidden by hand (otherwise: the open table's, or all of a few); kept across tabs. */
   colsOpen: Record<string, boolean>
   onToggleCols: (table: string, open: boolean) => void
+  /** The open table's columns as its steps leave them (a date column converted): said as they now are. */
+  converted?: Record<string, string>
 }
 
-export function TablesPanel({ tables, openName, onOpen, onInsert, onCompare, onStack, keep, colsOpen, onToggleCols }: TablesProps) {
+export function TablesPanel({ tables, openName, onOpen, onInsert, onCompare, onStack, keep, colsOpen, onToggleCols, converted }: TablesProps) {
   return (
     <ul className="side-list">
       {tables.map((t) => {
@@ -62,7 +64,9 @@ export function TablesPanel({ tables, openName, onOpen, onInsert, onCompare, onS
                       <span>{c.name}</span>
                       {/* As a spreadsheet would say it; the database's own type on hover (and in the column menu). */}
                       <span className="side-type" title={c.type.toLowerCase()}>
-                        {friendlyType(c.type)}
+                        {t.name.toLowerCase() === openName && converted?.[c.name] && friendlyType(converted[c.name]) !== friendlyType(c.type)
+                          ? `${friendlyType(converted[c.name])} (converted)`
+                          : friendlyType(c.type)}
                       </span>
                     </button>
                   </li>

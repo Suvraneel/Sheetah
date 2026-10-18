@@ -64,9 +64,11 @@ test.describe('grid and query engine', () => {
 
   test('header menu: filter from top values, sort, formula column', async ({ page }) => {
     await openDemo(page)
+    // Once the sample's first look-over is done (its columns are as wide as they'll be).
+    await expect(page.getByRole('button', { name: 'Run query' })).toBeVisible({ timeout: 60_000 })
     const top = await gridTop(page)
     await page.mouse.click(860, top + 20) // city
-    await expect(page.locator('.colmenu')).toBeVisible()
+    await expect(page.locator('.colmenu-head')).toContainText('city')
     await expect(page.locator('.topvals li').first()).toBeVisible()
     await page.locator('.topvals li').first().click()
     await expect(page.locator('.op-chips')).toContainText('city =')

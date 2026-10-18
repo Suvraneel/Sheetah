@@ -57,10 +57,19 @@ async function readDates(name: string, path: string, read: (opts: string) => str
   const f = await sendAll(`SELECT DateFormat AS d, TimestampFormat AS t FROM sniff_csv(${quoteLiteral(path)})`)
     .then((t) => t.toArray()[0]?.toJSON() as { d?: string; t?: string } | undefined)
     .catch((e) => (isCancel(e) ? Promise.reject(e) : undefined))
-  const date = String(f?.d ?? '')
+  let date = String(f?.d ?? '')
   let time = String(f?.t ?? '')
-  let order: 'dmy' | 'mdy' | undefined = /^%d\W%m/.test(date) ? 'dmy' : /^%m\W%d/.test(date) ? 'mdy' : undefined
   const one = (sql: string) => sendAll(sql).then((t) => (t.toArray()[0]?.toJSON() ?? {}) as Record<string, unknown>)
+  // No format from the sniffer (a file whose rows have more or fewer fields than its header, read again with
+  // its separator): how the dates are written, from the text itself, as the reader would have said it.
+  const plain = dated.filter((c) => c.type === 'DATE')
+  if (!date && plain.length) {
+    const c = quoteIdent(plain[0].name)
+    const raw = String((await one(`SELECT ${c} AS v FROM ${read('all_varchar = true')} WHERE ${c} IS NOT NULL AND trim(${c}) <> '' LIMIT 1`).catch(() => ({}) as Record<string, unknown>)).v ?? '')
+    const m = /^\d{1,2}([/.-])\d{1,2}\1\d{2}$/.exec(raw.trim())
+    if (m) date = `%y${m[1]}%m${m[1]}%d`
+  }
+  let order: 'dmy' | 'mdy' | undefined = /^%d\W%m/.test(date) ? 'dmy' : /^%m\W%d/.test(date) ? 'mdy' : undefined
   // Times read as the year 1 (no seconds, so no format found): how they're written, from the text itself.
   const times = dated.filter((c) => c.type.startsWith('TIMESTAMP'))
   if (times.length && !yearLast(time, 'dmy')) {

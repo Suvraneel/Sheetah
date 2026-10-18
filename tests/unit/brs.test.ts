@@ -35,24 +35,26 @@ test('the bank is the statement with a running balance, whichever side it is on'
 })
 
 const iso = (d: unknown) => (d === null || d === undefined ? null : new Date(d instanceof Date ? d.getTime() : Number(d)).toISOString().slice(0, 10))
-const laid = (rows: Record<string, unknown>[]) => rows.map((r) => [r.Particulars, iso(r.Date), r.Amount, r.Total])
+// DECIMAL(18, 2) comes back from Arrow unscaled (5892400 is 58,924.00): the grid and the export scale it.
+const num = (v: unknown) => (v === null || v === undefined ? null : Number(v) / 100)
+const laid = (rows: Record<string, unknown>[]) => rows.map((r) => [r.Particulars, iso(r.Date), num(r.Amount), num(r.Total)])
 
 test('from the bank’s closing balance to the books’: each heading, the lines under it, and what the books should show', async () => {
   const spec: MatchSpec = { a: bankSide, b: booksSide('rbooks'), days: 3, flip: false }
   const rows = await q(brsSql({ match: matchSql(spec, types), spec, bank: 'a', closing: 58924, asOf: '2024-04-30' }))
   expect(Object.keys(rows[0])).toEqual(['Particulars', 'Date', 'Amount', 'Total'])
   expect(laid(rows)).toEqual([
-    ['Balance as per bank statement (rbank) on Apr 30, 2024', null, null, 58924],
-    ['Add: deposits in the books, not yet credited by the bank', null, null, 2500],
-    ['   Kiran', '2024-04-28', 2500, null],
+    ['Balance as per bank statement on Apr 30, 2024', null, null, 58924],
+    ['Add: deposits not yet credited by the bank', null, null, 2500],
+    ['– Kiran', '2024-04-28', 2500, null],
     ['Less: cheques issued, not yet presented', null, null, 3000],
-    ['   Cheque to Mohan', '2024-04-29', 3000, null],
-    ['Less: credits by the bank, not in the books (interest, direct receipts)', null, null, 42],
-    ['   Interest', '2024-04-30', 42, null],
-    ['Add: debits by the bank, not in the books (charges, direct debits)', null, null, 618],
-    ['   UPI Ravi', '2024-04-01', 500, null],
-    ['   Bank charges', '2024-04-09', 118, null],
-    ['Balance as per books (rbooks), as it should be', null, null, 59000],
+    ['– Cheque to Mohan', '2024-04-29', 3000, null],
+    ['Less: credits by the bank, not in the books', null, null, 42],
+    ['– Interest', '2024-04-30', 42, null],
+    ['Add: debits by the bank, not in the books', null, null, 618],
+    ['– UPI Ravi', '2024-04-01', 500, null],
+    ['– Bank charges', '2024-04-09', 118, null],
+    ['Balance as per books (should be)', null, null, 59000],
   ])
 })
 
@@ -60,10 +62,10 @@ test('books first, written the other way round: the same statement; without a cl
   const spec: MatchSpec = { a: booksSide('rcash'), b: bankSide, days: 3, flip: true }
   const rows = await q(brsSql({ match: matchSql(spec, types), spec, bank: 'b', closing: null }))
   expect(laid(rows).filter((r) => r[1] === null)).toEqual([
-    ['Add: deposits in the books, not yet credited by the bank', null, null, 2500],
+    ['Add: deposits not yet credited by the bank', null, null, 2500],
     ['Less: cheques issued, not yet presented', null, null, 3000],
-    ['Less: credits by the bank, not in the books (interest, direct receipts)', null, null, 42],
-    ['Add: debits by the bank, not in the books (charges, direct debits)', null, null, 618],
+    ['Less: credits by the bank, not in the books', null, null, 42],
+    ['Add: debits by the bank, not in the books', null, null, 618],
     ['rcash less rbank: the headings above, net', null, null, 76],
   ])
 })
@@ -72,6 +74,6 @@ test('a line with no date (an opening balance the steps didn’t leave out) isn�
   await q(`CREATE OR REPLACE TABLE rledger AS SELECT * FROM rbooks UNION ALL SELECT NULL, 'Opening Balance', 10000.0`)
   const spec: MatchSpec = { a: bankSide, b: booksSide('rledger'), days: 3, flip: false }
   const rows = laid(await q(brsSql({ match: matchSql(spec, types), spec, bank: 'a', closing: 58924, asOf: '2024-04-30' })))
-  expect(rows.at(-2)).toEqual(['Balance as per books (rledger), as it should be', null, null, 59000])
+  expect(rows.at(-2)).toEqual(['Balance as per books (should be)', null, null, 59000])
   expect(rows.at(-1)).toEqual(['Not counted: 1 line with no date (a balance or total line?)', null, null, null])
 })

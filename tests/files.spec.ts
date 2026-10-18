@@ -199,6 +199,18 @@ test.describe('files that are something else inside', () => {
   })
 })
 
+test.describe('a statement whose total line has a field missing', () => {
+  test('its two-digit years are still read day first', async ({ page }) => {
+    await openApp(page)
+    // The total line has one field fewer than the header: the file is read again with its separator.
+    const csv = 'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance\n13/04/24,UPI Ravi,500.00,,"9,500.00"\n15/04/24,NEFT Acme,,"50,000.00","59,500.00"\n30/04/24,Interest,,42.00,"59,542.00"\n,Total,500.00,"50,042.00"\n'
+    await page.locator('input[type=file]').setInputFiles([buf('ragged.csv', csv)])
+    await expect(page.locator('.result-meta')).toContainText('4 rows')
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2024-04-13')
+    await expect(page.locator('.sr-grid [role=row]').nth(3)).toContainText('2024-04-30')
+  })
+})
+
 test.describe('India’s identifiers', () => {
   test('GSTINs and PANs are checked as the table opens: a mistyped one is named', async ({ page }) => {
     await openApp(page)

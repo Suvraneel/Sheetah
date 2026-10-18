@@ -62,19 +62,19 @@ export function brsSql({ match, spec, bank, closing, asOf }: Reconcile): string 
   const sign = bank === 'b' && spec.flip ? '-' : ''
   // Each heading, the lines under it (by side and way), and what it does on the way from the bank to the books.
   const heads: [number, string, string, number][] = [
-    [2, 'Add: deposits in the books, not yet credited by the bank', `status = ${quoteLiteral(booksOnly)} AND amount > 0`, 1],
+    [2, 'Add: deposits not yet credited by the bank', `status = ${quoteLiteral(booksOnly)} AND amount > 0`, 1],
     [3, 'Less: cheques issued, not yet presented', `status = ${quoteLiteral(booksOnly)} AND amount < 0`, -1],
-    [4, 'Less: credits by the bank, not in the books (interest, direct receipts)', `status = ${quoteLiteral(bankOnly)} AND amount > 0`, -1],
-    [5, 'Add: debits by the bank, not in the books (charges, direct debits)', `status = ${quoteLiteral(bankOnly)} AND amount < 0`, 1],
+    [4, 'Less: credits by the bank, not in the books', `status = ${quoteLiteral(bankOnly)} AND amount > 0`, -1],
+    [5, 'Add: debits by the bank, not in the books', `status = ${quoteLiteral(bankOnly)} AND amount < 0`, 1],
   ]
   const dated = `coalesce(${sqlName(c.aDate)}, ${sqlName(c.bDate)})`
   const money = closing === null ? null : `${closing}::DOUBLE`
   const net = `(SELECT coalesce(sum(a * s), 0) FROM g)`
   const top = money
-    ? `SELECT 1 AS h, 0 AS o, ${quoteLiteral(`Balance as per bank statement (${bankName})${asOf ? ` on ${day(asOf)}` : ''}`)} AS p, NULL::DATE AS d, NULL::DOUBLE AS a, ${money} AS t\nUNION ALL\n`
+    ? `SELECT 1 AS h, 0 AS o, ${quoteLiteral(`Balance as per bank statement${asOf ? ` on ${day(asOf)}` : ''}`)} AS p, NULL::DATE AS d, NULL::DOUBLE AS a, ${money} AS t\nUNION ALL\n`
     : ''
   const end = money
-    ? `SELECT 6, 0, ${quoteLiteral(`Balance as per books (${booksName}), as it should be`)}, NULL, NULL, ${money} + ${net}`
+    ? `SELECT 6, 0, 'Balance as per books (should be)', NULL, NULL, ${money} + ${net}`
     : `SELECT 6, 0, ${quoteLiteral(`${booksName} less ${bankName}: the headings above, net`)}, NULL, NULL, ${net}`
   return `${commentText(`-- Bank reconciliation: ${bankName} against ${booksName}, from the payments matched`)}
 WITH m AS (
@@ -88,10 +88,11 @@ g AS (
     CASE ${heads.map(([, , when, s]) => `WHEN ${when} THEN ${s}`).join(' ')} END AS s
   FROM k WHERE d IS NOT NULL
 )
-SELECT p AS "Particulars", d AS "Date", round(a, 2) AS "Amount", round(t, 2) AS "Total" FROM (
+SELECT p AS "Particulars", d AS "Date", round(a, 2)::DECIMAL(18, 2) AS "Amount", round(t, 2)::DECIMAL(18, 2) AS "Total" FROM (
 ${top}SELECT h, 0 AS o, p, NULL::DATE AS d, NULL::DOUBLE AS a, (SELECT coalesce(sum(a), 0) FROM g WHERE g.h = heads.h)::DOUBLE AS t FROM heads
 UNION ALL
-SELECT h, 1, '   ' || coalesce(t, '(no description)'), d, a, NULL FROM g
+-- Each line under its heading, marked as one of its lines (a dash: spaces in front would be stray ones to tidy).
+SELECT h, 1, '– ' || coalesce(t, '(no description)'), d, a, NULL FROM g
 UNION ALL
 ${end}
 UNION ALL

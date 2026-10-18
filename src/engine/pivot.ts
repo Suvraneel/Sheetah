@@ -118,11 +118,27 @@ function aggregate(v: ValueField, i: number, filter?: string) {
   return `${v.agg}(__v${i})${f}`
 }
 
+/**
+ * Quarters across and the years they're in down the side (the same dates): each column is a quarter of the
+ * year, Q1 (Apr–Jun) in a financial one, not a staircase of every quarter there is.
+ */
+function quarterOfYear(spec: PivotSpec, cols: ColumnInfo[]): string | null {
+  const c = spec.columns
+  const col = c && byName(cols, c.column)
+  if (!c || !col || !isTemporal(col) || (c.grain !== 'quarter' && c.grain !== 'fquarter')) return null
+  if (!spec.rows.some((r) => r.column === c.column && r.grain === (c.grain === 'fquarter' ? 'fy' : 'year'))) return null
+  const t = timeExpr(col)
+  const months = c.grain === 'fquarter' ? ['Apr–Jun', 'Jul–Sep', 'Oct–Dec', 'Jan–Mar'] : ['Jan–Mar', 'Apr–Jun', 'Jul–Sep', 'Oct–Dec']
+  const q = c.grain === 'fquarter' ? `((quarter(${t}) + 2) % 4 + 1)` : `quarter(${t})`
+  return `'Q' || ${q} || ' (' || [${months.map((m) => quoteLiteral(m)).join(', ')}][${q}] || ')'`
+}
+const columnExpr = (spec: PivotSpec, cols: ColumnInfo[]) => quarterOfYear(spec, cols) ?? fieldExpr(spec.columns!, cols)
+
 /** Distinct values of the column field, in natural order (dates by date, numbers by number). */
 export async function columnValues(sourceSql: string, spec: PivotSpec, cols: ColumnInfo[]): Promise<(string | null)[]> {
   if (!spec.columns) return []
   const { conn } = await getEngine()
-  const expr = fieldExpr(spec.columns, cols)
+  const expr = columnExpr(spec, cols)
   const res = await conn.query(
     `${sourceCte({ sql: sourceSql })}SELECT v::VARCHAR AS s FROM (SELECT DISTINCT ${expr} AS v FROM q) ORDER BY v NULLS LAST LIMIT ${MAX_PIVOT_COLUMNS + 1}`,
   )
@@ -148,7 +164,7 @@ export function pivotSql(sourceSql: string, spec: PivotSpec, cols: ColumnInfo[],
   const keys = spec.rows.map((f) => ({ expr: fieldExpr(f, cols), alias: unique(fieldAlias(f)), period: isPeriod(f, cols) ? f.grain : null }))
   const kCols = [
     ...keys.map((k) => (k.expr === quoteIdent(k.alias) ? k.expr : `${k.expr} AS ${quoteIdent(k.alias)}`)),
-    ...(spec.columns ? [`(${fieldExpr(spec.columns, cols)})::VARCHAR AS __pivot`] : []),
+    ...(spec.columns ? [`(${columnExpr(spec, cols)})::VARCHAR AS __pivot`] : []),
     ...values.map((v, i) => (v.column && v.agg !== 'count' ? `${quoteIdent(v.column)} AS __v${i}` : null)).filter(Boolean),
   ]
   if (!kCols.length) kCols.push('1 AS __one')
@@ -167,7 +183,7 @@ export function pivotSql(sourceSql: string, spec: PivotSpec, cols: ColumnInfo[],
   if (spec.columns) {
     for (const cv of colValues) {
       const filter = cv === null ? '__pivot IS NULL' : `__pivot = ${quoteLiteral(cv)}`
-      const head = cv === null ? '(empty)' : cv.trim() === '' ? '(blank)' : spec.columns && isPeriod(spec.columns, cols) ? periodLabel(cv, spec.columns.grain) : cv
+      const head = cv === null ? '(empty)' : cv.trim() === '' ? '(blank)' : spec.columns && isPeriod(spec.columns, cols) && !quarterOfYear(spec, cols) ? periodLabel(cv, spec.columns.grain) : cv
       values.forEach((v, i) => select.push(`${aggregate(v, i, filter)} AS ${quoteIdent(unique(values.length > 1 ? `${head} · ${valueLabel(v)}` : head))}`))
     }
     values.forEach((v, i) => {

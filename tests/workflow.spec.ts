@@ -364,6 +364,8 @@ test.describe('the messy sample', () => {
     await page.getByRole('button', { name: /^Convert 4 text columns to numbers and dates/ }).click()
     // Four columns converted in one click: one chip for them; clicking it shows each, its × undoes them all.
     await expect(page.getByRole('button', { name: 'Undo all 4 conversions' })).toBeVisible()
+    // The sidebar says what the columns are now, beside what the file has.
+    await expect(page.locator('.side-type', { hasText: 'number (converted)' }).first()).toBeVisible()
     await page.getByRole('button', { name: '4 columns converted' }).click()
     await expect(page.locator('.op-chip', { hasText: 'Taxable Value as number' })).toBeVisible()
     await page.getByRole('button', { name: 'Group conversions' }).click()
@@ -565,13 +567,13 @@ test.describe('bank statements', () => {
     await expect(page.locator('.result-meta')).toContainText('8 rows · 4 columns')
     await expect(page.locator('.origin-chip')).toContainText('Bank reconciliation, from payments matched')
     const line = (i: number) => page.locator('.sr-grid [role=row]').nth(i)
-    await expect(line(1)).toContainText('Balance as per bank statement (bank_apr) on Apr 19, 2024')
+    await expect(line(1)).toContainText('Balance as per bank statement on Apr 19, 2024')
     await expect(line(1)).toContainText('59,382')
-    await expect(line(2)).toContainText('Add: deposits in the books, not yet credited by the bank')
+    await expect(line(2)).toContainText('Add: deposits not yet credited by the bank')
     await expect(line(3)).toContainText('Kiran')
     await expect(line(3)).toContainText('2,500')
     await expect(line(7)).toContainText('Bank charges')
-    await expect(line(8)).toContainText('Balance as per books (books_apr), as it should be')
+    await expect(line(8)).toContainText('Balance as per books (should be)')
     await expect(line(8)).toContainText('62,000')
   })
 

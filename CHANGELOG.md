@@ -28,7 +28,8 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 - **A bank's own export, tidied**: a statement's summary below its transactions is offered for leaving out
   (*undated lines*); an opening balance written in Debit or Credit is a balance line; a total label is found under
   Particulars or Party when the first column is dates or codes; balances written *2,11,150.00 Cr* are checked.
-- **Financial years**: pivots group dates by financial year (April to March: *FY 2024-25*) and its quarters.
+- **Financial years**: pivots group dates by financial year (April to March: *FY 2024-25*) and its quarters; with
+  years down the side, quarters across read *Q1 (Apr–Jun)* to *Q4 (Jan–Mar)*.
 - **Tally**: an item invoice's sales ledger is read from its stock lines, a foreign-currency amount in rupees; a
   voucher whose debits and credits don't agree is named, and a trial balance's totals are checked.
 - **Bank statements, signed and checked**: a statement with money in and money out in two columns (Deposit /
@@ -207,6 +208,8 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   leaves out the table's month and year; Excel dates use Excel's own short date (as the reader's computer writes
   dates); the chart's date grain reads *Auto (month)*.
 - Each table keeps its checks while another is open.
+- The sidebar says what a converted column now is (*date (converted)*); notices sit to the right in the workspace,
+  clear of the rows being read; the Export menu's items load as it's first opened.
 - Three or more columns converted (usually one click on *Convert*) show as one chip, *4 columns converted*: clicking
   it lists them one by one, and only its × undoes them all. Look-alike values merged in a column group the same way
   (*City: 4 values merged*), and the column menu offers *Merge all*; a stray space shows as ␣ (*Mumbai␣ → Mumbai*).
@@ -258,6 +261,8 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   says to tap for exact values.
 
 ### Fixed
+- A statement whose total line has a field missing (read again with its separator) had its two-digit years read
+  year first (13/04/24 as 2013-04-24): now day first, as any other.
 - Charts of a pivot counted its Total row as a category; comparing a whole number with "12.0" read as a change;
   pivot column counts could exceed the rows (approximate distinct counts).
 - "Use row N as column names" was offered on tables whose columns all have real names.

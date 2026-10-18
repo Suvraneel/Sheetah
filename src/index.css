@@ -1223,8 +1223,12 @@ kbd {
 .toast-stack .toast { position: static; transform: none; max-width: 100%; pointer-events: auto; animation-name: toast-rise; }
 /* A dialog is the thing to deal with: notices wait under its backdrop instead of covering its buttons. */
 body:has(.modal-backdrop) .toast-stack { z-index: 29; }
-/* In the workspace, notices sit clear of the status bar (its sum is what people check). */
+/* In the workspace, notices sit clear of the status bar (its sum is what people check); on a wide screen, to
+   the right, over the grid's last columns rather than the middle of the rows being read. */
 .app:has(.statusbar) .toast-stack { bottom: 64px; }
+@media (min-width: 900px) {
+  .app:has(.statusbar) .toast-stack { left: auto; right: 24px; transform: none; align-items: flex-end; max-width: calc(100% - 48px); }
+}
 @keyframes toast-rise { from { opacity: 0; transform: translateY(16px); } }
 .toast-clock { opacity: 0.7; font-size: 12.5px; }
 .toast-text { min-width: 0; }
