@@ -56,45 +56,19 @@ export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLo
           <Icon name="arrowLeft" size={13} /> {origin.label}, from {origin.source}
         </button>
       )}
-      {ops.sort && (
+      {/* In the order the steps apply: rows left out, columns cleaned, looked up and added, then filters, hidden columns and the sort. */}
+      {ops.drop?.map((d, i) => (
         <button
+          key={`drop:${i}`}
           className="op-chip"
-          aria-label={removes(`sorted by ${ops.sort.column}, ${ops.sort.dir === 'asc' ? 'ascending' : 'descending'}`)}
-          onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, sort: undefined }))}
-          title={`Remove sort · ORDER BY ${sqlName(ops.sort.column)} ${ops.sort.dir.toUpperCase()}`}>
-          <Icon name={ops.sort.dir === 'asc' ? 'sortAsc' : 'sortDesc'} size={14} /> {ops.sort.column}, {ops.sort.dir === 'asc' ? 'ascending' : 'descending'}
-          <Icon name="close" size={12} />
-        </button>
-      )}
-      {ops.filters.map((f, i) => (
-        <button
-          key={i}
-          className="op-chip"
-          aria-label={removes(describeFilter(f))}
-          onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, filters: ops.filters.filter((_, j) => j !== i) }))}
-          title={`Remove filter · WHERE ${filterSql(f)}`}
+          aria-label={removes(`without ${d.label}`)}
+          onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, drop: ops.drop!.length > 1 ? ops.drop!.filter((_, j) => j !== i) : undefined }))}
+          title="Show these rows again"
         >
-          <Icon name="filter" size={14} /> {describeFilter(f)}
+          <Icon name="filter" size={14} /> Without {d.label}
           <Icon name="close" size={12} />
         </button>
       ))}
-      {ops.search && (
-        <button className="op-chip" aria-label={removes(`contains “${ops.search}”`)} onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, search: undefined }))} title="Remove search">
-          <Icon name="search" size={14} /> Contains “{ops.search}”
-          <Icon name="close" size={12} />
-        </button>
-      )}
-      {ops.dedupe && (
-        <button
-          className="op-chip"
-          aria-label={removes(ops.dedupe.mode === 'show' ? `duplicates in ${ops.dedupe.column}` : `first of each ${ops.dedupe.column}`)}
-          onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, dedupe: undefined }))}
-          title="Show all rows again"
-        >
-          <Icon name="copy" size={14} /> {ops.dedupe.mode === 'show' ? `Duplicates in ${ops.dedupe.column}` : `First of each ${ops.dedupe.column}`}
-          <Icon name="close" size={12} />
-        </button>
-      )}
       {shut.map((g) => (
         // Clicking a summary shows what's in it; only its × undoes them all.
         <span key={g.key} className="op-chip op-chip-split">
@@ -133,30 +107,6 @@ export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLo
             {g.regroup}
           </button>
         ))}
-      {ops.drop?.map((d, i) => (
-        <button
-          key={`drop:${i}`}
-          className="op-chip"
-          aria-label={removes(`without ${d.label}`)}
-          onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, drop: ops.drop!.length > 1 ? ops.drop!.filter((_, j) => j !== i) : undefined }))}
-          title="Show these rows again"
-        >
-          <Icon name="filter" size={14} /> Without {d.label}
-          <Icon name="close" size={12} />
-        </button>
-      ))}
-      {ops.hidden?.map((h) => (
-        <button
-          key={`hidden:${h}`}
-          className="op-chip"
-          aria-label={removes(`${h} hidden`)}
-          onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, hidden: ops.hidden!.length > 1 ? ops.hidden!.filter((x) => x !== h) : undefined }))}
-          title={`Show this column again · EXCLUDE (${sqlName(h)})`}
-        >
-          <Icon name="column" size={14} /> Hidden: {h}
-          <Icon name="close" size={12} />
-        </button>
-      ))}
       {ops.lookups?.map((l, i) => (
         <button key={`lookup:${i}`} className="op-chip" aria-label={removes(describeLookup(l))} onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply(withoutLookup(i)))} title="Remove these columns">
           <Icon name="link" size={14} /> {describeLookup(l)}
@@ -183,16 +133,68 @@ export function StepChips({ ops, onApply, withoutClean, withoutCleans, withoutLo
           </button>
         )
       })}
+      {ops.filters.map((f, i) => (
+        <button
+          key={i}
+          className="op-chip"
+          aria-label={removes(describeFilter(f))}
+          onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, filters: ops.filters.filter((_, j) => j !== i) }))}
+          title={`Remove filter · WHERE ${filterSql(f)}`}
+        >
+          <Icon name="filter" size={14} /> {describeFilter(f)}
+          <Icon name="close" size={12} />
+        </button>
+      ))}
+      {ops.search && (
+        <button className="op-chip" aria-label={removes(`contains “${ops.search}”`)} onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, search: undefined }))} title="Remove search">
+          <Icon name="search" size={14} /> Contains “{ops.search}”
+          <Icon name="close" size={12} />
+        </button>
+      )}
+      {ops.dedupe && (
+        <button
+          className="op-chip"
+          aria-label={removes(ops.dedupe.mode === 'show' ? `duplicates in ${ops.dedupe.column}` : `first of each ${ops.dedupe.column}`)}
+          onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, dedupe: undefined }))}
+          title="Show all rows again"
+        >
+          <Icon name="copy" size={14} /> {ops.dedupe.mode === 'show' ? `Duplicates in ${ops.dedupe.column}` : `First of each ${ops.dedupe.column}`}
+          <Icon name="close" size={12} />
+        </button>
+      )}
+      {ops.hidden?.map((h) => (
+        <button
+          key={`hidden:${h}`}
+          className="op-chip"
+          aria-label={removes(`Hidden: ${h}`)}
+          onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, hidden: ops.hidden!.length > 1 ? ops.hidden!.filter((x) => x !== h) : undefined }))}
+          title={`Show this column again · EXCLUDE (${sqlName(h)})`}
+        >
+          <Icon name="column" size={14} /> Hidden: {h}
+          <Icon name="close" size={12} />
+        </button>
+      ))}
+      {ops.sort && (
+        <button
+          className="op-chip"
+          aria-label={removes(`sorted by ${ops.sort.column}, ${ops.sort.dir === 'asc' ? 'ascending' : 'descending'}`)}
+          onClick={(e) => thenKeepFocus(e, '.op-chips', () => onApply({ ...ops, sort: undefined }))}
+          title={`Remove sort · ORDER BY ${sqlName(ops.sort.column)} ${ops.sort.dir.toUpperCase()}`}>
+          <Icon name={ops.sort.dir === 'asc' ? 'sortAsc' : 'sortDesc'} size={14} /> {ops.sort.column}, {ops.sort.dir === 'asc' ? 'ascending' : 'descending'}
+          <Icon name="close" size={12} />
+        </button>
+      )}
       {/* Kept in view at the row's end on a phone, however many steps scroll beside them. */}
       {(canUndo || canRedo || hasOps(ops)) && (
         <span className="op-actions">
-          {canUndo && (
-            <button className="link-btn" onClick={onUndo} title={`Undo (${isMac ? '⌘' : 'Ctrl'}+Z)`}>
+          {/* Both stay while either can be used (dimmed when not): the last Undo doesn't take focus with it. */}
+          {(canUndo || canRedo) && (
+            <button className="link-btn" aria-disabled={!canUndo} onClick={() => canUndo && onUndo()} title={`Undo (${isMac ? '⌘' : 'Ctrl'}+Z)`}>
               Undo
             </button>
           )}
-          {canRedo && (
-            <button className="link-btn" onClick={onRedo} title={`Redo (${isMac ? '⌘⇧Z' : 'Ctrl+Y'})`}>
+          {(canUndo || canRedo) && (
+            <button className="link-btn" aria-disabled={!canRedo} onClick={() => canRedo && onRedo()} title={`Redo (${isMac ? '⌘⇧Z' : 'Ctrl+Shift+Z or Ctrl+Y'})`}>
               Redo
             </button>
           )}

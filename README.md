@@ -40,7 +40,7 @@ There is no backend; it deploys as a static site for free.
 
 ### Answer questions
 
-- **SQL editor** with highlighting and table/column autocomplete (⌘/Ctrl + Enter), cancellable, with errors explained in spreadsheet terms (text in double quotes, a misspelt table with your tables listed, VLOOKUP or SUMIF and what does the job in SQL, clauses out of order) and DuckDB's own message under Details
+- **SQL editor** with highlighting and table/column autocomplete (⌘/Ctrl + Enter), Sheetah's own functions explained as you type, cancellable, with errors explained in spreadsheet terms (text in double quotes, `&` for joining text, `TOP 10`, dates without quotes, `1,000`, a misspelt table with your tables listed, VLOOKUP or SUMIF and what does the job in SQL, clauses out of order), most with a one-click fix, and DuckDB's own message under Details. A query that finds no rows says why when it's a slip (`= NULL`, `LIKE 'a*'`, `'pune'` for `'Pune'`); Undo goes back over typed queries too
 - **Pivot tables**: rows, columns (dates by year, financial year April to March, quarter, month, week or day), up to three values, totals, as readable SQL
 - **Quick charts**: trend over time (by day, week, month, quarter or year), top groups, or a distribution, computed over every row; "Open as query" turns a chart back into a table
 - **Example queries for any table**: totals by a category, a monthly trend, the largest rows, a summary of every column
@@ -173,7 +173,7 @@ Canvas grid ◀── 200-row chunks ── SELECT cols::VARCHAR FROM __result W
 | Random jumps, 10M rows | 16.7 ms median frame |
 | Export 2M rows to CSV | 61 MB file, a few seconds |
 | Import a 100,000-row .xlsx (2.9 MB) | ~2.4 s, types preserved |
-| JavaScript before first paint | 170 KB gzip, every script `index.html` loads and preloads (CI budget 180 KB; the 19 KB stylesheet is budgeted on its own); the engine (WASM), the editor, dialogs, the column menu, charts, error explanations and file sniffing load after |
+| JavaScript before first paint | 173 KB gzip, every script `index.html` loads and preloads (CI budget 180 KB; the 19 KB stylesheet is budgeted on its own); the engine (WASM), the editor, dialogs, the column menu, charts, error explanations and file sniffing load after |
 
 ## Testing
 

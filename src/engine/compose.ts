@@ -85,6 +85,40 @@ const isTimestamp = (t?: string) => !!t && /^TIMESTAMP/i.test(t)
 const isDateType = (t?: string) => !!t && /^DATE$/i.test(t)
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
 
+const MONTH_WORDS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+/**
+ * A date typed into a filter, as SQL reads it (2024-04-01), from the ways people type one: 2024-04-01,
+ * 01/04/2024 (day first, or month first where the reader writes it so, unless a part over 12 settles it),
+ * 1 Apr 2024, Apr 1, 2024. A time after it is kept (2024-04-01 10:30). Null if it isn't a real date.
+ */
+export function typedDate(text: string, monthFirst: boolean): string | null {
+  const t = text.trim()
+  const time = /^(.*?)(?:[ T](\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?))?$/.exec(t)!
+  const [day, clock] = [time[1].trim(), time[2]]
+  let y: number, m: number, d: number
+  const ymd = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(day)
+  const nums = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2}|\d{4})$/.exec(day)
+  const words = /^(\d{1,2})[\s-]+([A-Za-z]{3,})\.?,?[\s-]+(\d{4})$/.exec(day) ?? /^([A-Za-z]{3,})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})$/.exec(day)
+  if (ymd) [y, m, d] = [Number(ymd[1]), Number(ymd[2]), Number(ymd[3])]
+  else if (nums) {
+    const [a, b] = [Number(nums[1]), Number(nums[2])]
+    y = nums[3].length === 2 ? 2000 + Number(nums[3]) : Number(nums[3])
+    const first = a > 12 ? 'day' : b > 12 ? 'month' : monthFirst ? 'month' : 'day'
+    ;[d, m] = first === 'day' ? [a, b] : [b, a]
+  } else if (words) {
+    const dayFirst = /^\d/.test(words[1])
+    const name = (dayFirst ? words[2] : words[1]).slice(0, 3).toLowerCase()
+    m = MONTH_WORDS.indexOf(name) + 1
+    d = Number(dayFirst ? words[1] : words[2])
+    y = Number(words[3])
+    if (!m) return null
+  } else return null
+  const date = new Date(Date.UTC(y, m - 1, d))
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== m - 1 || date.getUTCDate() !== d) return null
+  const iso = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+  return clock ? `${iso} ${clock.length === 4 ? `0${clock}` : clock}` : iso
+}
+
 /** One filter as SQL (a WHERE condition). */
 export function filterSql(f: Filter): string {
   const c = sqlName(f.column)
@@ -196,12 +230,26 @@ export const removePickAll = (filters: Filter[], column: string) =>
 
 export function compose(base: string, ops: Ops): string {
   const sql = composeRows(base, ops)
-  if (!ops.hidden?.length) return sql
+  if (!ops.hidden?.length) return endsOpen(ops) ? `SELECT *\nFROM (\n${sql}\n)` : sql
   const core = (splitStatements(base).at(-1) ?? base).trim().replace(/;+\s*$/, '')
   const plain = PLAIN_TABLE.exec(core)
   // Hiding is the last step: filters and sorting can still use the hidden columns.
   const from = sql === core && plain ? sqlName(unquote(plain[1])) : `(\n${sql}\n)`
   return `SELECT * EXCLUDE (${ops.hidden.map(sqlName).join(', ')})\nFROM ${from}`
+}
+
+/**
+ * Whether the steps' SQL ends on a layer a clause typed after it would get wrong: the clean-up's
+ * REPLACE (a WHERE added there reads the text as it was, not the converted value: WHERE sees the rows
+ * read, not the ones made), or an ORDER BY of Sheetah's own row numbers (a WHERE after it isn't SQL).
+ * Such SQL is read from one more SELECT, so "WHERE amount > 100" typed at the end does what it says.
+ */
+function endsOpen(ops: Ops): boolean {
+  if (ops.sort) return false
+  // First of each value: ends on ORDER BY its row numbers, filtered or not.
+  if (ops.dedupe) return ops.dedupe.mode === 'remove'
+  if (ops.filters.length || ops.search) return false
+  return !!ops.clean?.length && !ops.lookups?.length && !ops.computed.length
 }
 
 function composeRows(base: string, ops: Ops): string {

@@ -385,7 +385,7 @@ export function suggestCleaning(column: string, s: CleanStats, locale = 'en-IN',
     const some = s.dates.map((hits, i) => ({ hits, f: DATE_FORMATS[i] })).filter((d) => d.hits / s.values >= SOME).sort((a, b) => b.hits - a.hits)[0]
     if (some) out.push({ clean: { column, kind: 'date', format: some.f.format }, label: `Convert to date anyway (${some.f.label})`, note: lost(some.hits, `dates like ${some.f.label}`) })
   }
-  if (s.untrimmed) out.push({ clean: { column, kind: 'trim' }, label: 'Trim extra spaces', note: `${sampled(s.untrimmed, 'has', 'have')} extra spaces` })
+  if (s.untrimmed) out.push({ clean: { column, kind: 'trim' }, label: 'Tidy spaces', note: `${sampled(s.untrimmed, 'has', 'have')} extra spaces` })
   if (s.blanks) out.push({ clean: { column, kind: 'blank' }, label: 'Treat blanks as empty', note: `${sampled(s.blanks, 'is', 'are')} blank` })
   return out
 }

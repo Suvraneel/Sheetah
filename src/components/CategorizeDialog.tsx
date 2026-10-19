@@ -140,7 +140,11 @@ export function CategorizeDialog({ table, columns, rowCount, column, initial: gi
     else setRules((rs) => [...rs, { category: known ?? title(word), words: word }])
   }
   const usual = known?.col === col ? known.words : []
-  const start = () => setRules(suggestRules(usual).map((r: CategoryRule) => ({ category: r.category, words: r.words.join(', ') })))
+  const start = () => {
+    setRules(suggestRules(usual).map((r: CategoryRule) => ({ category: r.category, words: r.words.join(', ') })))
+    // The button goes with the click: focus to the first category it filled in, not lost to the page.
+    requestAnimationFrame(() => dialog.current?.querySelector<HTMLElement>('.cat-rule input')?.focus())
+  }
   const starters = !rules.length ? suggestRules(usual) : []
   // Each category once (two rules can share one), and not the one for everything else.
   const names = [...new Set(usable.map((r) => r.category))].filter((c) => c !== otherwise.trim())
@@ -221,7 +225,15 @@ export function CategorizeDialog({ table, columns, rowCount, column, initial: gi
                 </div>
               ))}
               <div className="cat-actions">
-                <button type="button" className="link-btn" onClick={() => setRules((rs) => [...rs, { category: '', words: '' }])}>
+                <button
+                  type="button"
+                  className="link-btn"
+                  onClick={() => {
+                    setRules((rs) => [...rs, { category: '', words: '' }])
+                    // Straight to the new category's name.
+                    requestAnimationFrame(() => [...(dialog.current?.querySelectorAll<HTMLElement>('.cat-rule') ?? [])].at(-1)?.querySelector('input')?.focus())
+                  }}
+                >
                   + Add a category
                 </button>
                 {starters.length > 0 && (
@@ -254,7 +266,7 @@ export function CategorizeDialog({ table, columns, rowCount, column, initial: gi
                     type="button"
                     key={w.word}
                     className="pii-chip"
-                    aria-label={`Add ${w.word} (${nf.format(w.rows)} ${w.rows === 1 ? 'row' : 'rows'})`}
+                    aria-label={`${w.word} ${nf.format(w.rows)} ${w.rows === 1 ? 'row' : 'rows'}: add to a category`}
                     title={knownCategory(w.word) ? `Usually ${knownCategory(w.word)}` : 'Add to the category you were editing, or as a new one'}
                     // The chip goes once its word is used: focus stays among the words.
                     onClick={(e) => (wordAt.current = thenKeepFocus(e, '.cat-words', () => addWord(w.word), wordsFallback))}

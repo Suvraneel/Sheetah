@@ -56,6 +56,15 @@ export function PivotDialog({ sourceSql, columns, rowCount, initial, start, text
   }, [sourceSql, columns, rowCount])
 
   const spec = edited ?? (counts ? defaultPivot(columns, counts) : null)
+  // Once the fields are there, start on the first of them: not on Cancel (all the dialog had while it
+  // looked), nor on a field's remove button.
+  const ready = spec !== null
+  useEffect(() => {
+    const el = dialog.current
+    if (!ready || !el) return
+    const at = document.activeElement as HTMLElement | null
+    if (!at?.closest('.pivot-grid') || at.tagName === 'BUTTON') el.querySelector<HTMLElement>('.pivot-grid select')?.focus({ preventScroll: true })
+  }, [ready, dialog])
   const fields = useMemo(() => groupable(columns), [columns])
   const numeric = columns.filter((c) => c.numeric)
   const measures = numeric.filter((c) => !isIdLike(c.name)) // never "Sum of Voucher No."

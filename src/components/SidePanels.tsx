@@ -50,7 +50,18 @@ export function SavedPanel({ views, tableNames, onRun, onCopy, onDelete, onExpor
               <button className="icon-btn" title="Copy SQL" aria-label={`Copy SQL of ${v.name}`} onClick={() => onCopy(v)}>
                 <Icon name="copy" size={14} />
               </button>
-              <button className="icon-btn" title="Delete" aria-label={`Delete ${v.name}`} onClick={() => onDelete(v)}>
+              <button
+                className="icon-btn"
+                title="Delete"
+                aria-label={`Delete ${v.name}`}
+                onClick={(e) => {
+                  // Focus goes on to the next view (or the one before, or the list), not to the page.
+                  const item = e.currentTarget.closest('.view-item')
+                  const next = (item?.nextElementSibling?.matches('.view-item') ? item.nextElementSibling : item?.previousElementSibling)?.querySelector<HTMLElement>('.side-view')
+                  onDelete(v)
+                  requestAnimationFrame(() => (next?.isConnected ? next : document.querySelector<HTMLElement>('.side-tabs [aria-selected="true"]'))?.focus())
+                }}
+              >
                 <Icon name="trash" size={14} />
               </button>
             </span>

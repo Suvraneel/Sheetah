@@ -169,7 +169,7 @@ export const CLEAN_LABEL: Record<CleanKind, string> = {
   number: 'as number',
   percent: 'as number (from %)',
   date: 'as date',
-  trim: 'trimmed',
+  trim: 'spaces tidied',
   upper: 'UPPER CASE',
   lower: 'lower case',
   title: 'Title Case',

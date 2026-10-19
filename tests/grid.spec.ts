@@ -163,6 +163,39 @@ test.describe('grid and query engine', () => {
     await expect(page.locator('.result-meta')).toContainText('5 rows · 2 columns')
   })
 
+  test('spreadsheet habits in SQL, and queries that find nothing, are said with the query as meant', async ({ page }) => {
+    await openDemo(page)
+    const editBadge = page.locator('.edit-badge')
+    // Typed but not run: said by the Run button, until it's run.
+    await page.locator('.cm-content').click()
+    await page.keyboard.press('ControlOrMeta+a')
+    await page.keyboard.insertText("SELECT TOP 3 city & ' / ' & category AS place FROM orders")
+    await expect(editBadge).toHaveText('Edited, not run')
+    await page.keyboard.press('ControlOrMeta+Enter')
+    await expect(editBadge).toHaveCount(0)
+    await expect(page.locator('.error-banner')).toContainText('TOP 3 is SQL Server’s way')
+    await page.locator('.error-banner').getByRole('button', { name: 'Use LIMIT 3' }).click()
+    // & next: one slip at a time, each with its own fix.
+    await expect(page.locator('.error-banner')).toContainText('& joins text in a spreadsheet')
+    await page.locator('.error-banner').getByRole('button', { name: 'Use ||' }).click()
+    await expect(page.locator('.result-meta')).toContainText('3 rows · 1 column')
+    await expect(page.locator('.cm-content')).toContainText("city || ' / ' || category")
+    // Undo goes back over typed queries too, to the rows before them.
+    await page.getByRole('button', { name: 'Undo', exact: true }).click()
+    await expect(page.locator('.result-meta')).toContainText('1,000,000 rows')
+
+    // No rows, because the table writes it with a capital: said, and one click runs it so.
+    await runSql(page, "SELECT * FROM orders WHERE city = 'pune'")
+    await expect(page.locator('.grid-none')).toContainText("No row has city exactly 'pune': the table writes it 'Pune'")
+    await page.locator('.grid-none').getByRole('button', { name: "Use 'Pune'" }).click()
+    await expect(page.locator('.cm-content')).toContainText("city = 'Pune'")
+    await expect(page.locator('.result-meta')).not.toContainText(/^0 rows/)
+    await runSql(page, 'SELECT * FROM orders WHERE customer = NULL')
+    await expect(page.locator('.grid-none')).toContainText('Nothing equals NULL')
+    await page.locator('.grid-none').getByRole('button', { name: 'Use IS NULL' }).click()
+    await expect(page.locator('.cm-content')).toContainText('customer IS NULL')
+  })
+
   test('long queries can be cancelled', async ({ page }) => {
     await openDemo(page)
     // ~900M row evaluations: seconds of CPU, almost no memory

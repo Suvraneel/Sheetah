@@ -149,3 +149,16 @@ test('a view is named for its table without the month or year: it is for every m
   // Nothing but a date: the table's name, as it is.
   expect(viewNameFor('2024_04')).toBe('2024 04 view')
 })
+
+test('a view saved before the steps’ SQL was read from one more SELECT keeps its steps', async () => {
+  const { stepsMake } = await import('../../src/engine/views')
+  const { compose, emptyOps } = await import('../../src/engine/compose')
+  const ops = { ...emptyOps(), clean: [{ column: 'amount', kind: 'number' as const }] }
+  const now = compose('SELECT * FROM sales', ops)
+  // Then: the clean-up's REPLACE on its own.
+  const then = now.replace(/^SELECT \*\nFROM \(\n([\s\S]*)\n\)$/, '$1')
+  expect(then).not.toBe(now)
+  expect(stepsMake({ table: 'sales', ops }, now)).toBe(true)
+  expect(stepsMake({ table: 'sales', ops }, then)).toBe(true)
+  expect(stepsMake({ table: 'sales', ops }, `${then}\nWHERE amount > 1`)).toBe(false)
+})

@@ -73,3 +73,19 @@ test('an amount still written as text is summed as a number, not passed over for
   expect(startersFor('qbr', cols.map((c) => (c.name === 'Amount' ? { ...c, comma: true } : c)), 30)[0].sql).toContain('number_from_text_comma("Amount")')
   expect(startersFor('qbr', cols.map((c) => (c.name === 'Amount' ? { ...c, comma: null } : c)), 30)[0].label).toBe('qty by customer')
 })
+
+test('on tidied rows, every example runs and leaves the total line out, a quoted table name too', async () => {
+  const { onTidied } = await import('../../src/components/starters')
+  const { compose, emptyOps } = await import('../../src/engine/compose')
+  await q(`CREATE OR REPLACE TABLE "sales apr" AS SELECT * FROM (VALUES ('North', 10.0), ('South', 20.0), ('Total', 30.0)) t(region, amount)`)
+  const tidied = compose('SELECT * FROM "sales apr"', { ...emptyOps(), drop: [{ label: '1 total line', keep: `region <> 'Total'`, kind: 'totals' }] })
+  const cols = [
+    { name: 'region', type: 'VARCHAR', distinct: 2 },
+    { name: 'amount', type: 'DECIMAL(3,1)', distinct: 3 },
+  ]
+  const list = onTidied(startersFor('sales apr', cols, 2), 'sales apr', tidied, 1)
+  expect(list.map((s) => s.label)).toContain('Summary of every column')
+  for (const s of list) await q(s.sql)
+  const byRegion = list.find((s) => s.label === 'amount by region')!
+  expect((await q(byRegion.sql)).map((r) => r.region).sort()).toEqual(['North', 'South'])
+})

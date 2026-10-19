@@ -1,3 +1,4 @@
+import { onTidiedRows } from '../engine/compose'
 import { isNumericType, nameKey, sqlName } from '../engine/sql'
 
 export interface Starter {
@@ -116,4 +117,13 @@ export function startersFor(table: string, cols: StarterColumn[], rows?: number)
   if (measure) out.push({ label: `Top 10 by ${measure.name}`, sql: `SELECT *\nFROM ${t}\nORDER BY ${m} DESC NULLS LAST\nLIMIT 10` })
   out.push({ label: 'Summary of every column', sql: `SUMMARIZE ${t}` })
   return out
+}
+
+/**
+ * The starters made to read a table's tidied rows (total lines left out, text converted): each under a
+ * CTE of the table's name (onTidiedRows), so a sum doesn't count a total line twice. SUMMARIZE can't
+ * follow a WITH: it's read from inside one.
+ */
+export function onTidied(list: Starter[], table: string, tidied: string, steps: number): Starter[] {
+  return list.map((s) => ({ ...s, sql: onTidiedRows(s.sql.replace(/^SUMMARIZE\s+([\s\S]+)$/, 'SELECT * FROM (SUMMARIZE $1)'), table, tidied, steps) }))
 }

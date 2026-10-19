@@ -136,6 +136,9 @@ test.describe('keyboard and screen readers', () => {
     await page.keyboard.press('Enter')
     await expect(page.locator('.grid-scroll')).toBeFocused()
 
+    // The first arrow key lands on the first cell (nothing was picked yet); the next ones move from it.
+    await page.keyboard.press('ArrowDown')
+    await expect(page.locator('.grid-scroll')).toHaveAttribute('aria-activedescendant', /.+/)
     await page.keyboard.press('ArrowDown')
     await page.keyboard.press('ArrowRight')
     await page.keyboard.press('ArrowRight')

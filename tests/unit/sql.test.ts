@@ -126,7 +126,8 @@ test.describe('errors in plain words', () => {
     expect(explainError(`Parser Error: syntax error at or near "="${at('=SUM(C2:C9)')}`, { sum }).text).toBe(
       'That’s a spreadsheet formula. Sheetah speaks SQL: SELECT sum("Net Amount") FROM "sales apr" adds up a column.',
     )
-    expect(explainError(`Parser Error: syntax error at or near "ORDER"${at('SELECT * FROM orders LIMIT 5 ORDER BY id')}`).text).toContain('wrong place')
+    expect(explainError(`Parser Error: syntax error at or near "ORDER"${at('SELECT * FROM orders WHERE x = 1 GROUP BY a ORDER BY id HAVING x')}`).text).toContain('wrong place')
+    expect(explainError(`Parser Error: syntax error at or near "ORDER"${at('SELECT * FROM orders LIMIT 5 ORDER BY id')}`).text).toContain('LIMIT goes at the very end')
     // …unless it's a column of theirs called Order: that needs double quotes.
     expect(explainError(`Parser Error: syntax error at or near "Order"${at("SELECT * FROM t WHERE Order = 'a'")}`, { columns: ['Order', 'Qty'] }).text).toBe(
       'Order is a SQL word, so as a column’s name it goes in double quotes: "Order".',

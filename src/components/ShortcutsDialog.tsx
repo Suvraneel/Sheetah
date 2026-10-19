@@ -12,7 +12,8 @@ const GROUPS: { title: string; rows: [string[][], string][] }[] = [
     title: 'Steps and queries',
     rows: [
       [[[MOD, 'Enter']], 'Run the query (Shift+Enter too)'],
-      [[[MOD, 'Z']], `Undo a step: a sort, filter, clean-up… (redo: ${MOD}+Shift+Z)`],
+      [[[MOD, 'Z']], 'Undo a step: a sort, filter, clean-up, a query run over the rows'],
+      [isMac ? [[MOD, 'Shift', 'Z']] : [[MOD, 'Shift', 'Z'], [MOD, 'Y']], 'Redo it'],
       [[[MOD, 'F']], 'Find text in every column'],
       [[[MOD, 'V']], 'Paste cells from a spreadsheet as a new table'],
       [[['Tab']], 'Leave the editor (it never traps Tab)'],

@@ -41,6 +41,8 @@ test.describe('everyday workflows', () => {
     await page.getByRole('button', { name: 'Show duplicates' }).click()
     await expect(page.locator('.result-meta')).toContainText('4 of 5 rows')
     await page.locator('.op-chip', { hasText: 'Duplicates in email' }).click()
+    // All five again ("4 of 5 rows" says 5 rows too: wait for the rows themselves, not a column menu opened on the old ones).
+    await expect(page.locator('.result-meta')).not.toContainText(' of 5 rows')
     await expect(page.locator('.result-meta')).toContainText('5 rows')
     await columnMenu(page, 1)
     await page.getByRole('button', { name: 'Keep first of each' }).click()
@@ -102,13 +104,13 @@ test.describe('cleaning columns', () => {
     await page.keyboard.press('Escape')
 
     await columnMenu(page, 1)
-    await page.getByRole('button', { name: 'Trim extra spaces' }).click()
-    await expect(page.locator('.op-chip', { hasText: 'city trimmed' })).toBeVisible()
+    await page.locator('.colmenu').getByRole('button', { name: 'Tidy spaces', exact: true }).click()
+    await expect(page.locator('.op-chip', { hasText: 'city spaces tidied' })).toBeVisible()
     await idle(page)
     await columnMenu(page, 1)
-    await expect(page.locator('.colmenu-clean')).toContainText('Cleaned: trimmed')
+    await expect(page.locator('.colmenu-clean')).toContainText('Cleaned: spaces tidied')
     await page.locator('.colmenu-clean').getByRole('button', { name: 'Undo' }).click()
-    await expect(page.locator('.op-chip', { hasText: 'city trimmed' })).toHaveCount(0)
+    await expect(page.locator('.op-chip', { hasText: 'city spaces tidied' })).toHaveCount(0)
     await idle(page)
     await columnMenu(page, 1)
     await page.getByRole('button', { name: 'Title' }).click()
@@ -525,7 +527,7 @@ test.describe('bank statements', () => {
     await expect(dialog.getByLabel('Category 1 words')).toHaveValue('swiggy, zomato')
     // A word of its own, picked from the column's common words, goes to the category being edited.
     await dialog.getByLabel('Category 1 words').focus()
-    await dialog.getByRole('group', { name: 'Common words in Narration' }).getByRole('button', { name: /^Add mystery \(1 row\)/ }).click()
+    await dialog.getByRole('group', { name: 'Common words in Narration' }).getByRole('button', { name: /^mystery 1 row: add/ }).click()
     await expect(dialog.getByLabel('Category 1 words')).toHaveValue('swiggy, zomato, mystery')
     // Every row has a category now: no words are left to offer, and focus goes back to the words it went to.
     await expect(dialog.getByRole('group', { name: /^Common words in Narration/ })).toContainText('none left')

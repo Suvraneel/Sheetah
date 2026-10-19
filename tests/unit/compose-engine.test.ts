@@ -85,3 +85,12 @@ test('find looks only at the columns you can see', async () => {
   expect(await ids({ search: 'x.in' })).toEqual([1, 3, 5])
   expect(await ids({ search: 'x.in', hidden: ['email'] })).toEqual([])
 })
+
+test('a WHERE typed after the clean-up reads the converted values; after keeping the first of each, it is still SQL', async () => {
+  await q(`CREATE OR REPLACE TABLE raw_amounts AS SELECT * FROM (VALUES (1, '1,200.50'), (2, '99'), (3, '15,000')) t(id, amount)`)
+  const cleaned = compose('SELECT * FROM raw_amounts', { ...emptyOps(), clean: [{ column: 'amount', kind: 'number' }] })
+  // As text, '99' > '100' and '1,200.50' < '100': the typed WHERE must see numbers.
+  expect((await q(`${cleaned}\nWHERE amount > 100 ORDER BY id`)).map((r) => r.id)).toEqual([1, 3])
+  const firsts = compose('SELECT * FROM ev', { ...emptyOps(), dedupe: { column: 'email', mode: 'remove' } })
+  expect((await q(`${firsts}\nWHERE id > 2`)).map((r) => r.id)).toEqual([4, 5])
+})

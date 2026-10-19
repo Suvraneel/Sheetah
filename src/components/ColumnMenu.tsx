@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { makeFormatter } from '../grid/format'
-import { parseNumber, type Filter, type FilterOp } from '../engine/compose'
+import { parseNumber, typedDate, type Filter, type FilterOp } from '../engine/compose'
 import type { ColumnInfo, ResultSet } from '../engine/result'
 import { cleaningFor, distinctValues, profileColumn, splitParts, topValues, type ColumnProfile } from '../engine/scan'
 import { lookAlikes, type Alike } from '../engine/alike'
@@ -182,7 +182,8 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
     // (Only for Tab: the click that opened the menu also moves focus, and must not close it.)
     const onFocusOut = (e: FocusEvent) => {
       const next = e.relatedTarget as Node | null
-      if (tabbing && next && ref.current && !ref.current.contains(next)) onClose()
+      // (Tab past the last item, to the browser's own controls: no next element, closed all the same.)
+      if (tabbing && ref.current && (!next || !ref.current.contains(next))) onClose()
     }
     const el = ref.current
     // Defer: the mousedown that opened this menu is still bubbling to window.
@@ -214,11 +215,18 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
         return
       }
     }
+    // A date as it's typed here (31/01/2024, 1 Apr 2024): written year-month-day, as SQL reads it.
+    const monthFirst = /^en-US$/i.test(LOCALE)
+    const asDate = (v: string) => (kind === 'time' ? typedDate(v, monthFirst) : v.trim())
+    if (needsValue && kind === 'time' && (asDate(value) === null || (between && asDate(value2) === null))) {
+      setInvalid(`Enter a date, like 2024-01-31 or ${monthFirst ? '01/31/2024' : '31/01/2024'}`)
+      return
+    }
     onFilter({
       column: column.name,
       op,
-      value: needsValue ? (column.percent ? fraction(value) : value.trim()) : undefined,
-      value2: between ? (column.percent ? fraction(value2) : value2.trim()) : undefined,
+      value: needsValue ? (column.percent ? fraction(value) : asDate(value)!) : undefined,
+      value2: between ? (column.percent ? fraction(value2) : asDate(value2)!) : undefined,
       numeric: column.numeric,
       type: column.type,
       percent: column.percent || undefined,

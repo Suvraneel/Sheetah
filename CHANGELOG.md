@@ -5,6 +5,27 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 ## Unreleased
 
 ### Added
+- **Spreadsheet habits in SQL, put right in one click**: `city & ' - ' & state` (SQL joins text with `||`),
+  `""` for empty text, `"Pune"` and `"1000"` in double quotes, a bare `Pune` where a value goes, dates typed without
+  quotes (`2024-04-01` is a subtraction, `01/04/2024` a division), `SELECT TOP 10`, a `LIMIT` before `WHERE`,
+  `1,000` with its separator, `&&` for AND, `GROUP BY 'city'` and `ORDER BY 'amount'` (the text, the same on every
+  row), `=AVERAGE(amount)` typed as a formula (its SQL, on the table on screen), and Sheetah's own functions given
+  the wrong values (each says how it's written). "Did you mean" only for a name that's a near miss.
+- **Why a query found nothing**: `= NULL` (never true: `IS NULL`), `LIKE 'UPI*'` (`%` is any text), a
+  date-and-time compared with a day (only midnight matches), and text that differs only in capitals or spaces
+  (`'pune'`, when the table writes `'Pune'`: looked up, and offered as the table writes it, or `ILIKE`).
+- **Example queries on the tidied rows**: once a report's total line is left out (or text converted), its example
+  queries read those rows, not the file (a sum no longer counts the total twice). They aren't offered while total
+  lines are still in the rows.
+- **Undo across typed queries**: a query typed (or a slip put right) over the rows on screen is a step Undo takes
+  back; running the steps' own SQL again keeps the steps. A script that changes data starts a history of its own,
+  so Undo and Redo never run it again.
+- **Edited, not run**: said beside Run while the SQL on screen isn't what made the rows below.
+- **Completion** of Sheetah's own functions (`number_from_text`, `date_from_text`, `tidy_spaces`…), each with
+  what it does; the open table's columns complete without its name, and a name with spaces is completed quoted.
+- **A total in a formula column** (`sum(total)`) is offered as the same total on every row: `sum(total) OVER ()`.
+- **Dates typed into a filter as people write them**: `31/01/2024`, `01/31/2024` (the reader's way round, unless a
+  part over 12 settles it), `1 Apr 2024`, `Apr 1, 2024`; one that isn't a date is said, not run.
 - **Bank reconciliation statement**: from the payments matched, *Reconciliation statement* is laid out as an
   accountant writes one (Particulars, Date, Amount, Total): from the bank's closing balance (where its running
   balance ends, read the way round its rows run), each heading (deposits not yet credited, cheques not yet
@@ -201,6 +222,12 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   (the crash screen, a part that failed) (`tests/fixtures.ts`), even when what it checked on screen looked right.
 
 ### Changed
+- A `WHERE` typed after the steps' SQL reads the converted values: SQL ending on a clean-up (or on keeping the first
+  of each value) is read from one more `SELECT`. Views saved with the earlier SQL keep their steps.
+- Step chips are in the order the steps apply: rows left out, columns cleaned, looked up and added, then filters,
+  hidden columns and the sort. "Trim extra spaces" is "Tidy spaces" everywhere, as its SQL (`tidy_spaces`) says.
+- The shortcuts list gives Redo its own line (Ctrl+Shift+Z or Ctrl+Y).
+- The landing page's sketch rolls once (under five seconds), and on while hovered.
 - **Kept tables come back with the work**: with *Keep my tables* on, a reload brings back the query on screen (a
   stack, a pivot, a table with its steps) and each table's steps, not just the tables. Only a query that reads, as
   DuckDB itself says, is run again (never a CREATE, DELETE, or a WITH … UPDATE).
@@ -284,6 +311,13 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   says to tap for exact values.
 
 ### Fixed
+- Accessibility: chips and suggested words are named as they read on screen (voice control finds them); the pivot
+  dialog starts on its first field once it's ready, the categories dialog on the category just added; notices are a
+  labelled region of their own; focus kept for the rows after an action no longer pulls it back from a click
+  elsewhere.
+- A notice removed under the pointer no longer keeps the next ones up for good; an offer made for one query (Add
+  the comma, Run on the tidied rows) isn't applied to a query typed since. Ctrl+Z in the editor no longer splices
+  text from before a header action into its SQL.
 - **Open data, as statistics offices publish it** (ONS, Destatis, Eurostat, the Census):
   - A note below the table written with another separator ("Source: ONS | Licence: OGL v3", a legend with
     semicolons) made the file reader take it for the header: no rows, or every line one column. The file is read

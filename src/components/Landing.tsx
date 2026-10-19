@@ -195,7 +195,7 @@ function Feature({ title, children, visual, big, wide }: { title: string; childr
 /** Stagger index for the sketches' entry choreography (read by CSS as --i). */
 const nth = (i: number) => ({ '--i': i }) as CSSProperties
 
-/** Decorative mini-grid that "scrolls" forever (transform-only animation). */
+/** Decorative mini-grid that "scrolls" once, and on while hovered (transform-only animation). */
 function GridSketch() {
   return (
     <div className="sketch">

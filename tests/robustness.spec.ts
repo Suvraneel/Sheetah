@@ -154,6 +154,20 @@ test.describe('filters that read like people type', () => {
     await expect(page.locator('.result-meta')).toContainText('1 of 4 rows')
   })
 
+  test('a date typed the way people write it filters by that day', async ({ page }) => {
+    await openDemo(page)
+    await openColumnMenu(page, 1) // ordered_at, a date and time
+    await page.getByLabel('Filter value').fill('31/02/2024')
+    await page.getByRole('button', { name: 'Filter', exact: true }).click()
+    await expect(page.locator('.colmenu-error')).toContainText('Enter a date')
+    // A part over 12 is the day, whatever the reader's habit (en-US here).
+    await page.getByLabel('Filter type').selectOption('equals')
+    await page.getByLabel('Filter value').fill('31/01/2024')
+    await page.getByRole('button', { name: 'Filter', exact: true }).click()
+    await expect(page.locator('.cm-content')).toContainText("ordered_at::DATE = DATE '2024-01-31'")
+    await expect(page.locator('.error-banner')).toHaveCount(0)
+  })
+
   test('picking two common values keeps both (IN), and an empty result offers a way back', async ({ page }) => {
     await openDemo(page)
     await openColumnMenu(page, 3) // city

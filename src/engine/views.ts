@@ -74,7 +74,10 @@ export function withoutComments(sql: string): string {
  */
 export function stepsMake(steps: ViewSteps, sql: string): boolean {
   try {
-    return withoutComments(compose(tableBase(steps.table), steps.ops)) === withoutComments(sql)
+    const made = withoutComments(compose(tableBase(steps.table), steps.ops))
+    // Saved before the steps' SQL was read from one more SELECT (so a WHERE typed after it works): the
+    // same steps, in the SQL they made then.
+    return made === withoutComments(sql) || made === withoutComments(`SELECT *\nFROM (\n${sql}\n)`)
   } catch {
     return false
   }

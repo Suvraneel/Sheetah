@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getEngine, sqlName } from './engine/db'
 import { ageingColumns, ledgerColumn, type AgeingColumns, monthlySql, signedAmount, signedNote, statementColumns } from './engine/statement'
 import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent, quoteLiteral, stackLabel, WORDS } from './engine/sql'
@@ -131,6 +131,14 @@ const WORK_KEY = 'sheetah:kept-work'
 /** A WITH that ends in a change (WITH r AS (…) UPDATE sales …): its words outside quotes say so. */
 const withChange = (st: string) => /^\s*(--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*with\b/i.test(st) && /\b(insert|update|delete|merge)\b/i.test(st.replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"/g, ''))
 /** One statement that only reads (SELECT, WITH, a pivot…): safe to run again on its own. Never a CREATE, DELETE, DROP. */
+/** Whether a script changes data (INSERT, CREATE, DELETE…, a WITH that writes): never run again by Undo or Redo. */
+const changesData = (sql: string) =>
+  splitStatements(sql).some(
+    (st) => !/^(\(|with\b|select\b|from\b|values\b|describe\b|show\b|summarize\b|explain\b|pivot\b|unpivot\b|table\b)/i.test(st.replace(/^(\s|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)*/, '')) || withChange(st),
+  )
+/** A script's query (its last statement), as the steps are composed around it: a closing ; aside. */
+const lastStatement = (sql: string) => (splitStatements(sql).at(-1) ?? sql).trim()
+
 const readsOnly = (sql: string) =>
   splitStatements(sql).length === 1 && /^\s*(--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*(SELECT|WITH|FROM|PIVOT|UNPIVOT|VALUES|TABLE|SUMMARIZE|DESCRIBE)\b/i.test(sql) && !withChange(sql)
 const EDITOR_KEY = 'sheetah:editor-height'
@@ -215,10 +223,17 @@ export default function App() {
   const [errorsModule, setErrorsModule] = useState<typeof import('./engine/errors') | null>(null)
   // A query that failed reading a table without its tidy-up steps: the fix is to run it on the tidied rows (the query it was for).
   const [tidyFix, setTidyFix] = useState<{ sql: string; label: string; run: () => void } | null>(null)
+  // A typed query that ran and found no rows because of a slip (= NULL, LIKE 'a*', 'pune' for 'Pune'): said under it.
+  const [noRows, setNoRows] = useState<{ sql: string; reasons: import('./engine/no-rows').NoRowsReason[] } | null>(null)
   useEffect(() => {
     if (error && !errorsModule) import('./engine/errors').then((m) => setErrorsModule(m), () => {})
   }, [error, errorsModule])
   const [editor, setEditor] = useState('')
+  // The editor's text as of the last render: an offer made for one query checks it's still the one there.
+  const editorNow = useRef('')
+  useLayoutEffect(() => {
+    editorNow.current = editor
+  })
   const [base, setBase] = useState('')
   const [ops, setOps] = useState<Ops>(emptyOps())
   // The ops the result on screen was made with (`ops` runs ahead while the next query is running).
@@ -371,39 +386,53 @@ export default function App() {
   const [starterTable, setStarterTable] = useState<string | null>(null)
   // Built once per table (and schema): going back to a table doesn't scan it again.
   const [starterLists, setStarterLists] = useState<Record<string, Starter[]>>({})
+  // The steps tidying the starters' table (total lines left out, text converted): its starters read those
+  // rows, not the file as it is (a sum over the raw rows counts the total line too).
+  const [starterTidy, setStarterTidy] = useState<{ table: string; sql: string; steps: number } | null>(null)
   const starterMeta = starterTable ? tables.find((t) => t.name === starterTable) ?? tables.find((t) => t.name.toLowerCase() === starterTable.toLowerCase()) : undefined
   // Recomputed if the table is replaced with different columns.
-  const starterKey = starterMeta ? `${starterMeta.name}\u0000${starterMeta.columns.map((c) => `${c.name}:${c.type}`).join('\u0000')}` : ''
+  const tidyForStarters = starterMeta && starterTidy?.table.toLowerCase() === starterMeta.name.toLowerCase() ? starterTidy : null
+  const starterKey = starterMeta
+    ? `${starterMeta.name}\u0000${starterMeta.columns.map((c) => `${c.name}:${c.type}`).join('\u0000')}\u0000${tidyForStarters?.sql ?? ''}`
+    : ''
   useEffect(() => {
     const meta = starterMeta
     if (!meta || starterLists[starterKey] || !meta.columns.length) return
     let live = true
+    const tidy = tidyForStarters
     // The sample's own questions (written for it), loaded with the code that builds the others.
     if (meta.name === sampleName) {
-      void import('./components/starters').then((m) => live && setStarterLists((all) => ({ ...all, [starterKey]: m.sampleStarters(meta.name) })))
+      void import('./components/starters').then(
+        (m) => live && setStarterLists((all) => ({ ...all, [starterKey]: tidy ? m.onTidied(m.sampleStarters(meta.name), meta.name, tidy.sql, tidy.steps) : m.sampleStarters(meta.name) })),
+      )
       return () => {
         live = false
       }
     }
-    const cols = meta.columns.map((c) => ({ ...c, numeric: isNumericType(c.type) }))
     // A moment later, so the grid's first rows aren't queued behind a scan of the whole table.
     const t = window.setTimeout(() => {
       Promise.all([import('./engine/pivot'), import('./components/starters'), import('./engine/clean-scan')])
         .then(async ([pivot, s, cs]) => {
-          const counts = await pivot.cardinalities(`SELECT * FROM ${sqlName(meta.name)}`, cols).catch(() => ({}) as Record<string, number>)
+          const { conn } = await getEngine()
+          // Tidied: the columns as the steps leave them (an amount converted from text is a number now).
+          const described = tidy ? (await conn.query(`DESCRIBE (${tidy.sql})`)).toArray().map((r) => r.toJSON() as { column_name: string; column_type: string }) : null
+          const cols = (described ? described.map((d) => ({ name: d.column_name, type: d.column_type })) : meta.columns).map((c) => ({ ...c, numeric: isNumericType(c.type) }))
+          const source = tidy ? `(${tidy.sql})` : sqlName(meta.name)
+          const counts = await pivot.cardinalities(`SELECT * FROM ${source}`, cols).catch(() => ({}) as Record<string, number>)
           // How text figures write decimals (an amount still text: "1,145.84", or "2.250,50"), as they say.
           const texts = cols.filter((c) => /^VARCHAR/i.test(c.type)).slice(0, 40)
           const comma: Record<string, boolean | null> = {}
           if (texts.length) {
-            const row = await getEngine()
-              .then(({ conn }) => conn.query(cs.decimalsSql(sqlName(meta.name), texts.map((c) => quoteIdent(c.name)))))
+            const row = await conn
+              .query(cs.decimalsSql(source, texts.map((c) => quoteIdent(c.name))))
               .then((t) => t.toArray()[0]?.toJSON() as Record<string, unknown> | undefined)
               .catch(() => undefined)
             const stats = row ? texts.map((c, i) => ({ name: c.name, s: cs.readStats(row, i) })) : []
             const file = cs.fileDecimalComma(stats)
             for (const { name, s: st } of stats) comma[name] = st.commaOnly > 0 && st.pointOnly === 0 ? true : st.pointOnly > 0 && st.commaOnly === 0 ? false : (file ?? null)
           }
-          return s.startersFor(meta.name, cols.map((c) => ({ ...c, distinct: counts[c.name], comma: comma[c.name] })), meta.rows ?? undefined)
+          const list = s.startersFor(meta.name, cols.map((c) => ({ ...c, distinct: counts[c.name], comma: comma[c.name] })), meta.rows ?? undefined)
+          return tidy ? s.onTidied(list, meta.name, tidy.sql, tidy.steps) : list
         })
         .then((list) => live && setStarterLists((all) => ({ ...all, [starterKey]: list })))
         .catch(() => {})
@@ -412,7 +441,7 @@ export default function App() {
       live = false
       window.clearTimeout(t)
     }
-  }, [starterMeta, starterKey, sampleName, starterLists])
+  }, [starterMeta, starterKey, sampleName, starterLists, tidyForStarters])
   const [shared, setShared] = useState<string | null>(null)
   const [offlineReady, setOfflineReady] = useState(false)
   const [keepTables, setKeepTables] = useState(() => persistSupported() && store.get(KEEP_KEY) === 'on')
@@ -487,11 +516,25 @@ export default function App() {
     }
   }
 
-  const say = useCallback((msg: string) => {
-    setToast(msg)
-    // Long messages stay up long enough to read.
-    window.setTimeout(() => setToast((t) => (t === msg ? null : t)), Math.max(2400, msg.length * 50))
+  // Notices wait while the pointer or keyboard is on them (checked again each second): a Save view or Undo
+  // in reach doesn't vanish from under the hand that's reaching for it.
+  const toastHeld = useRef(false)
+  const expire = useCallback((done: () => void, ms: number) => {
+    // Held while the pointer or focus is on the notices: asked of the page itself, so a notice removed
+    // under the pointer (no mouseleave follows) can't hold the rest for ever.
+    const held = () => toastHeld.current && !!document.querySelector('.toast-stack:hover, .toast-stack:focus-within')
+    const tick = () => (held() ? window.setTimeout(tick, 1000) : done())
+    window.setTimeout(tick, ms)
   }, [])
+
+  const say = useCallback(
+    (msg: string) => {
+      setToast(msg)
+      // Long messages stay up long enough to read.
+      expire(() => setToast((t) => (t === msg ? null : t)), Math.max(2400, msg.length * 50))
+    },
+    [expire],
+  )
 
   const refreshTables = useCallback(async () => {
     const list = await listTables()
@@ -517,10 +560,10 @@ export default function App() {
       runningRef.current = true
       setRunning(true)
       setError(null)
+      // A column menu's filter or hide closes it: focus goes on to the rows, not to the page.
+      if (document.activeElement?.closest('.colmenu')) requestAnimationFrame(() => (document.activeElement === document.body || !document.activeElement) && gridRef.current?.focus())
       setMenu(null)
-      const changesData = splitStatements(sql).some(
-        (st) => !/^(\(|with\b|select\b|from\b|values\b|describe\b|show\b|summarize\b|explain\b|pivot\b|unpivot\b|table\b)/i.test(st.replace(/^(\s|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)*/, '')) || withChange(st),
-      )
+      const writes = changesData(sql)
       try {
         const run = runSql(sql, { isCurrent: () => seq === runSeq.current && cancelledSeq.current !== seq })
         run.catch(() => {}) // if abandoned below, its own outcome no longer matters
@@ -562,6 +605,11 @@ export default function App() {
             const tidy = tidySteps(opts.ops)
             if (tidy.count) tidiedRef.current.set(t.toLowerCase(), { table: t, sql: compose(shownBase, tidy.ops), steps: tidy.count, marks: stepMarks(tidy.ops) })
             else tidiedRef.current.delete(t.toLowerCase())
+            // The example queries read the rows with their total lines left out and text converted (only those
+            // steps: a filter or an added column is the result being worked on, and the examples make way).
+            const rows: Ops = { ...emptyOps(), drop: opts.ops.drop, clean: opts.ops.clean }
+            const rowSteps = (rows.drop?.length ?? 0) + (rows.clean?.length ?? 0)
+            setStarterTidy(rowSteps ? { table: t, sql: compose(shownBase, rows), steps: rowSteps } : null)
             // With the table's shape then: made again under its name (other columns or rows), it starts afresh.
             if (hasOps(opts.ops)) stepsByTable.current.set(t.toLowerCase(), { ops: opts.ops, sig: tableSig(tablesRef.current.find((x) => x.name.toLowerCase() === t.toLowerCase())) })
             else stepsByTable.current.delete(t.toLowerCase())
@@ -585,7 +633,7 @@ export default function App() {
       } finally {
         // Anything that may have changed tables (even a script that failed half-way) refreshes the list
         // and marks kept snapshots of the tables it mentions as out of date.
-        if (changesData) {
+        if (writes) {
           const lower = sql.toLowerCase()
           for (const name of snapshots.current.keys()) if (lower.includes(name.toLowerCase())) snapshots.current.set(name, 'dirty')
           await refreshTables().catch(() => {})
@@ -775,16 +823,16 @@ export default function App() {
         if (fit && first) {
           const label = `Your view “${fit.view.name}” fits ${first}.`
           setNudge({ label, action: 'Run it', run: () => runViewOn.current(fit.view, fit.from, first) })
-          window.setTimeout(() => setNudge((n) => (n?.label === label ? null : n)), 20_000)
+          expire(() => setNudge((n) => (n?.label === label ? null : n)), 20_000)
         } else if (family.length >= 3) {
           // Several exports of one kind (a month each…): offer to stack them.
           const label = `${family.length} tables look like the same export.`
           setNudge({ label, action: 'Stack them', run: () => setStacking({ around: last }) })
-          window.setTimeout(() => setNudge((n) => (n?.label === label ? null : n)), 15_000)
+          expire(() => setNudge((n) => (n?.label === label ? null : n)), 15_000)
         } else if (twin) {
           const label = `${last} looks like another version of ${twin}.`
           setNudge({ label, action: 'Compare them', run: () => setComparing({ before: twin, after: last }) })
-          window.setTimeout(() => setNudge((n) => (n?.label === label ? null : n)), 15_000)
+          expire(() => setNudge((n) => (n?.label === label ? null : n)), 15_000)
         }
         return first
       } catch (e) {
@@ -811,7 +859,7 @@ export default function App() {
         )
       }
     },
-    [refreshTables, openTable, say, cancelWork, scanHints, addChecks, forgetChecks],
+    [refreshTables, openTable, say, cancelWork, scanHints, addChecks, forgetChecks, expire],
   )
 
   // Cells copied from a spreadsheet (or this grid), pasted outside the editor and inputs: a new table.
@@ -1016,7 +1064,7 @@ export default function App() {
         tidyNudged.current = true
         const label = 'Tidy this export every month? Save these steps as a view and run them on next month’s file.'
         setNudge({ label, action: 'Save view', run: () => setSaving(true) })
-        window.setTimeout(() => setNudge((n) => (n?.label === label ? null : n)), 10_000)
+        expire(() => setNudge((n) => (n?.label === label ? null : n)), 10_000)
       }
       // Shown at once, so a second click before this query finishes builds on it. If it fails, the chips
       // go back to what's on screen, and a new step that never happened leaves no undo entry behind.
@@ -1033,7 +1081,7 @@ export default function App() {
         if (record === 'new') setPast((p) => (p.at(-1)?.id === now.id ? p.slice(0, -1) : p))
       })
     },
-    [base, ops, execute, editor, scanHints],
+    [base, ops, execute, editor, scanHints, expire],
   )
 
   /** Goes to an earlier (or later) step, which may be another query (after "Count rows by"). */
@@ -1177,7 +1225,7 @@ export default function App() {
         setPivoting(true)
       },
     })
-    window.setTimeout(() => setNudge((x) => (x?.label === `${label}.` ? null : x)), 20_000)
+    expire(() => setNudge((x) => (x?.label === `${label}.` ? null : x)), 20_000)
   }
 
   /**
@@ -1212,20 +1260,74 @@ export default function App() {
     }
   }
 
+  /**
+   * Before a query typed (or fixed) by hand replaces what's on screen, what's there becomes a step back,
+   * so Undo returns to it. Says how to run the query (keeping the history, or starting one afresh) and how
+   * to take the step out again if the query never ran.
+   */
+  const stepBack = useCallback(
+    (sql: string): { history?: 'keep'; undo: () => void } => {
+      const none = () => {}
+      // What's on screen, or the steps already asked for (a header action still running).
+      const was = base.trim() ? (wantedOps.current?.base === base ? wantedOps.current : { base, ops }) : null
+      // Another typed query still running: it left its own step back to what's on screen.
+      const inFlight = runningRef.current && !!wantedOps.current && wantedOps.current.base !== base
+      wantedOps.current = { base: lastStatement(sql), ops: emptyOps() }
+      // A script that changes data (or what's on screen came from one) starts a history of its own: Undo and
+      // Redo never run it again.
+      if (changesData(sql) || (was && changesData(was.base))) return { undo: none }
+      if (!was || inFlight || lastStatement(sql) === compose(was.base, was.ops).trim()) return { history: 'keep', undo: none }
+      const now: Step = { id: ++stepId.current, ...was }
+      const redo = future
+      setPast((p) => [...p, now].slice(-50))
+      setFuture([])
+      return {
+        history: 'keep',
+        undo: () => {
+          setPast((p) => (p.at(-1)?.id === now.id ? p.slice(0, -1) : p))
+          setFuture(redo)
+        },
+      }
+    },
+    [base, ops, future],
+  )
+
+  /** Runs the query as it was probably meant (a slip put right), as a step Undo can take back. */
+  const runRewrite = useCallback(
+    (fixed: string, then?: (res: ResultSet | null) => void) => {
+      setEditor(fixed)
+      setNoRows(null)
+      setError(null)
+      const back = stepBack(fixed.trim())
+      void execute(fixed.trim(), { base: fixed.trim(), ops: emptyOps(), history: back.history }).then((res) => {
+        if (!res && wantedOps.current === null) back.undo()
+        then?.(res)
+      })
+    },
+    [stepBack, execute],
+  )
+  // For offers acted on later (a notice's button): the latest, with what's on screen then.
+  const runRewriteRef = useRef(runRewrite)
+  useLayoutEffect(() => {
+    runRewriteRef.current = runRewrite
+  })
+
   /** Applies an error's one-click fix to the SQL on screen and runs it (the fix shows only when it changes something). */
   const fixFor = (fix: import('./engine/errors').Fix | undefined) => (fix && errorsModule && editor.trim() && errorsModule.applyFix(editor, fix) !== editor ? fix : null)
   const runFix = (fix: import('./engine/errors').Fix) => {
     if (!errorsModule) return
-    const next = errorsModule.applyFix(editor, fix)
-    setEditor(next)
-    setError(null)
-    void execute(next.trim(), { base: next.trim(), ops: emptyOps() })
+    runRewrite(errorsModule.applyFix(editor, fix))
   }
 
   const runEditor = useCallback(() => {
     const sql = editor.trim()
     if (!sql) return
     setTidyFix(null) // an offer was for the query that failed, not this run
+    // The steps' own SQL, run again as it is: the steps stay (chips, Undo), not flattened into the query.
+    if (hasOps(ops) && splitStatements(sql).length === 1 && lastStatement(sql) === compose(base, ops).trim()) {
+      void execute(sql, { base, ops, remember: false, history: 'keep' })
+      return
+    }
     // Typed SQL reading a table that has tidy-up steps, without them (not the steps' own SQL, edited):
     // it sees the file as it is, total lines and text amounts included. Offer the tidied rows.
     // Only a query that reads (an INSERT or CREATE … AS would copy the rows twice), and not the steps' own
@@ -1240,17 +1342,16 @@ export default function App() {
     const offer = (ran: boolean) => {
       if (!tidy) return
       const run = () => {
-        const wrapped = onTidiedRows(sql, tidy.table, tidy.sql, tidy.steps)
-        setEditor(wrapped)
-        setError(null)
-        void execute(wrapped, { base: wrapped, ops: emptyOps() })
+        // Typed over since: the offer was for the query before.
+        if (editorNow.current.trim() !== sql) return say('The query has changed since: run it again for an offer about this one.')
+        runRewriteRef.current(onTidiedRows(sql, tidy.table, tidy.sql, tidy.steps))
       }
       const steps = `${tidy.steps} tidy-up ${tidy.steps === 1 ? 'step' : 'steps'}`
       // Failed: the offer is the error's own fix (its explanation, about the file as it is, would mislead).
       if (!ran) return setTidyFix({ sql, label: `This query skips ${tidy.table}’s ${steps}: it reads the file as it is.`, run })
       const label = `This query read ${tidy.table} as it is in the file, without its ${steps}.`
       setNudge({ label, action: 'Run on the tidied rows', run })
-      window.setTimeout(() => setNudge((n) => (n?.label === label ? null : n)), 20_000)
+      expire(() => setNudge((n) => (n?.label === label ? null : n)), 20_000)
     }
     // execute numbers the run: the offer stands for this query, whether it ran or failed (sum over the
     // raw text is the classic), not one superseded or cancelled since.
@@ -1260,24 +1361,69 @@ export default function App() {
       if (!res || tidy) return
       const reads = new Set(referencedTables(sql, tables.map((t) => t.name)).map((t) => t.toLowerCase()))
       const columns = tables.filter((t) => reads.has(t.name.toLowerCase())).flatMap((t) => t.columns.map((c) => c.name))
-      void import('./engine/errors').then(({ missingCommas }) => {
+      void import('./engine/errors').then(({ missingCommas, quotedNames }) => {
+        if (runSeq.current !== mine) return
+        // GROUP BY 'city': grouped by the text, so every row is one group. Said, with the name put back.
+        const named = quotedNames(sql, columns)
+        if (named) {
+          const label = `${named.clause} '${named.literal}' ${named.clause === 'GROUP BY' ? 'groups' : 'sorts'} by the text '${named.literal}', the same on every row: single quotes are text. The column is ${sqlName(named.column)}.`
+          setNudge({
+            label,
+            action: `Use ${sqlName(named.column)}`,
+            run: () => {
+              if (editorNow.current.trim() !== sql) return say('The query has changed since: run it again to check it.')
+              runRewriteRef.current(named.fixed)
+            },
+          })
+          expire(() => setNudge((n) => (n?.label === label ? null : n)), 20_000)
+          return
+        }
         const slip = missingCommas(sql, columns)[0]
-        if (!slip || runSeq.current !== mine) return
+        if (!slip) return
         const label = `${slip.second} here is ${slip.first} renamed: SQL reads “${slip.first} ${slip.second}” as one column. A missing comma?`
         setNudge({
           label,
           action: 'Add the comma',
           run: () => {
-            setEditor(slip.fixed)
-            void execute(slip.fixed, { base: slip.fixed, ops: emptyOps() })
+            // Typed over since: the comma was missing from the query before, not necessarily this one.
+            if (editorNow.current.trim() !== sql) return say('The query has changed since: run it again to check it.')
+            runRewriteRef.current(slip.fixed)
           },
         })
-        window.setTimeout(() => setNudge((n) => (n?.label === label ? null : n)), 20_000)
+        expire(() => setNudge((n) => (n?.label === label ? null : n)), 20_000)
       })
     }
-    void execute(sql, { base: sql, ops: emptyOps() }).then((res) => {
+    // What was on screen stays a step back: Undo returns to it after a query typed over it.
+    const back = stepBack(sql)
+    // No rows: the slips that find none, looked for (and the value as the table writes it, looked up).
+    const why = (res: ResultSet | null) => {
+      if (!res || res.rowCount !== 0 || res.message || !reads) return
+      const read = referencedTables(sql, tables.map((t) => t.name)).map((t) => t.toLowerCase())
+      const own = tables.filter((t) => read.includes(t.name.toLowerCase()))
+      const columns = own.flatMap((t) => t.columns)
+      void import('./engine/no-rows').then(async (m) => {
+        const reasons = m.noRowsReasons(sql, columns)
+        if (!reasons.length && own.length === 1) {
+          for (const p of m.probes(sql, columns)) {
+            const found = await getEngine()
+              .then(({ conn }) => conn.query(m.probeSql(own[0].name, p)))
+              .then((t) => t.toArray().map((r) => r.toJSON() as { v: unknown; exact: unknown }).map((r) => ({ v: String(r.v), exact: r.exact === true })))
+              .catch(() => [] as { v: string; exact: boolean }[])
+            const reason = m.probeReason(sql, p, found)
+            if (reason) {
+              reasons.push(reason)
+              break
+            }
+          }
+        }
+        if (runSeq.current === mine && reasons.length) setNoRows({ sql: lastStatement(sql), reasons })
+      })
+    }
+    void execute(sql, { base: sql, ops: emptyOps(), history: back.history }).then((res) => {
+      if (!res && wantedOps.current === null) back.undo()
       if (runSeq.current === mine && cancelledSeq.current !== mine) offer(!!res)
       if (runSeq.current === mine) slips(res)
+      if (runSeq.current === mine) why(res)
       if (res && isPhone) {
         // Give the results the screen; if focus was in the editor, keep it on the collapsed peek.
         const inEditor = !!document.activeElement?.closest('.cm-editor')
@@ -1285,7 +1431,7 @@ export default function App() {
         if (inEditor) requestAnimationFrame(() => peekButton.current?.focus())
       }
     })
-  }, [editor, execute, isPhone, tables])
+  }, [editor, execute, isPhone, tables, expire, ops, base, stepBack, say])
 
   /**
    * Ops with a new list of cleaning steps. A filter typed against a column's old values can't survive
@@ -1425,9 +1571,9 @@ export default function App() {
   }
 
   const runStarter = (s: Starter) => {
-    setEditor(s.sql)
     setView(s.chart ? 'chart' : 'grid')
-    void execute(s.sql, { base: s.sql, ops: emptyOps() })
+    // A step Undo takes back: to the table (and the tidy-up steps it was read with).
+    runRewrite(s.sql)
   }
 
   /** A pick inside the phone sheet closes it and puts focus on the results it opens. */
@@ -1590,7 +1736,7 @@ export default function App() {
   const deleteView = (view: SavedView) => {
     updateViews((v) => v.filter((x) => x.id !== view.id))
     setUndo({ label: `Deleted “${view.name}”`, run: () => updateViews((v) => [view, ...v]) })
-    window.setTimeout(() => setUndo((u) => (u?.label === `Deleted “${view.name}”` ? null : u)), 5000)
+    expire(() => setUndo((u) => (u?.label === `Deleted “${view.name}”` ? null : u)), 10_000)
   }
 
   // Drag-and-drop anywhere
@@ -1756,7 +1902,7 @@ export default function App() {
           </p>
         )}
         {/* The landing page shows what's loading in its drop zone: only a load that can be cancelled is a toast. */}
-        <Toasts onUpdate={updateAvailable ? applyUpdate : undefined} busy={busyCancel ? busy : null} onCancelBusy={busyCancel} message={toast} />
+        <Toasts onUpdate={updateAvailable ? applyUpdate : undefined} busy={busyCancel ? busy : null} onCancelBusy={busyCancel} message={toast} onHold={(held) => (toastHeld.current = held)} />
         {fileInputEl}
         {dropOverlay}
       </>
@@ -1870,6 +2016,8 @@ export default function App() {
           columns: tables.flatMap((t) => t.columns.map((c) => c.name)),
           monthFirst: /^en-US$/i.test(LOCALE),
           sum: errorsModule.sumExample(tables.find((t) => t.name === plainTable(base)) ?? tables[0]),
+          table: (tables.find((t) => t.name === plainTable(base)) ?? tables[0])?.name,
+          sql: editor,
         }) ?? { text: error })
       : error
   const fixHere = fixFor(explained?.fix)
@@ -1905,7 +2053,11 @@ export default function App() {
           className="btn btn-ghost btn-sm phone-only"
           aria-expanded={sheet}
           aria-controls="library"
-          onClick={() => setSheetOpen(true)}
+          onClick={() => {
+            setSheetOpen(true)
+            // Into the sheet (the page behind it goes inert): on its open tab.
+            requestAnimationFrame(() => document.querySelector<HTMLElement>('#library [role="tab"][aria-selected="true"]')?.focus())
+          }}
         >
           <Icon name="panel" /> <span className="collapse-sm">Tables</span>
         </button>
@@ -2035,7 +2187,7 @@ export default function App() {
                     if (fit && open) {
                       const label = `“${fit.view.name}” fits ${open.name}.`
                       setNudge({ label, action: 'Review it', run: () => runViewOn.current(fit.view, fit.from, open.name) })
-                      window.setTimeout(() => setNudge((n) => (n?.label === label ? null : n)), 20_000)
+                      expire(() => setNudge((n) => (n?.label === label ? null : n)), 20_000)
                     }
                   })
                   .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
@@ -2118,7 +2270,7 @@ export default function App() {
               </button>
             )}
             <Suspense fallback={<div className="editor editor-loading" id="sql-editor" aria-busy="true" />}>
-              <SqlEditor id="sql-editor" value={editor} onChange={setEditor} onRun={runEditor} tables={tables} />
+              <SqlEditor id="sql-editor" value={editor} onChange={setEditor} onRun={runEditor} tables={tables} defaultTable={plainTable(base) ?? starterTable ?? undefined} />
             </Suspense>
             <div className="run-bar">
               <button className="btn btn-ghost btn-sm" onClick={() => setSaving(true)} disabled={!editor.trim()}>
@@ -2141,6 +2293,12 @@ export default function App() {
                 </button>
               )}
               <span className="spacer" />
+              {/* Typed but not run: the rows below are still the last query's. */}
+              {!running && editor.trim() && editor.trim() !== lastRun.current.trim() && (
+                <span className="edit-badge" title="The rows below are from the last query run">
+                  Edited, not run
+                </span>
+              )}
               <span className="kbd-hint">
                 <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd>
                 <kbd>Enter</kbd> to run
@@ -2165,8 +2323,10 @@ export default function App() {
           />
         </section>
 
-        {/* Example queries make way once you start working on the result. */}
-        {starters && !startersOff && !hasOps(ops) && (
+        {/* Example queries make way once you start working on the result: tidying it (total lines left out,
+            text converted) isn't that, and they read the tidied rows. Not offered over rows with total lines
+            still in them (or still being looked for): their sums would count each total twice. */}
+        {starters && !startersOff && (!hasOps(ops) || stepCount(ops) === (ops.drop?.length ?? 0) + (ops.clean?.length ?? 0)) && !junkHere && !junkChecking && (
           <StarterQueries
             starters={starters}
             current={editor}
@@ -2519,6 +2679,17 @@ export default function App() {
                     </p>
                   ) : ops.search ? (
                     <p>No rows contain “{ops.search}”.</p>
+                  ) : noRows && noRows.sql === base.trim() && lastStatement(editor) === base.trim() ? (
+                    <>
+                      <p>This query returned no rows. {noRows.reasons[0].text}</p>
+                      {noRows.reasons[0].fixed && (
+                        <span className="grid-none-actions">
+                          <button className="btn btn-ghost btn-sm" onClick={() => runRewrite(noRows.reasons[0].fixed!)}>
+                            {noRows.reasons[0].label ?? 'Run it so'}
+                          </button>
+                        </span>
+                      )}
+                    </>
                   ) : (
                     <p>This query returned no rows.</p>
                   )}
@@ -2935,6 +3106,7 @@ export default function App() {
         nudge={nudge}
         onNudgeDone={() => setNudge(null)}
         message={toast}
+        onHold={(held) => (toastHeld.current = held)}
       />
       {showKeys && (
         <Lazy onFail={(e) => partFailed(e, () => setShowKeys(false))}>

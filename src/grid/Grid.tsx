@@ -859,7 +859,10 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
       }
       if (!s.sel) {
         if (!/^Arrow|^Page|^Home$|^End$/.test(e.key)) return
-        s.sel = { anchor: { r: 0, c: 0 }, focus: { r: 0, c: 0 } }
+        // Nothing selected yet: the first key lands on the first cell (not the one after it).
+        e.preventDefault()
+        if (src.rowCount && src.columns.length) setSel({ anchor: { r: 0, c: 0 }, focus: { r: 0, c: 0 } })
+        return
       }
       const page = Math.max(1, Math.floor((s.viewH - HEAD_H) / ROW_H) - 1)
       let { r, c } = s.sel.focus
