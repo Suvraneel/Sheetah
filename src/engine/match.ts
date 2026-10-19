@@ -253,7 +253,8 @@ const typoNote = (t: string, other: string) =>
 export const matchCountsSql = (sql: string) =>
   `SELECT status, count(*)::DOUBLE AS n, sum(amount)::DOUBLE AS total, coalesce(sum(amount) FILTER (WHERE amount > 0), 0)::DOUBLE AS money_in,
   coalesce(-sum(amount) FILTER (WHERE amount < 0), 0)::DOUBLE AS money_out, count(*) FILTER (WHERE note LIKE 'same amount%')::DOUBLE AS near,
-  count(*) FILTER (WHERE note LIKE 'no date%')::DOUBLE AS undated, count(*) FILTER (WHERE note LIKE 'amount differs%')::DOUBLE AS typos
+  count(*) FILTER (WHERE note LIKE 'no date%')::DOUBLE AS undated, count(*) FILTER (WHERE note LIKE 'amount differs%')::DOUBLE AS typos,
+  min(TRY_CAST(regexp_extract(note, '[(]([0-9]+) days? ', 1) AS INTEGER)) FILTER (WHERE note LIKE 'same amount%')::DOUBLE AS near_days
 FROM (\n${sql}\n) GROUP BY status`
 
 /**

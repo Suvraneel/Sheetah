@@ -198,3 +198,29 @@ test('FROM order means orders (not order_items); a bracket left open isn’t FRO
   expect(pair.fix).toBeUndefined()
   expect(pair.text).toContain('LIMIT 200 OFFSET 100')
 })
+
+test('a bare date beside a column of text: quoted, and the column said to be text', async () => {
+  await q(`CREATE OR REPLACE TABLE td AS SELECT * FROM (VALUES ('2026-02-27', 1), ('2026-03-02', 2), ('2026-03-05', 3)) t("Order Date", n)`)
+  const r = await tryIt(`SELECT * FROM td WHERE "Order Date" >= 2026-03-01`, { columns: ['Order Date', 'n'], tables: ['td'], table: 'td' })
+  expect(r.text).toContain("'2026-03-01'")
+  expect(r.text).toContain('The column is text')
+  expect(r.rows?.map((x) => x.n)).toEqual([2, 3])
+})
+
+test('text compared with a date written year-month-day is found, and compared as dates once converted', async () => {
+  const { textDateCompare, compareAsDates } = await import('../../src/engine/errors')
+  const { cleanExpr } = await import('../../src/engine/clean')
+  const cols = [{ name: 'Order Date', type: 'VARCHAR' }, { name: 'd', type: 'DATE' }]
+  expect(textDateCompare(`SELECT * FROM t WHERE d >= '2026-03-01'`, cols)).toBeNull()
+  expect(textDateCompare(`SELECT * FROM t WHERE "Order Date" BETWEEN '2026-03-01' AND '2026-03-31'`, cols)).toEqual({ column: 'Order Date', date: '2026-03-01' })
+  // Not a type after ::, a table's column after a dot, or a name the query makes dates itself.
+  const typed = [{ name: 'date', type: 'VARCHAR' }, ...cols]
+  expect(textDateCompare(`SELECT * FROM t WHERE strptime(date, '%d/%m/%Y')::DATE >= '2026-03-01'`, typed)).toBeNull()
+  expect(textDateCompare(`SELECT * FROM t AS o WHERE o."Order Date" >= '2026-03-01'`, cols)).toBeNull()
+  expect(textDateCompare(`WITH x AS (SELECT strptime("Order Date", '%d/%m/%Y')::DATE AS "Order Date" FROM t) SELECT * FROM x WHERE "Order Date" >= '2026-03-01'`, cols)).toBeNull()
+  await q(`CREATE OR REPLACE TABLE od AS SELECT * FROM (VALUES ('2026-02-27', 1), ('15/03/2026', 2), ('2026-03-05', 3), ('28/02/2026', 4)) t("Order Date", n)`)
+  const sql = `SELECT n FROM od WHERE "Order Date" >= '2026-03-01' ORDER BY n`
+  expect((await q(sql)).map((r) => r.n)).toEqual([3, 4]) // letter by letter: 28/02 after '2026-03-01', 15/03 before it
+  const fixed = compareAsDates(sql, 'Order Date', cleanExpr({ column: 'Order Date', kind: 'date', format: '%Y-%m-%d', formats: ['%d/%m/%Y'] }))
+  expect((await q(fixed)).map((r) => r.n)).toEqual([2, 3])
+})

@@ -176,7 +176,8 @@ export async function orientation(table: string, columns: { name: string; type: 
   const col = (n: string) => columns.find((c) => c.name === n)!
   const isN = (n: string) => !!col(n).numeric || isNumericType(col(n).type)
   const ref = (n: string) => quoteIdent(col(n).ident ?? n)
-  const s = { ...st, balance: st.balance }
+  // (Read without a Dr / Cr beside the balance: either way round would follow it then, a mirror image.)
+  const s = { ...st, balance: st.balance, balanceSide: undefined }
   const turned = { ...s, credit: st.debit, debit: st.credit }
   const [bank, books] = await Promise.all([first(balanceCheckSql(table, s, isN, ref), scan), first(balanceCheckSql(table, turned, isN, ref), scan)])
   const bad = (r: Record<string, number | null>) => readBalanceCheck(r)?.bad ?? Infinity

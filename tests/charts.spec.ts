@@ -118,3 +118,12 @@ test('years (as an unpivot leaves them, text) chart as a line over time; a rate 
   await expect(page.getByRole('img', { name: /Sum of value by year/ })).toBeVisible()
   await expect(caption).not.toContainText('Top')
 })
+
+test('rows with no date to plot are said, not passed over', async ({ page }) => {
+  await openDemo(page)
+  await runSql(page, "SELECT * FROM (VALUES (DATE '2024-04-01', 10.0), (NULL, 20.0), (DATE '2024-05-01', 30.0), (NULL, 5.0)) t(paid_on, amount)")
+  await expect(page.locator('.result-meta')).toContainText('4 rows')
+  await page.getByRole('button', { name: 'Chart', exact: true }).click()
+  const caption = page.locator('.chart-figure figcaption')
+  await expect(caption).toContainText('2 of 4 rows (2 with no paid_on left out)')
+})

@@ -1,5 +1,5 @@
 import { getEngine, quoteIdent, quoteLiteral } from './db'
-import { commentText, isIdLike, LOCALE } from './sql'
+import { commentText, isIdLike, LOCALE, nameKey } from './sql'
 import { AGGS, isTemporal, sourceCte, timeExpr, type Agg } from './chart'
 import type { ColumnInfo } from './result'
 
@@ -250,7 +250,8 @@ export async function cardinalities(sourceSql: string, cols: ColumnInfo[], rows?
 export function defaultPivot(cols: ColumnInfo[], counts: Record<string, number>): PivotSpec {
   // Categories to group by: not codes (an invoice number per row says nothing grouped).
   const cats = groupable(cols)
-    .filter((c) => !c.numeric && !isTemporal(c) && !isIdLike(c.name) && (counts[c.name] ?? 0) >= 2)
+    // (Nor a statement's Dr / Cr: each line's side, not a category.)
+    .filter((c) => !c.numeric && !isTemporal(c) && !isIdLike(c.name) && !/^(dr_?cr|cr_?dr|d_?c|debit_?credit|credit_?debit)(_\d+)?$/.test(nameKey(c.name)) && (counts[c.name] ?? 0) >= 2)
     .sort((a, b) => (counts[a.name] ?? 0) - (counts[b.name] ?? 0))
   const time = cols.find(isTemporal)
   const measures = cols.filter((c) => c.numeric && !isIdLike(c.name))

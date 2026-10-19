@@ -628,6 +628,31 @@ test.describe('bank statements', () => {
     await expect(line(8)).toContainText('62,000')
   })
 
+  test('a cheque presented a fortnight late: the preview offers the days to match it, and a typo is said', async ({ page }) => {
+    await openApp(page)
+    const bank = ['Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance', '18/04/26,CHQ PAID-MEHTA,"12,000.00",,"88,000.00"', '20/04/26,CHQ PAID-TATA POWER,"5,400.00",,"82,600.00"', '22/04/26,NEFT CR-ACME,,"7,000.00","89,600.00"']
+    const books = ['Posted,Party,Amount', '2026-04-02,Mehta Transport,-12000', '2026-04-20,Tata Power,-4500', '2026-04-22,Acme,7000']
+    await page.locator('input[type=file]').setInputFiles([file('hdfc_apr26.csv', `${bank.join('\n')}\n`), file('books_apr26.csv', `${books.join('\n')}\n`)])
+    await expect(page.locator('.side-table .side-name')).toHaveText(['books_apr26', 'hdfc_apr26'])
+    await page.locator('.side-table .side-name', { hasText: 'hdfc_apr26' }).click()
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    await page.getByRole('button', { name: 'Compare two tables' }).click()
+    await page.getByRole('button', { name: 'Match payments', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Bank against books' })
+    const status = dialog.getByRole('status')
+    await expect(status).toContainText('1 matched')
+    await expect(status).toContainText('1 with the same amount on the other side further apart')
+    await expect(status).toContainText('1 pair where an amount may be typed wrong on one side')
+    await status.getByRole('button', { name: 'Allow 16 days' }).click()
+    await expect(dialog.getByRole('spinbutton')).toHaveValue('16')
+    await expect(status).toContainText('2 matched')
+    await dialog.getByRole('button', { name: 'Match them' }).click()
+    await page.getByRole('button', { name: 'Reconciliation statement' }).click()
+    // The typed-wrong pair is under its headings with what the match noticed beside it.
+    await expect(page.locator('.result-meta')).toContainText('4 columns')
+    await expect(page.locator('.sr-grid [role=row]', { hasText: 'amount differs: 4,500.00 in books_apr26 on 2026-04-20 (digits swapped?)' }).first()).toBeAttached()
+  })
+
   test('a statement that keeps its file name each month is still checked against last month’s', async ({ page }) => {
     await openApp(page)
     const head = 'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance'
@@ -751,6 +776,39 @@ test.describe('a bank’s own export', () => {
     await expect(page.locator('.result-meta')).toContainText('14 rows')
     await page.getByRole('button', { name: /^Leave out .*4 undated lines/ }).click()
     await expect(page.locator('.result-meta')).toContainText('9 of 14 rows')
+  })
+
+  test('title lines above and a summary below, neither padded to the table’s width: read from the names between', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      'HDFC BANK Ltd.',
+      'Statement of account',
+      'SHARMA TRADERS PVT LTD,Account No :50100123456789',
+      'Statement From : 01/04/2026 To : 30/04/2026',
+      '',
+      'Date,Narration,Chq./Ref.No.,Value Dt,Withdrawal Amt.,Deposit Amt.,Closing Balance',
+      '01/04/2026,OPENING BALANCE,,01/04/2026,,,"1,25,000.00"',
+      '02/04/2026,NEFT CR-ABC ENTERPRISES,N092261234567,02/04/2026,,"50,000.00","1,75,000.00"',
+      '03/04/2026,CHQ PAID-RAMESH SUPPLIERS,000100231,03/04/2026,"25,000.00",,"1,50,000.00"',
+      '05/04/2026,UPI-RENT APR-KAPOOR ESTATES,UPI611234,05/04/2026,"18,000.00",,"1,32,000.00"',
+      '',
+      'STATEMENT SUMMARY :-',
+      'Opening Balance,Dr Count,Cr Count,Debits,Credits,Closing Bal',
+      '"1,25,000.00",2,1,"43,000.00","50,000.00","1,32,000.00"',
+    ].join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('hdfc_apr.csv', `${csv}\n`)])
+    await expect(page.locator('.toast', { hasText: 'Left out 5 title lines above the column names in hdfc_apr.csv' })).toBeVisible()
+    await expect(page.locator('.result-meta')).toContainText('7 columns')
+    await expect(page.locator('.sr-grid [role=columnheader]').nth(1)).toContainText('Narration')
+    await page.getByRole('button', { name: /^Leave out .*undated lines/ }).click()
+    await expect(page.locator('.result-meta')).toContainText(/^3 of \d+ rows/)
+  })
+
+  test('a title over a table without names keeps every row (no line of data taken for the names)', async ({ page }) => {
+    await openApp(page)
+    await page.locator('input[type=file]').setInputFiles([file('sensor.csv', 'Sensor export 2024\n1.5,2,3\n4.5,5,6\n7.5,8,9\n10.5,11,12\n')])
+    await expect(page.locator('.result-meta')).toContainText(/^4 rows · 3 columns/)
+    await expect(page.locator('.toast', { hasText: 'title line' })).toHaveCount(0)
   })
 })
 

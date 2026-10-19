@@ -191,7 +191,10 @@ export function ChartPanel({ result, onOpenSql, textNumbers, onConvert }: Props)
                     ? ` · the first ${data.series.length} of ${nf.format(data.seriesGroups)} columns`
                     : ''
                 : ''}{' '}
-              · all {nf.format(result.rowCount)} rows
+              ·{' '}
+              {data.left
+                ? `${nf.format(data.rows ?? 0)} of ${nf.format((data.rows ?? 0) + data.left)} rows (${nf.format(data.left)} with no ${spec.x} left out)`
+                : `all ${nf.format(data.rows ?? result.rowCount)} rows`}
             </span>
           </figcaption>
           {data.points.length ? (

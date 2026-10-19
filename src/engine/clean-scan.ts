@@ -378,6 +378,26 @@ export const usesDecimalComma = (locale: string) => {
 }
 
 /**
+ * The two layouts that between them read most of a column's values (90%), each a good part of it: one per
+ * shape (DD/MM/YYYY and MM/DD/YYYY are one shape, the reader's way first), so that no value reads in both.
+ */
+function twoLayouts(s: CleanStats, locale: string): [{ hits: number; f: (typeof DATE_FORMATS)[number] }, { hits: number; f: (typeof DATE_FORMATS)[number] }] | null {
+  const usFirst = /^en-US$/i.test(locale)
+  const shape = (f: string) => f.replace(/%d|%m/g, 'n')
+  const best = new Map<string, { hits: number; f: (typeof DATE_FORMATS)[number] }>()
+  s.dates.forEach((hits, i) => {
+    const f = DATE_FORMATS[i]
+    const k = shape(f.format)
+    const had = best.get(k)
+    const mineFirst = /^%m/.test(f.format) === usFirst
+    if (hits > 0 && (!had || hits > had.hits || (hits === had.hits && mineFirst))) best.set(k, { hits, f })
+  })
+  const [a, b] = [...best.values()].sort((x, y) => y.hits - x.hits)
+  if (!a || !b || b.hits / s.values < 0.05 || (a.hits + b.hits) / s.values < MOST || a.hits / s.values >= MOST) return null
+  return [a, b]
+}
+
+/**
  * What to offer for a text column. Numbers and dates need at least 90% of values to parse (the rest
  * become empty, and the note says how many). Whether "1,234" is a thousand or one-point-something is
  * settled by values only one reading explains ("12,5", "0,750", "3.25"), then by how the file's other
@@ -449,6 +469,15 @@ export function suggestCleaning(column: string, s: CleanStats, locale = 'en-IN',
     for (const d of tied.slice(0, 2)) {
       out.push({ clean: { column, kind: 'date', format: d.f.format }, label: `Convert to date (${d.f.label})`, note: lost(d.hits, `dates like ${d.f.label}`) })
     }
+  } else if (!out.length && twoLayouts(s, locale)) {
+    // A column in two layouts (2024-04-01 and 01/04/2024, as two exports put together write it): each value
+    // read in the layout it's written in. Only layouts no value can be read in both ways (not DD/MM and MM/DD).
+    const [a, b] = twoLayouts(s, locale)!
+    out.push({
+      clean: { column, kind: 'date', format: a.f.format, formats: [b.f.format] },
+      label: `Convert to date (${a.f.label} or ${b.f.label})`,
+      note: lost(a.hits + b.hits, `dates like ${a.f.label} or ${b.f.label}`),
+    })
   } else if (!out.length) {
     const some = s.dates.map((hits, i) => ({ hits, f: DATE_FORMATS[i] })).filter((d) => d.hits / s.values >= SOME).sort((a, b) => b.hits - a.hits)[0]
     if (some) out.push({ clean: { column, kind: 'date', format: some.f.format }, label: `Convert to date anyway (${some.f.label})`, note: lost(some.hits, `dates like ${some.f.label}`) })

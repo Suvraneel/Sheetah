@@ -415,3 +415,18 @@ test('NaN, inf and 1_000 aren’t figures; -Infinity isn’t a date', async () =
   expect(await clean({ kind: 'percent' }, ['Infinity%', '18%'])).toEqual([null, '0.18'])
   expect(await clean({ kind: 'date', format: '%d/%m/%y' }, ['-Infinity', '01/04/24'])).toEqual([null, '2024-04-01'])
 })
+
+test('a column in two date layouts converts each value in its own (never two that read both ways)', async () => {
+  const values = [...Array.from({ length: 12 }, (_, i) => `2026-03-${String(i + 10).padStart(2, '0')}`), ...Array.from({ length: 8 }, (_, i) => `${String(i + 13).padStart(2, '0')}/03/2026`)]
+  const s = await suggestionsFor(values, 'en-IN')
+  const date = s.find((x) => x.clean.kind === 'date')!
+  expect(date.clean).toEqual({ column: 'v', kind: 'date', format: '%Y-%m-%d', formats: ['%d/%m/%Y'] })
+  expect(date.label).toBe('Convert to date (YYYY-MM-DD or DD/MM/YYYY)')
+  expect(date.note).toBeUndefined()
+  expect(confidentConversion(s)).toEqual(date.clean)
+  expect(await clean({ kind: 'date', format: '%Y-%m-%d', formats: ['%d/%m/%Y'] }, ['2026-03-10', '15/03/2026', 'soon'])).toEqual(['2026-03-10', '2026-03-15', null])
+  // DD/MM and MM/DD are one layout read two ways: never put together.
+  const us = await suggestionsFor(['01/02/2026', '02/03/2026', '13/01/2026', '01/13/2026'], 'en-IN')
+  expect(us.some((x) => x.clean.formats)).toBe(false)
+})
+

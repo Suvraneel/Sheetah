@@ -48,6 +48,17 @@ test('a one-column frame’s header (",amount", "","x") is names, not a title li
   expect(titleLines('HDFC BANK Ltd.,,\nDate,Narration,Amount\n2024-01-01,Rent,100\n2024-01-02,Fee,5\n')).toMatchObject({ sep: ',', skip: 1 })
 })
 
+test('a title line with a separator in it (the account’s name, its number) is still a title', async () => {
+  const { titleLines } = await import('../../src/engine/sniff')
+  const head = ['HDFC BANK Ltd.', 'SHARMA TRADERS PVT LTD,Account No :50100123456789', '', 'Date,Narration,Debit,Credit,Balance', '01/04/2026,Rent,100,,900', '02/04/2026,Fee,5,,895'].join('\n')
+  expect(titleLines(head)).toMatchObject({ sep: ',', skip: 3, fields: 5 })
+  // A header one field short of rows that end in a separator is no title.
+  expect(titleLines(['a,b,c', '1,2,3,', '4,5,6,', '7,8,9,'].join('\n'))).toBe(null)
+  // Nor a TSV whose text has commas, nor a short header over rows padded with separators.
+  expect(titleLines(['Name\tAddress\tAmount', 'Asha\tPune, MH\t100', 'Ben\t12 MG Road, Pune, MH, India\t200', 'Cy\t1 Main St, Goa, GA, India\t300', 'Di\t9 Park Rd, Agra, UP, India\t400'].join('\n'))).toBe(null)
+  expect(titleLines(['Name,Amount', 'Asha,100,,,,', 'Ben,200,,,,', 'Cy,300,,,,'].join('\n'))).toBe(null)
+})
+
 test('rows ending in a trailing separator aren’t a header with title lines above it', async () => {
   const { titleLines } = await import('../../src/engine/sniff')
   const trailing = ['Date,Narration,Amount', '2024-01-01,Item 0,0,', '2024-01-02,Item 1,1,', '2024-01-03,Item 2,2,'].join('\n')

@@ -11,6 +11,11 @@ test('a list of open bills is known by its pending amount, its party and its dat
   const bills = [col('Date', 'DATE'), col('Ref. No.'), col("Party's Name"), col('Pending Amount'), col('Due on', 'DATE'), col('Overdue by days', 'BIGINT')]
   expect(ageingColumns(bills)).toEqual({ party: "Party's Name", amount: 'Pending Amount', date: 'Due on', by: 'due', bill: 'Date' })
   expect(ageingColumns([col('Invoice Date', 'DATE'), col('Customer'), col('Balance Due', 'DOUBLE')])).toEqual({ party: 'Customer', amount: 'Balance Due', date: 'Invoice Date', by: 'bill', bill: 'Invoice Date' })
+  // A Kotak statement (one Amount, Dr / Cr, a running Balance) is no list of bills; a bills list with a Type is.
+  expect(ageingColumns([col('Txn Date', 'DATE'), col('Party'), col('Amount'), col('Dr / Cr'), col('Balance')])).toBeNull()
+  expect(ageingColumns([col('Invoice Date', 'DATE'), col('Customer'), col('Type'), col('Amount'), col('Balance Due', 'DOUBLE')])).toMatchObject({ amount: 'Balance Due' })
+  // Tally's bills with their Dr / Cr and due dates are bills.
+  expect(ageingColumns([col('Date', 'DATE'), col("Party's Name"), col('Pending Amount'), col('Dr/Cr'), col('Due on', 'DATE')])).toMatchObject({ amount: 'Pending Amount', by: 'due' })
   expect(ageingColumns([col('Date', 'DATE'), col('Narration'), col('Withdrawal Amt.'), col('Deposit Amt.'), col('Closing Balance')])).toBe(null)
   expect(ageingColumns([col('Date', 'DATE'), col('Customer'), col('Amount', 'DOUBLE')])).toBe(null)
   // An open items list: a due date, a plain Amount, nothing saying some are paid.

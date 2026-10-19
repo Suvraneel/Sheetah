@@ -205,6 +205,22 @@ test('one Amount and a Dr / Cr column: checked, then split into money in and out
   ])
   // A Value Date is never the amount.
   expect(sidedAmount([{ name: 'Value Date', type: 'VARCHAR' }, { name: 'Amount', type: 'VARCHAR' }, { name: 'Dr/Cr', type: 'VARCHAR' }])).toEqual({ amount: 'Amount', side: 'Dr/Cr' })
+  // A balance with its own Dr / Cr beside it (Kotak's second one, read as "Dr / Cr_1"): overdrawn when Dr.
+  await q(`CREATE OR REPLACE TABLE kotak2 AS SELECT * FROM (VALUES
+    (1, '50,000.00', 'CR', '10,000.00', 'CR'), (2, '30,000.00', 'DR', '20,000.00', 'DR'), (3, '5,000.00', 'CR', '15,000.00', 'DR'), (4, '20,000.00', 'CR', '5,000.00', 'CR')
+  ) t(n, "Amount", "Dr / Cr", "Balance", "Dr / Cr_1")`)
+  const k2 = [{ name: 'n', type: 'INTEGER' }, { name: 'Amount', type: 'VARCHAR' }, { name: 'Dr / Cr', type: 'VARCHAR' }, { name: 'Balance', type: 'VARCHAR' }, { name: 'Dr / Cr_1', type: 'VARCHAR' }]
+  const s2 = sidedAmount(k2)!
+  expect(s2).toEqual({ amount: 'Amount', side: 'Dr / Cr' })
+  const parts = splitBySide(s2, false)
+  await q(`CREATE OR REPLACE TABLE kotak2s AS SELECT *, ${parts.map((c) => `${c.expr} AS ${c.name}`).join(', ')} FROM kotak2`)
+  const st2 = statementColumns([...k2, { name: 'money_in', type: 'DOUBLE' }, { name: 'money_out', type: 'DOUBLE' }])!
+  expect(st2).toEqual({ credit: 'money_in', debit: 'money_out', balance: 'Balance', balanceSide: 'Dr / Cr_1' })
+  const { balanceCheckSql, readBalanceCheck } = await import('../../src/engine/checks')
+  const isN = (n: string) => n === 'money_in' || n === 'money_out'
+  expect(readBalanceCheck((await q(balanceCheckSql('kotak2s', { ...st2, balance: 'Balance' }, isN)))[0] as Record<string, number>)).toEqual({ pairs: 3, bad: 0, order: 'oldest first' })
+  // A Type after the balance is each line's own (NEFT, ATM), not the balance's side.
+  expect(statementColumns([{ name: 'Debit', type: 'DOUBLE' }, { name: 'Credit', type: 'DOUBLE' }, { name: 'Balance', type: 'DOUBLE' }, { name: 'Type', type: 'VARCHAR' }])?.balanceSide).toBeUndefined()
   // With them added, it's a statement: money in and out, and the balance.
   expect(statementColumns([...cols, { name: 'money_in', type: 'DOUBLE' }, { name: 'money_out', type: 'DOUBLE' }])).toEqual({ credit: 'money_in', debit: 'money_out', balance: 'Balance' })
 })

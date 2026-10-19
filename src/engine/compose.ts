@@ -376,6 +376,17 @@ export function stepMarks(o: Ops): string[] {
   return [...(o.clean ?? []).map(cleanExpr), ...o.computed.map((c) => c.expr), ...(o.drop ?? []).map((d) => d.keep)].filter((m) => m.length >= 6)
 }
 
+/**
+ * What the steps change that a query reading the file as it is could trip on: the columns they turn into
+ * numbers or dates (or add), and whether they leave rows out (a total line).
+ */
+export function tidyKinds(o: Ops): { typed: string[]; drops: boolean } {
+  return {
+    typed: [...(o.clean ?? []).filter((c) => c.kind === 'number' || c.kind === 'percent' || c.kind === 'date' || c.kind === 'swapdm' || c.kind === 'blank').map((c) => c.column), ...o.computed.map((c) => c.name)],
+    drops: !!o.drop?.length || o.filters.length > 0,
+  }
+}
+
 /** SQL written against the table, made to read its tidied rows: a CTE of the same name, which shadows it. */
 export function onTidiedRows(sql: string, table: string, tidied: string, steps: number): string {
   // Comments above the query stay on top; a query with its own WITH gets one more entry in it.

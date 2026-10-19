@@ -19,6 +19,8 @@ export interface Clean {
   kind: CleanKind
   /** strptime format for 'date' (e.g. %d/%m/%Y). */
   format?: string
+  /** For 'date': more layouts, each tried after the one before (a column in two: 2024-04-01 and 01/04/2024). */
+  formats?: string[]
   /** For numbers: a comma marks the decimals (12,5 = 12.5) and dots group thousands. */
   comma?: boolean
   /** For numbers: a trailing Cr is plus and Dr minus (a bank statement's credits and debits). */
@@ -147,8 +149,11 @@ export function cleanExpr(c: Clean): string {
       return c.drcr ? `number_from_cr_dr(${col})` : `number_from_text${c.comma ? '_comma' : ''}(${col})`
     case 'percent':
       return `percent_from_text${c.comma ? '_comma' : ''}(${col})`
-    case 'date':
-      return `date_from_text(${col}, ${quoteLiteral(c.format ?? '%Y-%m-%d')})`
+    case 'date': {
+      const all = [c.format ?? '%Y-%m-%d', ...(c.formats ?? [])]
+      const one = (f: string) => `date_from_text(${col}, ${quoteLiteral(f)})`
+      return all.length > 1 ? `coalesce(${all.map(one).join(', ')})` : one(all[0])
+    }
     case 'trim':
       return `tidy_spaces(${col})`
     case 'upper':
@@ -194,7 +199,7 @@ const shown = (v: string | null | undefined) => (v === null || v === undefined |
 export const describeClean = (c: Clean) =>
   `${c.column} ${
     c.kind === 'date'
-      ? `as date (${formatLabel(c.format)})`
+      ? `as date (${[c.format, ...(c.formats ?? [])].map(formatLabel).join(' or ')})`
       : c.kind === 'number' && c.drcr
         ? 'as number (Cr +, Dr −)'
         : c.kind === 'number' && c.comma

@@ -492,19 +492,26 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
           const madeUp = cols.filter((c) => /^column\d+$/i.test(c)).length >= Math.max(1, (cols.length - 1) / 2)
           // (The reader names the first column after the title: "HDFC BANK Ltd.", never a made-up name there.)
           const padded = !!t && t.skip > 0 && madeUp && !/^column\d+$/i.test(cols[0] ?? '')
-          if (t && t.fields >= 2 && (rows === 0 || cols.length < t.fields || padded)) {
+          // No names found at all (every column made up): lines of other lengths above and below the table (a
+          // bank's title lines, its summary under the rows) made the reader give up on the names below the titles.
+          const lost = !!t && t.skip > 0 && cols.length > 0 && cols.every((c) => /^column\d+$/i.test(c))
+          if (t && t.fields >= 2 && (rows === 0 || cols.length < t.fields || padded || lost)) {
             const again = (opts: string) => fromNames(t, opts)
             const fits = await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(`__fit_${name}`)} AS SELECT * FROM ${again('')}`).then(
               () => true,
               (e: unknown) => (isCancel(e) || OUT_OF_MEMORY.test(String(e)) ? Promise.reject(e) : false),
             )
-            const better = fits && (await columnTypes(`__fit_${name}`)).length === t.fields
+            const fitted = fits ? await columnTypes(`__fit_${name}`) : []
+            // (Read from a line of data, no names at all — a title over a table without names: its numbers or
+            // dates would become the names, and that row would go. Not that.)
+            const dataNames = lost && fitted.some((c) => /^[-+(]?[\d.,]+\)?$|^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}/.test(c.name.trim()))
+            const better = fits && fitted.length === t.fields && !dataNames
             if (better) {
               await sendAll(`DROP TABLE ${quoteIdent(name)}`)
               await sendAll(`ALTER TABLE ${quoteIdent(`__fit_${name}`)} RENAME TO ${quoteIdent(name)}`)
               read = again
               onNote?.(
-                padded
+                padded || lost
                   ? `Left out ${t.skip === 1 ? 'a title line' : `${t.skip} title lines`} above the column names in ${file.name}.`
                   : `Some lines of ${file.name} don’t fit its columns (a note below the table, say): read by its columns, they’re rows you can leave out.`,
               )

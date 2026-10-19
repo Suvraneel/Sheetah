@@ -152,5 +152,34 @@ export function titleLines(text: string, headerFirst = false): { sep: string; sk
     // without separators between its rows, a QuickBooks report exported without its titles.)
     if (headerFirst && skip === 0 && counts[0] === common) return { sep, skip: 0, fields: common }
   }
+  return titledWithSeparators(lines)
+}
+
+/**
+ * Last, a title line with a separator in it ("SHARMA TRADERS PVT LTD,Account No :5010…"): lines of at most half
+ * as many fields as the names have, above names filled in (most of them) that the lines after them follow.
+ * Not when another separator reads the first line as the table's own width (a TSV whose text has commas), nor
+ * for a short header over rows padded with separators (Name,Amount over Asha,100,,,,).
+ */
+function titledWithSeparators(lines: string[]): { sep: string; skip: number; fields: number } | null {
+  const shape = (sep: string) => {
+    const counts = lines.map((l) => (l.trim() ? fields(l, sep) : 0))
+    const tally = new Map<number, number>()
+    for (const c of counts) if (c > 1) tally.set(c, (tally.get(c) ?? 0) + 1)
+    const [common] = [...tally].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0] ?? [0]
+    return { counts, common }
+  }
+  const seps = [',', ';', '\t', '|']
+  if (seps.some((sep) => { const { counts, common } = shape(sep); return common >= 2 && counts[0] === common })) return null
+  for (const sep of seps) {
+    const { counts, common } = shape(sep)
+    if (common < 4) continue
+    const named = counts.findIndex((c, i) => c === common && filled(lines[i], sep) > common / 2)
+    if (named <= 0 || !counts.slice(0, named).every((c) => c <= common / 2)) continue
+    // The table under the names: the lines up to the first empty one (a summary may follow it).
+    const end = counts.indexOf(0, named + 1)
+    const body = counts.slice(named + 1, end < 0 ? undefined : end)
+    if (body.length >= 2 && body.filter((c) => c === common).length >= 0.8 * body.length) return { sep, skip: named, fields: common }
+  }
   return null
 }

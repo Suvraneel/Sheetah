@@ -266,6 +266,21 @@ export function explainError(message: string, ctx: ErrorContext = {}): Explained
     }
   }
 
+  // "Order Date" >= 2026-03-01 where Order Date is text: the same subtraction, beside a column of text, which
+  // would compare as text even quoted. Both said.
+  if (/^Cannot compare values of type VARCHAR and type (INTEGER|BIGINT|DOUBLE|DECIMAL|HUGEINT)|^Cannot compare values of type (INTEGER|BIGINT|DOUBLE|DECIMAL|HUGEINT)[^ ]* and type VARCHAR/.test(first)) {
+    const typed = [...new Set([...stripStrings(line).matchAll(BARE_DATE)].map((m) => m[1]))]
+    const dates = typed.map((t) => ({ t, iso: anyIso(t, !!ctx.monthFirst) })).filter((x): x is { t: string; iso: string } => !!x.iso)
+    if (dates.length) {
+      const [{ t, iso }] = dates
+      const sum = /^\d{4}/.test(t) ? 'a subtraction' : 'a division'
+      return plain(
+        `Dates go in single quotes, written year-month-day: '${iso}'. Without quotes, ${t} is ${sum}, a number. The column is text, too: convert it to dates first (its column menu), or it compares as text, letter by letter.`,
+        chain(dates.map((x) => ({ label: `Use '${dates[0].iso}'`, kind: 'swap', find: `(?<![\\w'".])${esc(x.t)}(?![\\w'".])`, to: `'${x.iso}'`, outside: true }))),
+      )
+    }
+  }
+
   const fn = /No function matches the given name and argument types '([^'(]+)\(([^)]*)\)'/.exec(raw)
   if (fn && fn[1] === '&' && /VARCHAR|STRING_LITERAL/.test(fn[2])) return plain('& joins text in a spreadsheet. In SQL it’s ||: first_name || \' \' || last_name.', ampersand)
   // countif exists in DuckDB, for a condition: countif(city, 'Pune') is the spreadsheet's.
@@ -591,4 +606,32 @@ export function quotedNames(sql: string, columns: string[]): { literal: string; 
   for (const f of [...found].reverse()) fixed = `${fixed.slice(0, f.at)}${sqlName(f.column)}${fixed.slice(f.at + f.length)}`
   const [first] = found
   return { literal: first.literal, column: first.column, clause: first.clause, fixed, count: found.length }
+}
+
+/** A column compared with a date written year-month-day: "Order Date" >= '2026-03-01' (or BETWEEN one and another). */
+// (A name on its own: not a type after ::, not a table's column after a dot, not an alias after AS.)
+const DATE_COMPARE = /(?<!::\s*|\.\s*|\bAS\s+|[\w"])("(?:[^"]|"")+"|\b[A-Za-z_][A-Za-z0-9_]*\b)(\s*(?:>=|<=|<>|!=|>|<|=|\bBETWEEN\b)\s*)'(\d{4}-\d{2}-\d{2})'/gi
+
+/**
+ * A column of text compared with a date ('2026-03-01'): it runs, but letter by letter, so 15/03/2026 comes
+ * before it. The first such column (with the date it was compared with), or null.
+ */
+export function textDateCompare(sql: string, columns: { name: string; type: string }[]): { column: string; date: string } | null {
+  const text = stripComments(sql)
+  for (const m of text.matchAll(DATE_COMPARE)) {
+    const name = m[1].startsWith('"') ? m[1].slice(1, -1).replace(/""/g, '"') : m[1]
+    const col = columns.find((c) => c.name.toLowerCase() === name.toLowerCase())
+    // (Not a name the query makes itself, AS "Order Date" in a WITH: that one may be dates already.)
+    const own = new RegExp(`\\bAS\\s+(${esc(name)}\\b|"${esc(name.replace(/"/g, '""'))}")`, 'i').test(text)
+    if (col && /^VARCHAR/i.test(col.type) && !own) return { column: col.name, date: m[3] }
+  }
+  return null
+}
+
+/** The query with that column, where it's compared with a date, read as dates (`expr`, its conversion). */
+export function compareAsDates(sql: string, column: string, expr: string): string {
+  return sql.replace(DATE_COMPARE, (all, ref: string, op: string, date: string) => {
+    const name = ref.startsWith('"') ? ref.slice(1, -1).replace(/""/g, '"') : ref
+    return name.toLowerCase() === column.toLowerCase() ? `${expr}${op}'${date}'` : all
+  })
 }

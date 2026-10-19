@@ -10,6 +10,8 @@ export interface Alike {
   to: string
   fromRows: number
   toRows: number
+  /** The same words in another case or spacing (not a typo of another value). */
+  same?: boolean
 }
 
 const norm = (v: string) => v.toLowerCase().replace(/[.'’-]/g, '').replace(/\s+/g, ' ').trim()
@@ -51,7 +53,7 @@ export function lookAlikes(values: { value: string | null; count: number }[], li
       const max = n.length >= 8 ? 2 : n.length >= 4 ? 1 : 0
       const typo = !same && max > 0 && m[0] === n[0] && major.count >= minor.count * 5 && distance(m, n, max) <= max
       if (same || typo) {
-        out.push({ from: minor.value, to: major.value, fromRows: minor.count, toRows: major.count })
+        out.push({ from: minor.value, to: major.value, fromRows: minor.count, toRows: major.count, ...(same ? { same: true } : {}) })
         used.add(minor.value)
         break
       }

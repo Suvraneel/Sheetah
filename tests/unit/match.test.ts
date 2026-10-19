@@ -102,6 +102,9 @@ test('a line left over says where the same amount is on the other side, up to a 
     ['only in cb', null],
     ['only in ca', 'no date, so not matched'],
   ])
+  // The preview says how far apart they are, so the days allowed can be made to cover it.
+  const counts = await q(matchCountsSql(matchSql(simple('ca', 'cb'), numeric({ ca: ['amt'], cb: ['amt'] }))))
+  expect(counts.find((r) => r.status === 'only in ca')).toMatchObject({ near: 1, near_days: 7 })
 })
 
 test('a cheque presented late pairs by its number, not with a nearer cheque of the same amount', async () => {

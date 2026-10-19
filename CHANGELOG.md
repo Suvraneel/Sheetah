@@ -5,6 +5,18 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 ## Unreleased
 
 ### Added
+- **Dates written two ways in one column** (2026-03-01 and 15/03/2026, as two exports put together write them)
+  convert in one step, each value read in its own layout. Never DD/MM with MM/DD: a value that reads both ways
+  is the reader's to settle.
+- **Text compared with a date**: `"Order Date" >= '2026-03-01'` on a column of text runs letter by letter
+  (28/02/2026 comes after it); said after the run, with *Compare as dates* reading the column in the layouts it's
+  written in. Without the quotes, the error says both: quote the date, and the column is text.
+- **A cheque presented late**: the match preview says how many lines have the same amount on the other side
+  further apart, and offers *Allow 16 days* (the nearest of them, up to 20: never last month's instalment of a
+  loan a month away) to match them. The reconciliation statement
+  lists each line with what the match noticed beside it (the same amount later on, an amount typed wrong).
+- **Compare puts the earlier version first** when the names say which (customers_sep before customers_oct,
+  sales_dec before sales_jan, report_202403 before report_202404), from the sidebar or the offer alike.
 - **Charts split by a column**: *Split by* Region (or Status, or any column that names things) draws a line for
   each over time, or each bar in parts that add up to it (side by side for averages, which don't add up). The
   largest five are shown and the rest put together as Other; every series' value is in the tooltip, by keyboard
@@ -330,6 +342,25 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   says to tap for exact values.
 
 ### Fixed
+- **A bank statement with title lines above and a summary below** (HDFC's *STATEMENT SUMMARY*, neither padded with
+  commas) opened as one row of fragments; it opens from its column names, the summary offered for leaving out. A
+  title line with a comma in it (the account's name and number) is still a title (never a TSV's text with commas,
+  a short header over padded rows, or a line of data under a title in a file without names).
+- **A file read while a query runs** no longer replaces that query's rows when it finishes opening.
+- **A balance with its own Dr / Cr column** (Kotak's second one, named for Dr and Cr: not a Type) is read as the bank
+  means it: overdrawn below zero. The balance check no longer fails on an overdraft, and the reconciliation starts from the right sign.
+- **Charts say the rows they leave out**: rows with no date (or no value) to plot were passed over while the
+  caption said "all N rows"; it says *2 of 4 rows (2 with no paid_on left out)*. A pivot's Total row isn't
+  counted as a row.
+- Errors after a table's tidy-up steps are blamed on the steps only when the steps change what failed (a column
+  they convert, rows they leave out): a date typed without quotes, or COUNTIF, gets its own explanation.
+- Charts: a first chart never groups by an ID; *Each number column* leaves out running balances and serial
+  numbers; thousands are K beside lakh and crore (not T). A pivot's first row field is never a Dr / Cr column.
+  *Ageing* isn't offered on a statement with one Amount and a Dr / Cr column.
+- Column menus: *Merge all* merges the look-alikes shown and any more that differ only in case or spacing (no second
+  round, and never a typo merge that wasn't shown); the most common
+  values show spaces at their ends, so " Delivered " beside "Delivered" isn't the same value twice.
+- The match preview counts lines with the same amount further apart once (not on both sides).
 - **Clicking another table no longer waits for the last one to be looked over**: the look-over scans (numbers
   stored as text, total lines, personal data…) give way to whatever is asked for, one query at a time, and work
   each distinct value out once, skipping the costly readings for values that can't be a number or a date. A

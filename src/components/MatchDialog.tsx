@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { getEngine } from '../engine/db'
 import { directionSql, matchCountsSql, matchSql, sideFor, statusLabels, type MatchSide, type MatchSpec } from '../engine/match'
 import { isNumericType, LOCALE } from '../engine/sql'
@@ -193,14 +193,14 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
   }, [dirKey])
 
   // How many lines match, and what's left on each side, a moment after anything changes.
-  const [counts, setCounts] = useState<{ sql: string; rows?: { status: string; n: number; total: number; money_in: number; money_out: number; near: number; undated: number; typos: number }[]; error?: string } | null>(null)
+  const [counts, setCounts] = useState<{ sql: string; rows?: { status: string; n: number; total: number; money_in: number; money_out: number; near: number; undated: number; typos: number; near_days: number | null }[]; error?: string } | null>(null)
   useEffect(() => {
     if (!sql) return
     let live = true
     const t = window.setTimeout(() => {
       void getEngine()
         .then(({ conn }) => conn.query(matchCountsSql(sql)))
-        .then((res) => live && setCounts({ sql, rows: res.toArray().map((r) => r.toJSON() as { status: string; n: number; total: number; money_in: number; money_out: number; near: number; undated: number; typos: number }) }))
+        .then((res) => live && setCounts({ sql, rows: res.toArray().map((r) => r.toJSON() as { status: string; n: number; total: number; money_in: number; money_out: number; near: number; undated: number; typos: number; near_days: number | null }) }))
         .catch((e: unknown) => live && setCounts({ sql, error: e instanceof Error ? e.message : String(e) }))
     }, 300)
     return () => {
@@ -212,6 +212,9 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
   const shown = counts?.sql === sql ? (counts.rows ?? null) : null
   const labels = spec ? statusLabels(spec) : null
   const of = (status: string | undefined) => shown?.find((r) => r.status === status)
+  // The nearest of them: a cheque presented a fortnight late, not last month's instalment of a loan a month away.
+  const nearDays = labels ? Math.min(...[of(labels.a)?.near_days, of(labels.b)?.near_days].filter((d): d is number => d !== null && d !== undefined).map(Number), Infinity) : Infinity
+  const daysInput = useRef<HTMLInputElement>(null)
   const summary =
     labels && shown
       ? [
@@ -223,12 +226,13 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
             return `${nf.format(r?.n ?? 0)} ${l}${parts.length ? ` (${parts.join(', ')})` : ''}`
           }),
           ...(() => {
-            const near = (of(labels.a)?.near ?? 0) + (of(labels.b)?.near ?? 0)
+            // (Each said beside the lines on both sides: counted on the first table's.)
+            const near = of(labels.a)?.near ?? 0
             const undated = (of(labels.a)?.undated ?? 0) + (of(labels.b)?.undated ?? 0)
             // (Said beside both lines of each pair: counted once.)
             const typos = of(labels.a)?.typos ?? 0
             return [
-              ...(near ? [`${nf.format(near)} with the same amount further apart (see note)`] : []),
+              ...(near ? [`${nf.format(near)} with the same amount on the other side further apart (see note)`] : []),
               ...(typos ? [`${nf.format(typos)} ${typos === 1 ? 'pair' : 'pairs'} where an amount may be typed wrong on one side (see note)`] : []),
               ...(undated ? [`${nf.format(undated)} with no date`] : []),
             ]
@@ -277,7 +281,7 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
             <div className="match-options">
               <label className="inline">
                 Dates up to
-                <input className="input match-days" type="number" min={0} max={31} value={days} onChange={(e) => setDays(Math.max(0, Math.min(31, Math.floor(Number(e.target.value) || 0))))} />
+                <input ref={daysInput} className="input match-days" type="number" min={0} max={31} value={days} onChange={(e) => setDays(Math.max(0, Math.min(31, Math.floor(Number(e.target.value) || 0))))} />
                 days apart
               </label>
               <label className="inline">
@@ -293,6 +297,23 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
                   : failed
                     ? `Couldn’t match these: ${failed}`
                     : (summary ?? 'Matching…')}
+              {/* A cheque presented a fortnight after it was written is no item to reconcile: matched, once allowed. */}
+              {!failed && nearDays > days && nearDays <= 20 && (
+                <>
+                  {' '}
+                  <button
+                    type="button"
+                    className="link-btn"
+                    onClick={() => {
+                      setDays(nearDays)
+                      // (The button goes as the preview is worked out again: focus stays in the dialog, on the days.)
+                      daysInput.current?.focus()
+                    }}
+                  >
+                    Allow {nearDays} days
+                  </button>
+                </>
+              )}
             </p>
             <div className="modal-actions">
               <button type="button" className="btn btn-ghost" onClick={onClose}>

@@ -23,10 +23,22 @@ export interface Check {
  * Rows without a balance (an opening line, a summary) are skipped.
  */
 /** Each row's balance (b) and amount (a, in less out), by the rows' order (r). */
+/**
+ * A balance as a number, as the bank means it: written "2,11,150.00 Cr" (in credit) or "Dr" (overdrawn), or
+ * with its own Dr / Cr column beside it (Kotak's). In the books' ledger a Dr balance is money in the bank.
+ */
+export function balanceValue(s: StatementColumns & { balance: string }, numeric: (name: string) => boolean, ref: (name: string) => string = sqlName): string {
+  const b = numeric(s.balance) ? `${ref(s.balance)}::DOUBLE` : `number_from_cr_dr(${ref(s.balance)}::VARCHAR)`
+  if (!s.balanceSide) return b
+  // Below zero on its minus side, above on the other; left as written when the side says neither.
+  const side = `upper(trim(${ref(s.balanceSide)}::VARCHAR))`
+  const [minus, plus] = s.books ? ['(CR|C|CREDIT)\\.?', '(DR|D|DEBIT)\\.?'] : ['(DR|D|DEBIT)\\.?', '(CR|C|CREDIT)\\.?']
+  return `(CASE WHEN regexp_full_match(${side}, '${minus}') THEN -abs(${b}) WHEN regexp_full_match(${side}, '${plus}') THEN abs(${b}) ELSE ${b} END)`
+}
+
 function balanceRows(table: string, s: StatementColumns & { balance: string }, numeric: (name: string) => boolean, ref: (name: string) => string): string {
   const n = (name: string) => (numeric(name) ? `${ref(name)}::DOUBLE` : `number_from_text(${ref(name)})`)
-  // A balance written "2,11,150.00 Cr" (in credit) or "Dr" (overdrawn), as the bank means it.
-  const b = numeric(s.balance) ? `${ref(s.balance)}::DOUBLE` : `number_from_cr_dr(${ref(s.balance)}::VARCHAR)`
+  const b = balanceValue(s, numeric, ref)
   return `SELECT rowid AS r, ${b} AS b, coalesce(${n(s.credit)}, 0) - coalesce(${n(s.debit)}, 0) AS a FROM ${table}`
 }
 
@@ -194,7 +206,7 @@ export function rollForwardSql(table: string, s: StatementColumns & { balance: s
   if (!labels.length) return null
   const n = (name: string) => (numeric(name) ? `${sqlName(name)}::DOUBLE` : `number_from_text(${sqlName(name)}::VARCHAR)`)
   const is = (re: string) => `(${labels.map((c) => `regexp_matches(coalesce(${sqlName(c)}::VARCHAR, ''), ${re}, 'i')`).join(' OR ')})`
-  const bal = numeric(s.balance) ? `${sqlName(s.balance)}::DOUBLE` : `number_from_cr_dr(${sqlName(s.balance)}::VARCHAR)`
+  const bal = balanceValue(s, numeric)
   return `SELECT arg_min(${bal}, rowid) FILTER (WHERE ${is(OPENING)})::DOUBLE AS opening,
   arg_max(${bal}, rowid) FILTER (WHERE ${is(CLOSING)})::DOUBLE AS closing,
   sum(coalesce(${n(s.credit)}, 0)) FILTER (WHERE ${keep})::DOUBLE AS money_in,

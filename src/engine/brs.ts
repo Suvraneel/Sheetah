@@ -80,11 +80,11 @@ export function brsSql({ match, spec, bank, closing, asOf }: Reconcile): string 
 WITH m AS (
 ${match}
 ),
-k AS (SELECT status, ${sign}amount AS amount, ${dated} AS d, coalesce(${sqlName(c.aText)}, ${sqlName(c.bText)}) AS t FROM m WHERE status <> ${quoteLiteral(st.matched)} AND amount IS NOT NULL),
+k AS (SELECT status, ${sign}amount AS amount, ${dated} AS d, coalesce(${sqlName(c.aText)}, ${sqlName(c.bText)}) AS t, note FROM m WHERE status <> ${quoteLiteral(st.matched)} AND amount IS NOT NULL),
 heads AS (SELECT * FROM (VALUES ${heads.map(([h, p, , s]) => `(${h}, ${quoteLiteral(p)}, ${s})`).join(', ')}) v(h, p, s)),
 -- Each line under its heading, as a positive amount (the heading says add or less).
 g AS (
-  SELECT CASE ${heads.map(([h, , when]) => `WHEN ${when} THEN ${h}`).join(' ')} END AS h, d, t, abs(amount) AS a,
+  SELECT CASE ${heads.map(([h, , when]) => `WHEN ${when} THEN ${h}`).join(' ')} END AS h, d, t, note, abs(amount) AS a,
     CASE ${heads.map(([, , when, s]) => `WHEN ${when} THEN ${s}`).join(' ')} END AS s
   FROM k WHERE d IS NOT NULL
 )
@@ -92,7 +92,8 @@ SELECT p AS "Particulars", d AS "Date", round(a, 2)::DECIMAL(18, 2) AS "Amount",
 ${top}SELECT h, 0 AS o, p, NULL::DATE AS d, NULL::DOUBLE AS a, (SELECT coalesce(sum(a), 0) FROM g WHERE g.h = heads.h)::DOUBLE AS t FROM heads
 UNION ALL
 -- Each line under its heading, marked as one of its lines (a dash: spaces in front would be stray ones to tidy).
-SELECT h, 1, '– ' || coalesce(t, '(no description)'), d, a, NULL FROM g
+-- With what the match noticed beside it: the same amount on the other side later on, an amount typed wrong.
+SELECT h, 1, '– ' || coalesce(t, '(no description)') || coalesce(' (' || note || ')', ''), d, a, NULL FROM g
 UNION ALL
 ${end}
 UNION ALL

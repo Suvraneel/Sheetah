@@ -94,8 +94,24 @@ test('Compare opens on the pair worth comparing', async () => {
   const { likelyPair } = await import('../../src/engine/compare-sql')
   const t = (name: string, ...cols: string[]) => ({ name, columns: cols.map((c) => ({ name: c, type: 'VARCHAR' })) })
   const tables = [t('orders', 'id', 'total'), t('stock_april', 'sku', 'qty', 'site'), t('stock_march', 'sku', 'qty', 'site')]
-  expect(likelyPair(tables)).toEqual({ before: 'stock_april', after: 'stock_march' })
-  // The open table and its other version, the open one as "after".
+  // March before April, as the names say.
+  expect(likelyPair(tables)).toEqual({ before: 'stock_march', after: 'stock_april' })
+  // The open table and its other version, the earlier first (the open one "after" when nothing says).
   expect(likelyPair(tables, 'stock_april')).toEqual({ before: 'stock_march', after: 'stock_april' })
+  expect(likelyPair(tables, 'stock_march')).toEqual({ before: 'stock_march', after: 'stock_april' })
   expect(likelyPair([t('a', 'x'), t('b', 'y')])).toBeNull()
+})
+
+test('two versions in order by the period their names say, whichever was opened last', async () => {
+  const { inOrder, periodOf } = await import('../../src/engine/compare-sql')
+  expect(inOrder('customers_oct', 'customers_sep')).toEqual({ before: 'customers_sep', after: 'customers_oct' })
+  expect(inOrder('customers_sep', 'customers_oct')).toEqual({ before: 'customers_sep', after: 'customers_oct' })
+  // December before January (no year written); with years, as they say.
+  expect(inOrder('sales_jan', 'sales_dec')).toEqual({ before: 'sales_dec', after: 'sales_jan' })
+  expect(inOrder('sales_jan_2025', 'sales_dec_2024')).toEqual({ before: 'sales_dec_2024', after: 'sales_jan_2025' })
+  expect(inOrder('report_202404', 'report_202403')).toEqual({ before: 'report_202403', after: 'report_202404' })
+  expect(inOrder('export_2024_11', 'export_2024_02')).toEqual({ before: 'export_2024_02', after: 'export_2024_11' })
+  // Nothing said: as given. (Marketing isn't March.)
+  expect(inOrder('b', 'a')).toEqual({ before: 'b', after: 'a' })
+  expect(periodOf('marketing_list')).toBeNull()
 })

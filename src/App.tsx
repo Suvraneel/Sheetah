@@ -7,7 +7,7 @@ import { FileKindError } from './engine/load-errors'
 // Reading a file (CSV, Excel, Tally…) is loaded when one is opened, or when the page is idle.
 const ingest = () => import('./engine/ingest')
 import { CancelledError, cancelRunning, exportResult, holdResult, rangeStats, rowOf, runSql, splitStatements, type RangeStats, type ResultSet } from './engine/result'
-import { addFilter, compose, describeFilter, emptyOps, hasOps, onTidiedRows, pickedValues, plainTable, removePick, removePickAll, stepCount, stepLabels, stepMarks, tidySteps, type Filter, type Ops } from './engine/compose'
+import { addFilter, compose, describeFilter, emptyOps, hasOps, onTidiedRows, pickedValues, plainTable, removePick, removePickAll, stepCount, stepLabels, stepMarks, tidyKinds, tidySteps, type Filter, type Ops } from './engine/compose'
 import { addClean, isConversion, percentColumns, type Clean, type DropRows } from './engine/clean'
 import { isLoadFailure } from './engine/load-errors'
 import { Grid, type DiffTones, type GridHandle, type SelectionInfo } from './grid/Grid'
@@ -222,7 +222,7 @@ export default function App() {
   // The plain-words explanations of SQL errors load with the first error (the raw message shows meanwhile).
   const [errorsModule, setErrorsModule] = useState<typeof import('./engine/errors') | null>(null)
   // A query that failed reading a table without its tidy-up steps: the fix is to run it on the tidied rows (the query it was for).
-  const [tidyFix, setTidyFix] = useState<{ sql: string; label: string; run: () => void } | null>(null)
+  const [tidyFix, setTidyFix] = useState<{ sql: string; label: string; run: () => void; typed: string[]; drops: boolean } | null>(null)
   // A typed query that ran and found no rows because of a slip (= NULL, LIKE 'a*', 'pune' for 'Pune'): said under it.
   const [noRows, setNoRows] = useState<{ sql: string; reasons: import('./engine/no-rows').NoRowsReason[] } | null>(null)
   useEffect(() => {
@@ -243,7 +243,8 @@ export default function App() {
   // which starts a new query from the current one. Running any other query starts a new history.
   const [past, setPast] = useState<Step[]>([])
   /** Tables tidied by steps (lower-case name → the tidied rows as SQL), for SQL typed against them. */
-  const tidiedRef = useRef(new Map<string, { table: string; sql: string; steps: number; marks: string[] }>())
+  // (`typed`: the columns the steps turn into numbers or dates; `drops`: whether they leave rows out.)
+  const tidiedRef = useRef(new Map<string, { table: string; sql: string; steps: number; marks: string[]; typed: string[]; drops: boolean }>())
   // Each table's steps, as last left (by its name, lower case): opened again from the list, it comes back
   // with them (Clear all shows it as in the file). New data under its name starts afresh.
   const stepsByTable = useRef(new Map<string, { ops: Ops; sig: string }>())
@@ -606,7 +607,7 @@ export default function App() {
           const t = plainTable(shownBase)
           if (t) {
             const tidy = tidySteps(opts.ops)
-            if (tidy.count) tidiedRef.current.set(t.toLowerCase(), { table: t, sql: compose(shownBase, tidy.ops), steps: tidy.count, marks: stepMarks(tidy.ops) })
+            if (tidy.count) tidiedRef.current.set(t.toLowerCase(), { table: t, sql: compose(shownBase, tidy.ops), steps: tidy.count, marks: stepMarks(tidy.ops), ...tidyKinds(tidy.ops) })
             else tidiedRef.current.delete(t.toLowerCase())
             // The example queries read the rows with their total lines left out and text converted (only those
             // steps: a filter or an added column is the result being worked on, and the examples make way).
@@ -621,7 +622,7 @@ export default function App() {
             // with their steps; a match, a compare or SQL typed on the table reads them.
             const u = referencedTables(shownBase, tablesRef.current.map((x) => x.name))[0]
             const tidy = tidySteps(opts.ops)
-            if (u) tidiedRef.current.set(u.toLowerCase(), { table: u, sql: compose(shownBase, tidy.ops), steps: tidy.count + 1, marks: [...stepMarks(tidy.ops), shownBase.trim()] })
+            if (u) tidiedRef.current.set(u.toLowerCase(), { table: u, sql: compose(shownBase, tidy.ops), steps: tidy.count + 1, marks: [...stepMarks(tidy.ops), shownBase.trim()], ...tidyKinds(tidy.ops) })
           }
         }
         if (opts.remember !== false) {
@@ -800,6 +801,8 @@ export default function App() {
       let last = ''
       let current = ''
       const fileChecks = new Map<string, Check[]>()
+      // A query run while the files were read is what the user is looking at: the new table isn't opened over it.
+      const ranBefore = runSeq.current
       try {
         await getEngine()
         setBusyCancel(() => cancelWork)
@@ -827,7 +830,7 @@ export default function App() {
         setBusyCancel(null)
         const metas = await listTables()
         setTables(metas)
-        if (first) {
+        if (first && runSeq.current === ranBefore) {
           const res = await openTable(first)
           if (res) scanHints(res, 'all', metas)
           const checked = fileChecks.get(first)
@@ -837,7 +840,7 @@ export default function App() {
         }
         // Two versions of the same export side by side: offer to compare them (the newer file is "after").
         // Loaded only when a file opens (they look the open tables over), not with the page.
-        const [{ similarTable }, { stackCandidates }] = await Promise.all([import('./engine/compare'), import('./engine/stack')])
+        const [{ similarTable, inOrder }, { stackCandidates }] = await Promise.all([import('./engine/compare'), import('./engine/stack')])
         const twin = last ? similarTable(last, metas) : null
         const family = last ? stackCandidates(last, metas) : []
         // Next month's export: a saved view made on last month's, with the same columns, can run on it.
@@ -853,8 +856,10 @@ export default function App() {
           setNudge({ label, action: 'Stack them', run: () => setStacking({ around: last }) })
           expire(() => setNudge((n) => (n?.label === label ? null : n)), 15_000)
         } else if (twin) {
-          const label = `${last} looks like another version of ${twin}.`
-          setNudge({ label, action: 'Compare them', run: () => setComparing({ before: twin, after: last }) })
+          // The earlier first, when the names say which (customers_sep, customers_oct), whichever was opened last.
+          const pair = inOrder(twin, last)
+          const label = `${pair.after} looks like another version of ${pair.before}.`
+          setNudge({ label, action: 'Compare them', run: () => setComparing(pair) })
           expire(() => setNudge((n) => (n?.label === label ? null : n)), 15_000)
         }
         return first
@@ -1419,7 +1424,7 @@ export default function App() {
       }
       const steps = `${tidy.steps} tidy-up ${tidy.steps === 1 ? 'step' : 'steps'}`
       // Failed: the offer is the error's own fix (its explanation, about the file as it is, would mislead).
-      if (!ran) return setTidyFix({ sql, label: `This query skips ${tidy.table}’s ${steps}: it reads the file as it is.`, run })
+      if (!ran) return setTidyFix({ sql, label: `This query skips ${tidy.table}’s ${steps}: it reads the file as it is.`, run, typed: tidy.typed, drops: tidy.drops })
       const label = `This query read ${tidy.table} as it is in the file, without its ${steps}.`
       setNudge({ label, action: 'Run on the tidied rows', run })
       expire(() => setNudge((n) => (n?.label === label ? null : n)), 20_000)
@@ -1431,7 +1436,31 @@ export default function App() {
     const slips = (res: ResultSet | null) => {
       if (!res || tidy) return
       const reads = new Set(referencedTables(sql, tables.map((t) => t.name)).map((t) => t.toLowerCase()))
-      const columns = tables.filter((t) => reads.has(t.name.toLowerCase())).flatMap((t) => t.columns.map((c) => c.name))
+      const own = tables.filter((t) => reads.has(t.name.toLowerCase()))
+      const columns = own.flatMap((t) => t.columns.map((c) => c.name))
+      // "Order Date" >= '2026-03-01' with Order Date text: compared letter by letter. When its values aren't all
+      // written year-month-day, said, with the dates read as dates (the layouts the column is written in).
+      const datesAsText = async () => {
+        const [{ textDateCompare, compareAsDates }, cs, { cleanExpr }] = await Promise.all([import('./engine/errors'), import('./engine/clean-scan'), import('./engine/clean')])
+        const hit = textDateCompare(sql, own.flatMap((t) => t.columns))
+        const table = hit && own.find((t) => t.columns.some((c) => c.name === hit.column))
+        if (!hit || !table || runSeq.current !== mine) return
+        const { conn } = await getEngine()
+        const row = (await conn.query(cs.statsSql(sqlName(table.name), [sqlName(hit.column)]))).toArray()[0]?.toJSON() as Record<string, unknown> | undefined
+        const date = row && cs.suggestCleaning(hit.column, cs.readStats(row, 0), LOCALE, (table.rows ?? 0) <= 5000).find((x) => x.clean.kind === 'date')
+        // (All written 2026-03-01: letter by letter is date order, nothing to say.)
+        if (!date || (date.clean.format === '%Y-%m-%d' && !date.clean.formats) || runSeq.current !== mine) return
+        const label = `${hit.column} is text, so it was compared with '${hit.date}' letter by letter, not as dates (its values are written ${date.label.replace(/^Convert to date( anyway)? \(|\)$/g, '')}).`
+        setNudge({
+          label,
+          action: 'Compare as dates',
+          run: () => {
+            if (editorNow.current.trim() !== sql) return say('The query has changed since: run it again to check it.')
+            runRewriteRef.current(compareAsDates(sql, hit.column, cleanExpr(date.clean)))
+          },
+        })
+        expire(() => setNudge((n) => (n?.label === label ? null : n)), 20_000)
+      }
       void import('./engine/errors').then(({ missingCommas, quotedNames }) => {
         if (runSeq.current !== mine) return
         // GROUP BY 'city': grouped by the text, so every row is one group. Said, with the name put back.
@@ -1450,7 +1479,7 @@ export default function App() {
           return
         }
         const slip = missingCommas(sql, columns)[0]
-        if (!slip) return
+        if (!slip) return void datesAsText().catch(() => {})
         const label = `${slip.second} here is ${slip.first} renamed: SQL reads “${slip.first} ${slip.second}” as one column. A missing comma?`
         setNudge({
           label,
@@ -2140,11 +2169,15 @@ export default function App() {
   const tidyHere = typeof error === 'string' && tidyFix && tidyFix.sql === editor.trim() ? tidyFix : null
   // (A value of the data, that is: not one typed in the query, like an unquoted date; and not a misspelling.)
   const dataValue = typeof error === 'string' ? /Could not convert string '([^']*)'/.exec(error)?.[1] : undefined
+  // Only where the steps change what failed: a column of the query they turn into numbers or dates (text where a
+  // number belongs), or rows they leave out (a total line's text) — not a date typed without quotes beside a
+  // column they don't touch, or COUNTIF.
+  const typedHere = !!tidyHere && tidyHere.typed.some((c) => editor.toLowerCase().includes(c.toLowerCase()))
   const tidyCures =
     !!tidyHere &&
     !fixHere &&
-    ((dataValue !== undefined && !editor.includes(`'${dataValue}'`)) ||
-      /No function matches the given name and argument types '\w+\(VARCHAR|Cannot compare values of type VARCHAR|Cannot mix values of type VARCHAR/i.test(error as string))
+    ((dataValue !== undefined && !editor.includes(`'${dataValue}'`) && (typedHere || tidyHere.drops)) ||
+      (typedHere && /No function matches the given name and argument types '\w+\(VARCHAR|Cannot compare values of type VARCHAR|Cannot mix values of type VARCHAR/i.test(error as string)))
   // Offered beside an error only when the tidied rows could change it: not a query SQL can't read, a name
   // that isn't there, or a spreadsheet function.
   const tidyHelps = !!tidyHere && !/Parser Error|syntax error|Catalog Error|does not exist|not found in FROM clause|Ambiguous reference|zero-length/i.test(error as string)

@@ -124,6 +124,7 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
   const [choices, setChoices] = useState<{ value: string | null; count: number }[] | null>(null)
   const [cleanings, setCleanings] = useState<CleanSuggestion[] | null>(null)
   const [alikes, setAlikes] = useState<Alike[]>([])
+  const mergeable = alikes.filter((a, i) => i < 4 || a.same)
   const text = isTextColumn(column.type)
   // A text column that really holds numbers or dates: offered as the first thing to fix.
   const convert = cleanings?.find((s) => isConversion(s.clean))
@@ -141,7 +142,7 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
     if (column.numeric && result.table) histogram(result.table, column).then((h) => live && setHist(h)).catch(() => {})
     if (valuesSql) topValues(valuesSql, column.name).then((v) => live && setChoices(v)).catch(() => {})
     if (onClean && isTextColumn(column.type)) cleaningFor(result, column).then((c) => live && setCleanings(c)).catch(() => {})
-    if (onClean && isTextColumn(column.type)) distinctValues(result, column).then((v) => live && setAlikes(lookAlikes(v))).catch(() => {})
+    if (onClean && isTextColumn(column.type)) distinctValues(result, column).then((v) => live && setAlikes(lookAlikes(v, 20))).catch(() => {})
     return () => {
       live = false
     }
@@ -360,7 +361,8 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
                   >
                     <span className="bar" style={{ transform: `scaleX(${t.count / maxTop})` }} />
                     {picked.length > 0 && <span className="tcheck" aria-hidden>{on ? '✓' : ''}</span>}
-                    <span className="tv">{t.value === null ? 'empty' : t.value === '' ? '(blank)' : kind === 'text' ? t.value : show(t.value)}</span>
+                    {/* (Spaces at the ends shown: " Delivered " beside "Delivered" isn't the same value twice.) */}
+                    <span className="tv">{t.value === null ? 'empty' : t.value === '' ? '(blank)' : kind === 'text' ? visibleSpaces(t.value) : show(t.value)}</span>
                     <span className="tc">{fmt.format(t.count)}</span>
                   </button>
                 </li>
@@ -471,7 +473,8 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
                 {onClean && wordy && alikes.length > 0 && (
                   <span className="colmenu-clean-row colmenu-alike" role="group" aria-label="Values that look alike">
                     <span className="fine">Look alike:</span>
-                    {alikes.map((a) => (
+                    {/* The first four by name; Merge all takes every one (no second round for the rest). */}
+                    {alikes.slice(0, 4).map((a) => (
                       <button
                         key={a.from}
                         className="link-btn"
@@ -481,9 +484,10 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
                         {visibleSpaces(a.from)} → {visibleSpaces(a.to)}
                       </button>
                     ))}
-                    {onCleans && alikes.length > 1 && (
-                      <button className="link-btn colmenu-alike-all" onClick={() => onCleans(alikes.map((a) => ({ column: column.name, kind: 'replace', from: a.from, to: a.to })))}>
-                        Merge all {alikes.length}
+                    {/* All: the ones shown, and any more that differ only in case or spacing (never a typo unseen). */}
+                    {onCleans && mergeable.length > 1 && (
+                      <button className="link-btn colmenu-alike-all" onClick={() => onCleans(mergeable.map((a) => ({ column: column.name, kind: 'replace', from: a.from, to: a.to })))}>
+                        Merge all {mergeable.length}
                       </button>
                     )}
                   </span>

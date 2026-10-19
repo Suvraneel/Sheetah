@@ -120,6 +120,12 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onMat
   // A bank statement and books (or two statements): their lines are matched by amount and date, not compared.
   const payments =
     !!onMatch && !same && !!A && !!B && !!sideFor(A) && !!sideFor(B) && (!!statementColumns(A.columns) || !!statementColumns(B.columns))
+  // (Both with a running balance and neither the books' ledger: two banks' statements, said as such.)
+  const bank = (t: typeof A) => {
+    const st = t ? statementColumns(t.columns) : null
+    return !!st?.balance && !st.books
+  }
+  const twoBanks = payments && bank(A) && bank(B)
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -150,7 +156,7 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onMat
             {payments && (
               <p className="compare-match">
                 <span>
-                  {pair.before} and {pair.after} look like a statement and its books: payments are matched by amount and date, not compared row by row.
+                  {pair.before} and {pair.after} look like {twoBanks ? 'two bank statements' : 'a statement and its books'}: payments are matched by amount and date, not compared row by row.
                 </span>
                 <button type="button" className="btn btn-primary btn-sm" onClick={() => onMatch!(pair.before, pair.after)}>
                   Match payments

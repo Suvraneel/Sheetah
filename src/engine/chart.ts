@@ -1,5 +1,5 @@
 import { getEngine, quoteIdent, quoteLiteral } from './db'
-import { LOCALE, isTemporal, nameKey } from './sql'
+import { LOCALE, isIdLike, isTemporal, nameKey } from './sql'
 import { colRef, splitStatements, type ColumnInfo, type ResultSet } from './result'
 
 /*
@@ -56,6 +56,9 @@ export interface ChartData {
   seriesGroups?: number
   /** Bars split into parts that add up to the bar (sums and counts, none below zero); side by side otherwise. */
   stacked?: boolean
+  /** Rows the chart is made from (a pivot's Total row isn't one), and those left out for having no x to plot. */
+  rows?: number
+  left?: number
   /** SQL that produces the same numbers, runnable on its own (the table view). */
   sql: string
   title: string
@@ -85,6 +88,9 @@ function pivotShape(sql: string): { rows: string[]; across: string; values: stri
   return m ? { rows: m[1] ? m[1].split(', ') : [], across: m[2], values: m[3].split(', ') } : null
 }
 
+/** Numbers that are no amount to add up: a running balance, a serial number. */
+const NOT_SUMMED = /(^|_)(balance|bal)(_|$)|^(s|sl|sr|serial)_?(no|num|number)?$/
+
 /** A pivot's value that adds up across its columns: a sum or a count (not an average, a minimum…). */
 const addsUp = (label: string) => /^(Sum of |Rows$)/.test(label)
 
@@ -95,7 +101,8 @@ const addsUp = (label: string) => /^(Sum of |Rows$)/.test(label)
  */
 export function eachColumns(cols: ColumnInfo[], x: string, sql = '', y?: string | null): ColumnInfo[] {
   const shape = pivotShape(sql)
-  if (!shape) return cols.filter((c) => c.numeric && c.name !== x && !/^(id|.*_id)$/i.test(c.name) && !yearName(c))
+  // (Not a running balance or a serial number either: summed, they mean nothing.)
+  if (!shape) return cols.filter((c) => c.numeric && c.name !== x && !isIdLike(c.name) && !yearName(c) && !NOT_SUMMED.test(nameKey(c.name)))
   let lead = 0
   while (lead < cols.length && shape.rows.includes(cols[lead].name)) lead++
   const label = eachValue(shape, y)
@@ -120,7 +127,8 @@ export function defaultSpec(cols: ColumnInfo[], sql = ''): ChartSpec | null {
     sums[0] ??
     measures[0] ??
     cols.find((c) => c.numeric && !yearName(c))
-  const x = xs.find(isTemporal) ?? xs.find(yearName) ?? xs[0]
+  // (Not an Order ID or an invoice number: a group per row says nothing.)
+  const x = xs.find(isTemporal) ?? xs.find(yearName) ?? xs.find((c) => !isIdLike(c.name)) ?? xs[0]
   // A pivot with a field across: its columns are the series (Food, Rent… in each month's bar), as a pivot chart.
   // (Only one value that adds up: averages side by side are better read in the pivot.)
   const shape = pivotShape(sql)
@@ -297,10 +305,14 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
     const label = (e: string) => `make_date(trim(${e}::VARCHAR)::INTEGER, 1, 1)::VARCHAR`
     const nonEmpty = (e: string) => `${e} IS NOT NULL AND trim(${e}::VARCHAR) <> ''`
     const split = each ?? (await splitBy(result, spec, (t) => ` WHERE ${nonEmpty(t ? xr : x)}`, [col.name, 'value']))
-    const data = await rows(`SELECT ${label(xr)} AS __x, ${vr}::DOUBLE AS __v${items(split)} FROM ${result.table} WHERE ${nonEmpty(xr)} GROUP BY 1 ORDER BY 1 LIMIT 5000`)
+    const [data, [n]] = await Promise.all([
+      rows(`SELECT ${label(xr)} AS __x, ${vr}::DOUBLE AS __v${items(split)} FROM ${result.table} WHERE ${nonEmpty(xr)} GROUP BY 1 ORDER BY 1 LIMIT 5000`),
+      rows(`SELECT count(*) FILTER (WHERE ${nonEmpty(xr)})::DOUBLE AS r, count(*)::DOUBLE AS a FROM ${result.table}`),
+    ])
     return {
       kind: 'line',
       bucket: 'year',
+      ...counted(n),
       points: data.map((r) => ({ label: String(r.__x), value: Number(r.__v), values: splitValues(r, split, additive) })),
       groups: data.length,
       ...seriesOf(split),
@@ -310,11 +322,15 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
   }
 
   if (col.numeric) {
-    const h = await histogram(result.table, col)
+    const [h, [n]] = await Promise.all([
+      histogram(result.table, col),
+      rows(`SELECT count(*) FILTER (WHERE isfinite(${xr}::DOUBLE))::DOUBLE AS r, count(*)::DOUBLE AS a FROM ${result.table}`),
+    ])
     return {
       kind: 'hist',
       points: h,
       groups: h.length,
+      ...counted(n),
       title: `Distribution of ${col.name}`,
       sql: `${sourceCte(result)}SELECT ${x}, count(*) AS rows FROM q GROUP BY 1 ORDER BY 1`,
     }
@@ -329,8 +345,9 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
         bool_and(${t} = date_trunc('quarter', ${t})) AS q,
         bool_and(${t} = date_trunc('month', ${t})) AS m,
         bool_and(${t} = date_trunc('week', ${t})) AS w,
-        bool_and(${t} = date_trunc('day', ${t})) AS d
-      FROM ${result.table} WHERE ${xr} IS NOT NULL`,
+        bool_and(${t} = date_trunc('day', ${t})) AS d,
+        count(${xr})::DOUBLE AS r, count(*)::DOUBLE AS a
+      FROM ${result.table}`,
     )
     const grain: Grain | null = span?.y ? 'year' : span?.q ? 'quarter' : span?.m ? 'month' : span?.w ? 'week' : span?.d ? 'day' : null
     // Asked for, or picked from the span (an hour of a DATE is its day).
@@ -345,6 +362,7 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
     return {
       kind: 'line',
       bucket,
+      ...counted(span),
       points: data.map((r) => ({ label: String(r.__x), value: Number(r.__v), values: splitValues(r, split, additive) })),
       groups: data.length,
       ...seriesOf(split),
@@ -369,7 +387,7 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
     rows(
       `SELECT ${xr}::VARCHAR AS __x, ${vr}::DOUBLE AS __v${items(split)} FROM ${result.table}${notTotal(true)} GROUP BY 1 ORDER BY ${inOrder ? 'min(rowid)' : '2 DESC NULLS LAST, 1'} LIMIT ${TOP_N}`,
     ),
-    rows(`SELECT count(DISTINCT ${xr})::DOUBLE + max(CASE WHEN ${xr} IS NULL THEN 1 ELSE 0 END) AS n FROM ${result.table}${notTotal(true)}`),
+    rows(`SELECT count(DISTINCT ${xr})::DOUBLE + max(CASE WHEN ${xr} IS NULL THEN 1 ELSE 0 END) AS n, count(*)::DOUBLE AS r FROM ${result.table}${notTotal(true)}`),
   ])
   const points = data.map((r) => ({
     label: r.__x === null ? '(empty)' : r.__x === '' ? '(blank)' : periodText(String(r.__x)),
@@ -380,6 +398,7 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
     kind: 'bar',
     points,
     groups: Number(count?.n ?? data.length),
+    rows: Number(count?.r ?? result.rowCount),
     inOrder,
     ...seriesOf(split),
     // Parts of a bar only when they add up to it: a sum or a count, nothing below zero.
@@ -388,6 +407,10 @@ export async function chartData(result: ResultSet, spec: ChartSpec): Promise<Cha
     sql: `${sourceCte(result)}${sql}`,
   }
 }
+
+/** Rows charted (`r`) of all (`a`): those with no x to plot are said, not passed over. */
+const counted = (n: Record<string, unknown> | undefined): Pick<ChartData, 'rows' | 'left'> =>
+  n ? { rows: Number(n.r ?? 0), left: Number(n.a ?? 0) - Number(n.r ?? 0) } : {}
 
 const items = (split: Split | null) => (split ? `, ${split.items(true).join(', ')}` : '')
 const named = (split: Split | null) => (split ? `, ${split.named.join(', ')}` : '')
@@ -429,6 +452,8 @@ export async function histogram(table: string, col: ColumnInfo): Promise<Point[]
   })
 }
 
-const compact = new Intl.NumberFormat(LOCALE, { notation: 'compact', maximumFractionDigits: 2 })
+const compactIntl = new Intl.NumberFormat(LOCALE, { notation: 'compact', maximumFractionDigits: 2 })
+// India writes thousands as K beside lakh (L) and crore (Cr); the browser's "T" for thousand reads as trillion.
+const compact = { format: (n: number) => (/-IN$/i.test(LOCALE) ? compactIntl.format(n).replace(/T$/, 'K') : compactIntl.format(n)) }
 const plain = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 2 })
 export const fmt = (n: number) => (Math.abs(n) >= 10_000 ? compact.format(n) : plain.format(n))

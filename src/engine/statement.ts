@@ -10,6 +10,8 @@ export interface StatementColumns {
   credit: string
   debit: string
   balance?: string
+  /** A column right after the balance saying which side it's on (Kotak's second "Dr / Cr"): overdrawn when Dr. */
+  balanceSide?: string
   /**
    * The books' side (a ledger exported from the accounts, with its voucher types): a debit to the bank
    * account is money in, so `credit` (in) is the Debit column here, and `debit` (out) the Credit column.
@@ -31,11 +33,17 @@ export function statementColumns(columns: { name: string; type: string }[]): Sta
   const credit = columns.find((c) => money(c) && IN.test(nameKey(c.name)) && !OUT.test(nameKey(c.name)))
   if (!debit || !credit) return null
   const balance = columns.find((c) => money(c) && BALANCE.test(nameKey(c.name)) && c !== debit && c !== credit)
+  const next = balance ? columns[columns.indexOf(balance) + 1] : undefined
+  // (Named for Dr and Cr only: a Type or a Txn Type after it is each line's own, not the balance's.)
+  const side = next && /^VARCHAR/i.test(next.type) && DR_CR.test(nameKey(next.name)) ? { balanceSide: next.name } : {}
   // A ledger from the books (Tally's has Vch Type and Vch No.): its Debit and Credit are the bank's other way round.
   const books = /^(debits?|dr)$/.test(nameKey(debit.name)) && /^(credits?|cr)$/.test(nameKey(credit.name)) && columns.some((c) => /(^|_)(vch|voucher)(_|$)/.test(nameKey(c.name)))
-  if (books) return { credit: debit.name, debit: credit.name, books: true, ...(balance ? { balance: balance.name } : {}) }
-  return { credit: credit.name, debit: debit.name, ...(balance ? { balance: balance.name } : {}) }
+  if (books) return { credit: debit.name, debit: credit.name, books: true, ...(balance ? { balance: balance.name, ...side } : {}) }
+  return { credit: credit.name, debit: debit.name, ...(balance ? { balance: balance.name, ...side } : {}) }
 }
+
+/** A column named for Dr and Cr ("Dr / Cr", Kotak's second one read as "Dr / Cr_1", "D/C", "Debit/Credit"). */
+const DR_CR = /^(dr_?cr|cr_?dr|d_?c|c_?d|debit_?credit|credit_?debit)(_\d+)?$/
 
 /** A column saying which side each amount is on: "Dr / Cr", "Debit/Credit", "Txn Type", "D/C". */
 const SIDE = /^(dr_?cr|cr_?dr|d_?c|c_?d|debit_?credit|credit_?debit|dr_?cr_?indicator|txn_?type|transaction_?type|type|indicator)$/
@@ -163,6 +171,8 @@ const PARTY = /(^|_)(party|customer|debtor|client|vendor|supplier|creditor|ledge
  * an open items list.
  */
 export function ageingColumns(columns: { name: string; type: string }[]): AgeingColumns | null {
+  // (A bank statement, either way it's written, is no list of bills: its Balance isn't what's open. One with an
+  // Amount and a Dr / Cr column by that name: a bills list's Type of Invoice or Credit Note doesn't count.)
   if (statementColumns(columns)) return null
   const money = (c: { name: string; type: string }) => !isTemporal(c) && (isNumericType(c.type) || /^VARCHAR/i.test(c.type)) && !/(^|_)(days?|date|on|by)$/.test(nameKey(c.name))
   const party = columns.find((c) => /^VARCHAR/i.test(c.type) && PARTY.test(nameKey(c.name)))
@@ -176,6 +186,10 @@ export function ageingColumns(columns: { name: string; type: string }[]): Ageing
   // The bill's own date: not the day it was paid or received.
   const bill = dates.find((c) => c !== due && !/(^|_)(paid|payment|receipt|received|cleared|realised|realized)(_|$)/.test(nameKey(c.name)))
   const date = due ?? dates[0]
+  // A bank statement with one Amount and a Dr / Cr column (Kotak's) has no bills: its running Balance isn't
+  // what's open. (A bills list with a Dr / Cr column and its due dates is one.)
+  const sided = sidedAmount(columns)
+  if (sided && DR_CR.test(nameKey(sided.side)) && !due && amount && BALANCE.test(nameKey(amount.name))) return null
   if (!amount || !party || !date) return null
   return { party: party.name, amount: amount.name, date: date.name, by: due ? 'due' : 'bill', ...(bill ? { bill: bill.name } : {}) }
 }
