@@ -112,3 +112,19 @@ test('typed SQL can be run on the tidied rows of the table it reads', async () =
   expect(wrapped.startsWith('-- mine\n-- reg with its 2 tidy-up steps\nWITH reg AS (')).toBe(true)
   expect((await q(wrapped))[0].n).toBe(1)
 })
+
+test('a date typed into a filter is written as SQL reads it, the reader’s way round', async () => {
+  const { typedDate } = await import('../../src/engine/compose')
+  expect(typedDate('2024-04-01', false)).toBe('2024-04-01')
+  expect(typedDate('01/04/2024', false)).toBe('2024-04-01')
+  expect(typedDate('01/04/2024', true)).toBe('2024-01-04')
+  // A part over 12 settles it, whatever the habit.
+  expect(typedDate('31/01/2024', true)).toBe('2024-01-31')
+  expect(typedDate('01/31/2024', false)).toBe('2024-01-31')
+  expect(typedDate('1 Apr 2024', true)).toBe('2024-04-01')
+  expect(typedDate('Apr 1, 2024', false)).toBe('2024-04-01')
+  expect(typedDate('15-08-24', false)).toBe('2024-08-15')
+  expect(typedDate('2024-04-01 9:30', false)).toBe('2024-04-01 09:30')
+  expect(typedDate('31/02/2024', false)).toBeNull()
+  expect(typedDate('soon', false)).toBeNull()
+})

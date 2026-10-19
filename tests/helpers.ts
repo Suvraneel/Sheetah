@@ -35,12 +35,20 @@ export async function gridTop(page: Page) {
 }
 
 /**
- * Records every request to another origin that actually went out: ones that completed, and ones that
- * failed on the network. Requests the browser refused before sending (CSP) don't count: nothing left.
+ * Records every request that isn't for one of the site's own files and actually went out: ones that
+ * completed, and ones that failed on the network. Requests the browser refused before sending (CSP) don't
+ * count: nothing left.
  */
 export function recordEgress(page: Page) {
   const out: string[] = []
-  const external = (u: string) => !u.startsWith('http://localhost') && !u.startsWith('blob:') && !u.startsWith('data:')
+  // Anything but the site's own files: another host, or a request to this one that isn't a file the build
+  // serves (data sent to the app's own origin would leave the tab just the same).
+  const own = (u: string) => {
+    if (!u.startsWith('http://localhost')) return false
+    const path = new URL(u).pathname
+    return path === '/' || /^\/(assets|icons|duckdb-extensions)\//.test(path) || /^\/[\w.-]+\.(js|css|json|svg|png|ico|webmanifest|html|wasm|txt|xml)$/.test(path)
+  }
+  const external = (u: string) => !own(u) && !u.startsWith('blob:') && !u.startsWith('data:')
   page.on('requestfinished', (r) => external(r.url()) && out.push(r.url()))
   page.on('requestfailed', (r) => {
     const reason = r.failure()?.errorText ?? ''

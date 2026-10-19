@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
-import { LOCALE } from '../engine/sql'
+import { LOCALE, pasteSafe } from '../engine/sql'
 import { friendlyType, makeFormatter, type Formatter } from './format'
 import type { ColumnInfo, Row } from '../engine/result'
 
@@ -149,6 +149,8 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     formats: [] as Formatter[],
     /** Column widths by name, so sorting or filtering a result doesn't reset the widths you set. */
     widthByName: new Map<string, number>(),
+    /** The ones set by hand (dragged or double-clicked): kept as they are; fitted ones grow to new content. */
+    resized: new Set<string>(),
     sel: null as Selection | null,
     hoverRow: -1,
     hoverCol: -1,
@@ -301,15 +303,17 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     const s = st.current
     const cols = props.current.source.columns
     s.widths = cols.map((col, c) => {
-      // Columns seen in the previous result keep their width (sorting or filtering doesn't reset it).
+      // Columns seen in the previous result keep their width (sorting or filtering doesn't reset it): one set
+      // by hand as it is, one fitted before as wide as it was, wider if these rows need it (another table's
+      // Particulars was narrower than a reconciliation's).
       const known = s.widthByName.get(widthKey(col))
-      if (known) return known
+      if (known && s.resized.has(widthKey(col))) return known
       let len = Math.max(col.name.length + 2, col.type.length * 0.8)
       for (let i = 0; i < Math.min(rows.length, 120); i++) {
         const v = rows[i][c]
         len = Math.max(len, v === null ? 4 : display(c, v).length)
       }
-      const w = Math.round(Math.min(MAX_W, Math.max(MIN_W + 16, len * s.charW + PAD * 2 + 8)))
+      const w = Math.max(known ?? 0, Math.round(Math.min(MAX_W, Math.max(MIN_W + 16, len * s.charW + PAD * 2 + 8))))
       s.widthByName.set(widthKey(col), w)
       return w
     })
@@ -718,8 +722,9 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
     let count = 0
     const text = src.fetch(r0, r1 + 1).then((rows) => {
       count = rows.length
-      const header = multi ? src.columns.slice(c0, c1 + 1).map((c) => c.name).join('\t') + '\n' : ''
-      return header + rows.map((row) => row.slice(c0, c1 + 1).map((v) => (v ?? '').replace(/[\t\r\n]+/g, ' ')).join('\t')).join('\n')
+      // Pasted into a spreadsheet, nothing in it runs as a formula (see pasteSafe).
+      const header = multi ? src.columns.slice(c0, c1 + 1).map((c) => pasteSafe(c.name)).join('\t') + '\n' : ''
+      return header + rows.map((row) => row.slice(c0, c1 + 1).map((v) => pasteSafe((v ?? '').replace(/[\t\r\n]+/g, ' '))).join('\t')).join('\n')
     })
     // The clipboard write starts now, inside the key press, with the text to follow: Safari refuses
     // a write that only starts after an await.
@@ -801,6 +806,7 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
       const w = Math.max(MIN_W, Math.min(1200, s.resizing.startW + e.clientX - s.resizing.startX))
       s.widths[s.resizing.col] = w
       s.widthByName.set(widthKey(props.current.source.columns[s.resizing.col]), w)
+      s.resized.add(widthKey(props.current.source.columns[s.resizing.col]))
       updateSpacer()
       requestDraw()
     }
@@ -813,6 +819,7 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
         for (const rows of s.cache.values()) for (const row of rows.slice(0, 200)) len = Math.max(len, row[h.border] == null ? 4 : display(h.border, row[h.border]!).length)
         s.widths[h.border] = Math.round(Math.min(800, Math.max(MIN_W, len * s.charW + PAD * 2 + 8)))
         s.widthByName.set(widthKey(props.current.source.columns[h.border]), s.widths[h.border])
+        s.resized.add(widthKey(props.current.source.columns[h.border]))
         updateSpacer()
         requestDraw()
       }
@@ -852,7 +859,10 @@ export const Grid = forwardRef<GridHandle, Props>(function Grid({ source, sort, 
       }
       if (!s.sel) {
         if (!/^Arrow|^Page|^Home$|^End$/.test(e.key)) return
-        s.sel = { anchor: { r: 0, c: 0 }, focus: { r: 0, c: 0 } }
+        // Nothing selected yet: the first key lands on the first cell (not the one after it).
+        e.preventDefault()
+        if (src.rowCount && src.columns.length) setSel({ anchor: { r: 0, c: 0 }, focus: { r: 0, c: 0 } })
+        return
       }
       const page = Math.max(1, Math.floor((s.viewH - HEAD_H) / ROW_H) - 1)
       let { r, c } = s.sel.focus

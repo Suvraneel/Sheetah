@@ -37,6 +37,38 @@ test.describe('sealed engine', () => {
   })
 })
 
+test.describe('functions SQL can’t redefine', () => {
+  test('a macro named for a built-in (sha256 as md5) or for Sheetah’s own is removed, and said so', async ({ page }) => {
+    await openDemo(page)
+    // What a hostile shared query could slip in to make Anonymize's pseudonyms plain hashes.
+    await runSql(page, 'CREATE OR REPLACE TEMP MACRO sha256(x) AS md5(x); CREATE FUNCTION main.lower(x) AS upper(x); SELECT 1 AS one')
+    await expect(page.locator('.error-banner')).toContainText('doesn’t let a script redefine')
+    await expect(page.locator('.error-banner')).toContainText('sha256')
+    await page.locator('.error-banner .link-btn').click()
+    await runSql(page, "SELECT sha256('a') = 'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb' AS real, lower('A') AS l")
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('true')
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('a')
+    // Its own clean-up macros too: put back, whatever was written over them.
+    await runSql(page, "CREATE OR REPLACE TEMP MACRO number_from_text(x) AS 0; SELECT number_from_text('1,200') AS n")
+    await expect(page.locator('.error-banner')).toContainText('number_from_text')
+    await page.locator('.error-banner .link-btn').click()
+    await runSql(page, "SELECT number_from_text('1,200') AS n")
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('1,200')
+    // A catalog function of its own name can't hide one: the catalog is read by its system name.
+    await runSql(
+      page,
+      'CREATE TEMP MACRO duckdb_functions() AS TABLE SELECT NULL::VARCHAR database_name, NULL::VARCHAR schema_name, NULL::VARCHAR function_name, NULL::VARCHAR function_type, false internal WHERE false; CREATE TEMP MACRO "right"(s, n) AS s; SELECT 1',
+    )
+    await expect(page.locator('.error-banner')).toContainText('right')
+    await page.locator('.error-banner .link-btn').click()
+    await runSql(page, "SELECT right('9820012345', 4) AS r")
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2345')
+    // Nor does a comment that mentions one: nothing was made, nothing is said.
+    await runSql(page, 'SELECT 1 AS x -- the function title_case tidies names')
+    await expect(page.locator('.error-banner')).toHaveCount(0)
+  })
+})
+
 test.describe('content security policy', () => {
   test('production headers are served', async ({ request }) => {
     const res = await request.get('/')

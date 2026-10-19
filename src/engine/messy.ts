@@ -1,16 +1,18 @@
+import { LOCALE } from './sql'
+
 /*
  * A small, realistically messy export: the kind an accounting package writes for "Sales register,
  * April". Everything Sheetah's clean-up is for is in it, the way it turns up in real files:
  *   - a region named once per group (fill down), with a "Sub-total" line after each and a "Grand Total"
  *   - empty rows between the groups
- *   - amounts as text with ₹ and Indian grouping (1,12,500.00), a credit note in brackets
- *   - GST rates as "18%", dates as "03-Apr-2024"
+ *   - amounts as text with a currency sign and thousands separators, a credit note in brackets: in
+ *     rupees with Indian grouping (1,12,500.00) and GST for India and the rest, in dollars with sales
+ *     tax for a reader in the US
+ *   - tax rates as "18%", dates as "03-Apr-2024"
  *   - customers typed with stray spaces and any case, one city spelt two ways
  * Built here (no download, no file in the bundle's assets) and opened like any file the user drops.
  */
 
-const inr = new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-const money = (n: number, symbol = true) => (n < 0 ? `(${symbol ? '₹' : ''}${inr.format(-n)})` : `${symbol ? '₹' : ''}${inr.format(n)}`)
 const csv = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
 
 type Line = [invoice: string, day: number, customer: string, city: string, taxable: number, gst: number]
@@ -49,20 +51,34 @@ const REGIONS: { region: string; lines: Line[] }[] = [
   },
 ]
 
+/** The same register as a US business would have it: dollars, sales tax, its customers and cities (New York spelt two ways). */
+const US: { names: string[]; cities: string[]; rates: Record<number, number> } = {
+  names: [' emma clark ', 'LIAM JONES', 'Olivia  Brown', 'noah davis', 'LIAM JONES', 'Ava Miller', 'mason wilson', 'Ethan Moore ', 'SOPHIA TAYLOR', 'jacob lee', ' Mia Anderson', 'lucas thomas', 'Amelia  Jackson', 'HARPER WHITE', 'elijah harris', 'Grace Martin'],
+  cities: ['Boston', 'Cambridge', 'Providence', 'Hartford', 'Cambridge', 'Boston', 'Atlanta', 'Miami', 'NYC', 'Charlotte', 'New York', 'Denver', 'Austin', 'Phoenix', 'Denver', 'Austin'],
+  rates: { 18: 8, 12: 6, 5: 4 },
+}
+
 export const MESSY_NAME = 'sales_register_april.csv'
 
-export function messyCsv(): string {
-  const rows: string[][] = [['Region', 'Invoice No', 'Invoice Date', 'Customer', 'City', 'Taxable Value', 'GST %', 'Invoice Total']]
+/** The messy register: India's (₹, GST) unless `us` (dollars and sales tax, for a reader in the US). */
+export function messyCsv(us = false): string {
+  const grouping = new Intl.NumberFormat(us ? 'en-US' : 'en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const sign = us ? '$' : '₹'
+  const money = (n: number, symbol = true) => (n < 0 ? `(${symbol ? sign : ''}${grouping.format(-n)})` : `${symbol ? sign : ''}${grouping.format(n)}`)
+  const rows: string[][] = [['Region', 'Invoice No', 'Invoice Date', 'Customer', 'City', 'Taxable Value', us ? 'Tax %' : 'GST %', 'Invoice Total']]
   let grandTaxable = 0
   let grandTotal = 0
+  let k = 0
   REGIONS.forEach(({ region, lines }, g) => {
     let taxable = 0
     let total = 0
-    lines.forEach(([invoice, day, customer, city, value, gst], i) => {
+    lines.forEach(([invoice, day, inCustomer, inCity, value, inGst], i) => {
+      const [customer, city, gst] = us ? [US.names[k], US.cities[k], US.rates[inGst]] : [inCustomer, inCity, inGst]
+      k++
       const withTax = Math.round(value * (100 + gst)) / 100
       taxable += value
       total += withTax
-      // Some rows were typed without the ₹ sign: the clean-up reads both.
+      // Some rows were typed without the currency sign: the clean-up reads both.
       const symbol = (i + g) % 3 !== 2
       rows.push([i === 0 ? region : '', invoice, `${String(day).padStart(2, '0')}-Apr-2024`, customer, city, money(value, symbol), `${gst}%`, money(withTax, symbol)])
     })
@@ -75,4 +91,4 @@ export function messyCsv(): string {
   return rows.map((r) => r.map(csv).join(',')).join('\n') + '\n'
 }
 
-export const messyFile = () => new File([messyCsv()], MESSY_NAME, { type: 'text/csv' })
+export const messyFile = () => new File([messyCsv(/^en-US$/i.test(LOCALE))], MESSY_NAME, { type: 'text/csv' })

@@ -119,3 +119,52 @@ test('a workbook can hold several sheets (a pivot, and the rows behind it)', asy
   expect(sheets.map((s) => s.sheet)).toEqual(['pivot', 'pivot (2)'])
   expect(sheets[1].data).toEqual([['city', 'n'], ['Pune', 1], ['Pune', 1]])
 })
+
+test('months written as text (a pivot’s "2024-04") become real dates, shown as months; its Total stays text', async () => {
+  const cols: XlsxColumn[] = [
+    { name: 'Date (month)', type: 'VARCHAR' },
+    { name: 'Sum of amount', type: 'DOUBLE' },
+  ]
+  const rows = [
+    ['2024-04', '505'],
+    ['2024-05', '20'],
+    ['Total', '525'],
+  ]
+  const { rows: back } = await readBack(await build(rows, cols))
+  expect(back[1][0]).toEqual(new Date(Date.UTC(2024, 3, 1)))
+  expect(back[2][0]).toEqual(new Date(Date.UTC(2024, 4, 1)))
+  expect(back[3][0]).toBe('Total')
+  // Text that only sometimes looks like a month stays text.
+  const mixed = await readBack(await build([['Apr 2024', '1'], ['Pune', '2']], cols))
+  expect(mixed.rows[1][0]).toBe('Apr 2024')
+  // A report's own month names count too.
+  expect((await readBack(await build([['Apr 2024', '1'], ['May 2024', '2']], cols))).rows[2][0]).toEqual(new Date(Date.UTC(2024, 4, 1)))
+})
+
+test('a column is as wide as its numbers will show (141544.3 is 1,41,544.30), so Excel never shows ###', async () => {
+  const { unzipSync, strFromU8 } = await import('fflate')
+  const buf = await build([['Balance as per bank statement', '141544.3'], ['Less: cheques', '-12400']], [{ name: 'Particulars', type: 'VARCHAR' }, { name: 'Total', type: 'DOUBLE' }])
+  const sheet = strFromU8(unzipSync(new Uint8Array(buf))['xl/worksheets/sheet1.xml'])
+  const widths = [...sheet.matchAll(/<col min="(\d+)" max="\d+" width="(\d+)"/g)].map((m) => Number(m[2]))
+  // "1,41,544.30" is 11 characters: a column of 9 (the raw value's) would show ###.
+  expect(widths[1]).toBeGreaterThanOrEqual(12)
+  expect(widths[0]).toBeGreaterThanOrEqual('Balance as per bank statement'.length)
+})
+
+test('a sum’s float noise is written to the 15 digits Excel keeps', async () => {
+  const cols: XlsxColumn[] = [{ name: 'total', type: 'DOUBLE' }]
+  const blob = await writeXlsx('t', { columns: cols, rowCount: 3, fetch: async () => [['98.44999999999999'], ['519314.16000000003'], ['0.30000000000000004']] })
+  const { rows } = await readBack(Buffer.from(await blob.arrayBuffer()))
+  expect(rows.slice(1).map((r) => r[0])).toEqual([98.45, 519314.16, 0.3])
+})
+
+test('a workbook’s sheet sizes are read from its zip directory, nothing unpacked', async () => {
+  const { zipSync, strToU8 } = await import('fflate')
+  const { sheetSizes } = await import('../../src/engine/xlsx-zip')
+  const zip = zipSync({ 'xl/workbook.xml': strToU8('<workbook/>'), 'xl/worksheets/sheet1.xml': strToU8('x'.repeat(5000)), 'xl/worksheets/sheet2.xml': strToU8('y'.repeat(123)) })
+  expect(await sheetSizes(new Blob([zip]))).toEqual([
+    { name: 'xl/worksheets/sheet1.xml', size: 5000 },
+    { name: 'xl/worksheets/sheet2.xml', size: 123 },
+  ])
+  expect(await sheetSizes(new Blob([strToU8('not a zip')]))).toEqual([])
+})

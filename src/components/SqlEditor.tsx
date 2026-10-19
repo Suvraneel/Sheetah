@@ -4,9 +4,11 @@ import { EditorView, keymap, placeholder as cmPlaceholder, drawSelection, highli
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { sql, PostgreSQL } from '@codemirror/lang-sql'
 import { syntaxHighlighting, HighlightStyle, bracketMatching } from '@codemirror/language'
-import { autocompletion, closeBrackets, closeCompletion, completionKeymap } from '@codemirror/autocomplete'
+import { autocompletion, closeBrackets, closeCompletion, completeFromList, completionKeymap, type Completion } from '@codemirror/autocomplete'
 import { tags as t } from '@lezer/highlight'
-import type { TableMeta } from '../engine/ingest'
+import type { TableMeta } from '../engine/tables'
+import { OWN_FUNCTIONS } from '../engine/own-functions'
+import { sqlName } from '../engine/sql'
 import { EDITOR_FIT_MAX, EDITOR_MIN } from './editorSize'
 import { registerEditor } from './editorBridge'
 
@@ -19,6 +21,16 @@ const highlight = HighlightStyle.define([
   { tag: [t.typeName], color: 'var(--syn-type)' },
   { tag: [t.special(t.name), t.quote], color: 'var(--syn-ident)' },
 ])
+
+/** Sheetah's own functions, completed like DuckDB's words, each with what it does. */
+const ownFunctions: Completion[] = Object.entries(OWN_FUNCTIONS).map(([name, f]) => ({
+  label: name,
+  type: 'function',
+  detail: f.shape.slice(name.length),
+  info: f.does,
+  apply: `${name}(`,
+}))
+const ownCompletions = PostgreSQL.language.data.of({ autocomplete: completeFromList(ownFunctions) })
 
 const theme = EditorView.theme({
   '&': { fontSize: '13.5px', backgroundColor: 'transparent', color: 'var(--text)' },
@@ -62,25 +74,34 @@ interface Props {
   onChange: (v: string) => void
   onRun: () => void
   tables: TableMeta[]
+  /** The table on screen: its columns complete without its name in front. */
+  defaultTable?: string
   id?: string
 }
 
-export function SqlEditor({ value, onChange, onRun, tables, id }: Props) {
+export function SqlEditor({ value, onChange, onRun, tables, defaultTable, id }: Props) {
   const host = useRef<HTMLDivElement>(null)
   const view = useRef<EditorView | null>(null)
   const schemaComp = useRef(new Compartment())
+  const historyComp = useRef(new Compartment())
   const cb = useRef({ onChange, onRun })
   cb.current = { onChange, onRun }
 
-  const schemaFor = (ts: TableMeta[]) =>
+  const schemaFor = (ts: TableMeta[], own?: string) =>
     sql({
       dialect: PostgreSQL,
       upperCaseKeywords: true,
-      schema: Object.fromEntries(ts.map((tb) => [tb.name, tb.columns.map((c) => c.name)])),
+      // Each with its type; a name that needs quotes ("Net Amount") is written with them.
+      schema: Object.fromEntries(
+        ts.map((tb) => [tb.name, tb.columns.map((c): Completion => ({ label: c.name, type: 'property', detail: c.type.toLowerCase(), ...(sqlName(c.name) !== c.name ? { apply: sqlName(c.name) } : {}) }))]),
+      ),
+      defaultTable: own && ts.some((tb) => tb.name === own) ? own : undefined,
     })
 
   useEffect(() => {
-    const run = () => {
+    // Running closes any open suggestions: they'd sit over the error or the results.
+    const run = (v: EditorView) => {
+      closeCompletion(v)
       cb.current.onRun()
       return true
     }
@@ -89,7 +110,7 @@ export function SqlEditor({ value, onChange, onRun, tables, id }: Props) {
       state: EditorState.create({
         doc: value,
         extensions: [
-          history(),
+          historyComp.current.of(history()),
           drawSelection(),
           highlightActiveLine(),
           bracketMatching(),
@@ -99,7 +120,8 @@ export function SqlEditor({ value, onChange, onRun, tables, id }: Props) {
           // No Tab-to-indent: Tab must move focus out of the editor (WCAG 2.1.2, no keyboard trap).
           // Tab closes any open suggestions and still leaves the editor (returning false keeps the default).
           keymap.of([{ key: 'Tab', run: (v) => (closeCompletion(v), false) }, ...completionKeymap, ...defaultKeymap, ...historyKeymap]),
-          schemaComp.current.of(schemaFor(tables)),
+          schemaComp.current.of(schemaFor(tables, defaultTable)),
+          ownCompletions,
           syntaxHighlighting(highlight),
           theme,
           cmPlaceholder('SELECT * FROM orders WHERE total > 5000 ORDER BY ordered_at DESC'),
@@ -123,17 +145,21 @@ export function SqlEditor({ value, onChange, onRun, tables, id }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // External value changes (e.g. header actions composing SQL)
+  // External value changes (e.g. header actions composing SQL) start the editor's undo history afresh:
+  // Ctrl+Z there takes back typing since, never brings back (or splices into the new SQL) text of rows no
+  // longer on screen. The steps' Undo does that, with the rows.
   useEffect(() => {
     const v = view.current
     if (v && v.state.doc.toString() !== value) {
-      v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: value } })
+      v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: value }, effects: historyComp.current.reconfigure([]) })
+      v.dispatch({ effects: historyComp.current.reconfigure(history()) })
     }
   }, [value])
 
   useEffect(() => {
-    view.current?.dispatch({ effects: schemaComp.current.reconfigure(schemaFor(tables)) })
-  }, [tables])
+    view.current?.dispatch({ effects: schemaComp.current.reconfigure(schemaFor(tables, defaultTable)) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tables, defaultTable])
 
   return <div className="editor" id={id} ref={host} />
 }

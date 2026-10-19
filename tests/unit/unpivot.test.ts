@@ -71,3 +71,14 @@ test('a month not reached yet (an empty column, read as text) doesn’t turn the
   const [first] = await q(`SELECT typeof(value) AS t FROM (${unpivotSql('times', { columns: ['Q1', 'Q2', 'Q3'], name: 'quarter', value: 'value' }, t2)})`)
   expect(first.t).toMatch(/^TIMESTAMP/)
 })
+
+test('years with a statistics office’s notes on them are a series, named without the notes', async () => {
+  const { seriesColumns } = await import('../../src/engine/series')
+  const { unpivotSql } = await import('../../src/engine/unpivot')
+  const { q } = await import('./duck')
+  const cols = ['area', '2021', '2022 [note 2]', '2023 (p)'].map((name) => ({ name, type: name === 'area' ? 'VARCHAR' : 'BIGINT' }))
+  expect(seriesColumns(cols)).toEqual({ kind: 'year', columns: ['2021', '2022 [note 2]', '2023 (p)'] })
+  await q(`CREATE OR REPLACE TABLE ons AS SELECT 'A' AS area, 1 AS "2021", 2 AS "2022 [note 2]", 3 AS "2023 (p)"`)
+  const rows = await q(unpivotSql('ons', { columns: ['2021', '2022 [note 2]', '2023 (p)'], name: 'year', value: 'value' }, cols))
+  expect(rows.map((r) => r.year)).toEqual(['2021', '2022', '2023'])
+})

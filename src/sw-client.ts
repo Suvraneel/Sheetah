@@ -23,7 +23,7 @@ export function updateReady() {
 /** Swaps in the waiting version and reloads once it has taken over. */
 export function applyUpdate() {
   // Nothing left to swap (another tab already did, or the worker moved on): just load the new build.
-  if (!waiting || waiting.state === 'activated' || waiting.state === 'redundant' || replacedElsewhere) return location.reload()
+  if (!waiting || waiting.state === 'activated' || waiting.state === 'redundant' || replacedElsewhere) return reload()
   expected = 'reload'
   waiting.postMessage('skip-waiting')
 }
@@ -79,7 +79,7 @@ export function registerServiceWorker() {
         if (!previous) return // the first install taking over: nothing changed for the user
         const why = expected
         expected = null
-        if (why === 'reload') return location.reload()
+        if (why === 'reload') return reload()
         if (why === 'silent') return
         // Swapped from another tab: keep working (the old build's files stay cached), offer a reload.
         replacedElsewhere = true
@@ -103,11 +103,24 @@ export function registerServiceWorker() {
   })
 }
 
+/** Reloads asked for here (Reload on the new version): the page doesn't ask "leave this page?" as well. */
+export const leaving = { now: false }
+function reload() {
+  leaving.now = true
+  location.reload()
+}
+
 /** Tables are open in this tab: a reload would clear them (unless kept), so it's offered, never done. */
 let hasWork = false
 export const setHasWork = (on: boolean) => {
   hasWork = on
 }
+
+/**
+ * A chunk that couldn't be fetched (the browser's words for it differ). Anything else that reaches the
+ * preload handler is the lazily loaded code's own error (a query that failed), not a new version.
+ */
+const MISSING_CHUNK = /dynamically imported module|importing a module script failed|unable to preload|failed to fetch|not a valid javascript mime type|load failed|chunk/i
 
 /**
  * After a deploy, an old tab can ask for a lazily loaded chunk that no longer exists. With nothing open
@@ -116,6 +129,8 @@ export const setHasWork = (on: boolean) => {
  */
 export function recoverFromStaleChunks() {
   window.addEventListener('vite:preloadError', (e) => {
+    const why = (e as Event & { payload?: unknown }).payload
+    if (!MISSING_CHUNK.test(why instanceof Error ? `${why.name} ${why.message}` : String(why ?? ''))) return
     if (hasWork) {
       window.dispatchEvent(new Event(UPDATE_EVENT))
       return
@@ -127,6 +142,6 @@ export function recoverFromStaleChunks() {
       return
     }
     e.preventDefault()
-    location.reload()
+    reload()
   })
 }

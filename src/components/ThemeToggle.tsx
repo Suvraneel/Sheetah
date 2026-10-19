@@ -13,7 +13,7 @@ export function ThemeToggle({ className = '' }: { className?: string }) {
     <button
       type="button"
       className={`icon-pill ${className}`}
-      aria-label={`Colour theme: ${NAME[pref]}. Switch to ${NAME[NEXT[pref]]}`}
+      aria-label={`Theme: ${NAME[pref]}. Switch to ${NAME[NEXT[pref]]}`}
       title={`Theme: ${NAME[pref]} (click for ${NAME[NEXT[pref]]})`}
       onClick={() => {
         const next = NEXT[pref]

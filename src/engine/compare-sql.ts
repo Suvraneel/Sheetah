@@ -11,6 +11,8 @@ import { commentText, isNumericType, quoteLiteral, sqlName } from './sql'
 export interface TableColumns {
   name: string
   columns: { name: string; type: string }[]
+  /** The table's rows as tidied by its steps (total lines left out, text converted), when it has them. */
+  source?: string
 }
 
 export interface CompareSpec {
@@ -215,16 +217,58 @@ export function compareSql(spec: CompareSpec, before: TableColumns, after: Table
 export function likelyPair(tables: TableColumns[], open?: string | null): { before: string; after: string } | null {
   const current = open ? tables.find((t) => t.name.toLowerCase() === open.toLowerCase()) : undefined
   const twin = current ? similarTable(current.name, tables) : null
-  if (current && twin) return { before: twin, after: current.name }
+  if (current && twin) return inOrder(twin, current.name)
   let best: { before: string; after: string } | null = null
   let top = 0
   for (const [i, a] of tables.entries()) {
     for (const b of tables.slice(i + 1)) {
       const score = schemaDiff(a, b).shared.length / Math.max(1, a.columns.length, b.columns.length)
-      if (score > top) [top, best] = [score, { before: a.name, after: b.name }]
+      if (score > top) [top, best] = [score, inOrder(a.name, b.name)]
     }
   }
   return best
+}
+
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+
+/**
+ * The period a table's name says (customers_sep, sales_2024_03, report-202403, Q1 FY25…), as months counted
+ * from year 0 (or within the year, when no year is written), or null.
+ */
+export function periodOf(name: string): { months: number; year: boolean } | null {
+  const words = name.toLowerCase().split(/[^a-z0-9]+/).flatMap((w) => w.match(/[a-z]+|[0-9]+/g) ?? [])
+  let year: number | null = null
+  let month: number | null = null
+  for (const [i, w] of words.entries()) {
+    const m = MONTHS.findIndex((x) => w.startsWith(x) && (w.length === 3 || 'january february march april may june july august september october november december sept'.split(' ').some((full) => full === w)))
+    if (m >= 0 && month === null) {
+      month = m
+      // A year after the month: sep_2024, sep24.
+      const next = words[i + 1]
+      if (next && /^\d{4}$/.test(next) && year === null) year = Number(next)
+      else if (next && /^\d{2}$/.test(next) && year === null) year = 2000 + Number(next)
+    } else if (/^(19|20)\d{2}(0[1-9]|1[0-2])$/.test(w) && month === null) {
+      // 202403
+      year = Number(w.slice(0, 4))
+      month = Number(w.slice(4)) - 1
+    } else if (/^(19|20)\d{2}$/.test(w) && year === null) {
+      year = Number(w)
+      const next = words[i + 1]
+      if (next && /^(0?[1-9]|1[0-2])$/.test(next) && month === null) month = Number(next) - 1
+    }
+  }
+  if (month === null && year === null) return null
+  return { months: (year ?? 0) * 12 + (month ?? 0), year: year !== null }
+}
+
+/** Two versions of an export, the earlier first when their names say which (customers_sep before customers_oct). */
+export function inOrder(a: string, b: string): { before: string; after: string } {
+  const [p, q] = [periodOf(a), periodOf(b)]
+  if (!p || !q || p.months === q.months || p.year !== q.year) return { before: a, after: b }
+  // Months alone: December before January, as one year turns into the next.
+  const diff = q.months - p.months
+  const later = p.year ? diff > 0 : (diff > 0 && diff <= 6) || diff < -6
+  return later ? { before: a, after: b } : { before: b, after: a }
 }
 
 /** Pairs of tables with mostly the same columns: likely two versions of one export. */

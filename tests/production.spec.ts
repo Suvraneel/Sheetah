@@ -102,7 +102,7 @@ test.describe('updates', () => {
     const d = deploy(true)
     try {
       await checkForUpdate(page)
-      await expect(page.getByText('A new version of Sheetah is ready.')).toBeVisible({ timeout: 60_000 })
+      await expect(page.locator('.toast', { hasText: 'A new version of Sheetah is ready.' })).toBeVisible({ timeout: 60_000 })
       await Promise.all([page.waitForEvent('framenavigated'), page.getByRole('button', { name: 'Reload' }).click()])
       await page.waitForLoadState('load')
       await expect.poll(() => versionCaches(page), { timeout: 30_000 }).toEqual([`sheetah-${d.version}`, `sheetah-${d.version}-next`].sort())
@@ -120,7 +120,7 @@ test.describe('updates', () => {
       await expect.poll(() => versionCaches(page), { timeout: 60_000 }).toContain(`sheetah-${d.version}-next`)
       await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller?.scriptURL ?? ''), { timeout: 30_000 }).toContain('sw.js')
       await page.waitForTimeout(500)
-      await expect(page.getByText('A new version of Sheetah is ready.')).toHaveCount(0)
+      await expect(page.locator('.toast', { hasText: 'A new version of Sheetah is ready.' })).toHaveCount(0)
     } finally {
       d.restore()
     }
@@ -135,8 +135,8 @@ test.describe('updates', () => {
     const d = deploy(true)
     try {
       await checkForUpdate(one)
-      await expect(one.getByText('A new version of Sheetah is ready.')).toBeVisible({ timeout: 60_000 })
-      await expect(two.getByText('A new version of Sheetah is ready.')).toBeVisible({ timeout: 60_000 })
+      await expect(one.locator('.toast', { hasText: 'A new version of Sheetah is ready.' })).toBeVisible({ timeout: 60_000 })
+      await expect(two.locator('.toast', { hasText: 'A new version of Sheetah is ready.' })).toBeVisible({ timeout: 60_000 })
       await Promise.all([one.waitForEvent('framenavigated'), one.getByRole('button', { name: 'Reload' }).click()])
       // The other tab is now served by the new worker but still runs its build: lazily loaded parts
       // (the SQL editor) still load, and its data stays until the user chooses to reload.

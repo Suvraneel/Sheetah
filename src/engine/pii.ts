@@ -1,4 +1,4 @@
-import { getEngine, quoteIdent, quoteLiteral } from './db'
+import { background, getEngine, quoteIdent, quoteLiteral } from './db'
 import { RULES, nameSuggests, type PiiKind } from './pii-rules'
 import { colRef, type ColumnInfo, type ResultSet } from './result'
 
@@ -11,6 +11,11 @@ export interface Detection {
   verified?: number
 }
 
+/** Words that make a name a company's: Inc, LLC, Ltd, Pvt, Corp, Enterprises, Industries, Traders… */
+/** Places, not people: a NAME column of counties and districts ("Autauga County, Alabama", "Hartlepool UA"). */
+const PLACE = '(^|[^a-z])(county|district|borough|parish|city|town|village|region|province|state|municipality|council|ward|census tract|tract|ua|lad|kreis|landkreis|gemeinde|stadt)([^a-z]|$)'
+const COMPANY = '(^|[^a-z])(inc|llc|llp|ltd|limited|pvt|plc|corp|corporation|co|company|gmbh|enterprises?|industries|traders|trading|associates|solutions|services|systems|technologies|group|holdings|bank|store|shop|foods|bakery|motors|labs?|studio|agency|partners)([^a-z]|$)'
+
 export const SAMPLE_ROWS = 5000
 
 const TEXTY = /^(VARCHAR|TEXT|STRING|CHAR|BPCHAR|BIGINT|HUGEINT|UBIGINT|INTEGER|UINTEGER)/i
@@ -20,24 +25,30 @@ const TEMPORAL = /^(DATE|TIMESTAMP)/i
  * Looks for personal data in a result: each column's name, and how many of up to 5,000 sampled values
  * match each kind's pattern (all in SQL, in this tab), plus checksums for Aadhaar and card numbers.
  */
-export async function detectPii(result: ResultSet): Promise<Detection[]> {
+/** `scan`: looked over unasked (as a table opens), so it waits for the user's own work. */
+export async function detectPii(result: ResultSet, scan = false): Promise<Detection[]> {
   if (!result.table || !result.rowCount) return []
-  const { conn } = await getEngine()
+  const conn = scan ? background : (await getEngine()).conn
   const cols = result.columns.filter((c) => TEXTY.test(c.type) || TEMPORAL.test(c.type))
   if (!cols.length) return []
 
   const patterned = RULES.filter((r) => r.pattern)
-  const parts: string[] = []
-  cols.forEach((c, i) => {
-    if (!TEXTY.test(c.type)) return
-    const v = `trim(${colRef(c)}::VARCHAR)`
-    parts.push(`count(nullif(${v}, ''))::DOUBLE AS "n${i}"`)
-    patterned.forEach((r, j) => parts.push(`count(*) FILTER (WHERE regexp_full_match(${v}, ${quoteLiteral(r.pattern!)}))::DOUBLE AS "m${i}_${j}"`))
-  })
-  const counts = parts.length
-    ? (((await conn.query(`WITH s AS (SELECT * FROM ${result.table} USING SAMPLE ${SAMPLE_ROWS} ROWS) SELECT ${parts.join(', ')} FROM s`)).toArray()[0]?.toJSON() ??
-        {}) as Record<string, number>)
-    : {}
+  const texty = [...cols.entries()].filter(([, c]) => TEXTY.test(c.type))
+  // Twenty columns a query: a wide table's patterns all at once would run the engine out of memory.
+  const counts: Record<string, number> = {}
+  for (let k = 0; k < texty.length; k += 20) {
+    const parts: string[] = []
+    for (const [i, c] of texty.slice(k, k + 20)) {
+      const v = `trim(${colRef(c)}::VARCHAR)`
+      parts.push(`count(nullif(${v}, ''))::DOUBLE AS "n${i}"`)
+      patterned.forEach((r, j) => parts.push(`count(*) FILTER (WHERE regexp_full_match(${v}, ${quoteLiteral(r.pattern!)}))::DOUBLE AS "m${i}_${j}"`))
+      // Companies, not people ("Wayne Enterprises", "Acme Pvt Ltd"): a Customer column of them isn't personal.
+      parts.push(`count(*) FILTER (WHERE regexp_matches(lower(${v}), ${quoteLiteral(COMPANY)}))::DOUBLE AS "co${i}"`)
+      parts.push(`count(*) FILTER (WHERE regexp_matches(lower(${v}), ${quoteLiteral(PLACE)}))::DOUBLE AS "pl${i}"`)
+    }
+    const row = (await conn.query(`WITH s AS (SELECT * FROM ${result.table} USING SAMPLE ${SAMPLE_ROWS} ROWS) SELECT ${parts.join(', ')} FROM s`)).toArray()[0]?.toJSON()
+    Object.assign(counts, row ?? {})
+  }
 
   const out: Detection[] = []
   for (const [i, c] of cols.entries()) {
@@ -53,7 +64,7 @@ export async function detectPii(result: ResultSet): Promise<Detection[]> {
     // Checksums separate real Aadhaar/card numbers from other long numbers.
     const rule = best && RULES.find((r) => r.kind === best!.kind)
     if (best && rule?.verify) {
-      const sample = await sampleValues(result.table, c, rule.pattern!)
+      const sample = await sampleValues(result.table, c, rule.pattern!, scan)
       const pass = sample.filter(rule.verify).length
       best.verified = sample.length ? pass / sample.length : 0
       if (best.verified < 0.9 && !nameSuggests(rule, c.name)) best = null
@@ -61,15 +72,19 @@ export async function detectPii(result: ResultSet): Promise<Detection[]> {
     if (!best) {
       // Kinds recognised by name: names, birth dates, addresses (and the others when the column name says so).
       const named = RULES.find((r) => nameSuggests(r, c.name) && (r.kind === 'birthdate' ? true : TEXTY.test(c.type) && !TEMPORAL.test(c.type)))
-      if (named && (named.kind === 'birthdate' || !named.pattern || nonEmpty === 0)) best = { column: c.name, kind: named.kind, ratio: null }
+      // A phone or postal code column by its name alone (written any country's way); names unless nearly all are
+      // companies (a few people among them are still people), or most are places (counties, districts).
+      const companies = nonEmpty > 0 && (Number(counts[`co${i}`] ?? 0) / nonEmpty >= 0.9 || Number(counts[`pl${i}`] ?? 0) / nonEmpty >= 0.6)
+      if (named && !(named.kind === 'name' && companies) && (named.kind === 'birthdate' || named.kind === 'phone' || named.kind === 'postcode' || !named.pattern || nonEmpty === 0))
+        best = { column: c.name, kind: named.kind, ratio: null }
     }
     if (best) out.push(best)
   }
   return out
 }
 
-async function sampleValues(table: string, c: ColumnInfo, pattern: string): Promise<string[]> {
-  const { conn } = await getEngine()
+async function sampleValues(table: string, c: ColumnInfo, pattern: string, scan: boolean): Promise<string[]> {
+  const conn = scan ? background : (await getEngine()).conn
   const v = `trim(${colRef(c)}::VARCHAR)`
   const res = await conn.query(`SELECT ${v} AS v FROM ${table} WHERE regexp_full_match(${v}, ${quoteLiteral(pattern)}) LIMIT 300`)
   return res.toArray().map((r) => String(r.toJSON().v))

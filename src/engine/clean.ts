@@ -1,4 +1,4 @@
-import { LOCALE, nameKey, quoteLiteral, sqlName } from './sql'
+import { quoteLiteral, sqlName } from './sql'
 
 /*
  * Clean a column in place: numbers stored as text ("₹1,234", "12%", "(250)", "12,5" in a decimal-comma
@@ -19,6 +19,8 @@ export interface Clean {
   kind: CleanKind
   /** strptime format for 'date' (e.g. %d/%m/%Y). */
   format?: string
+  /** For 'date': more layouts, each tried after the one before (a column in two: 2024-04-01 and 01/04/2024). */
+  formats?: string[]
   /** For numbers: a comma marks the decimals (12,5 = 12.5) and dots group thousands. */
   comma?: boolean
   /** For numbers: a trailing Cr is plus and Dr minus (a bank statement's credits and debits). */
@@ -57,26 +59,40 @@ export const DATE_FORMATS: { format: string; label: string }[] = [
 export const formatLabel = (format?: string) => DATE_FORMATS.find((f) => f.format === format)?.label ?? format ?? ''
 
 /** The value as trimmed text: what every cleaning step starts from. */
-const textOf = (ref: string) => `trim(${ref}::VARCHAR)`
+export const textOf = (ref: string) => `trim(${ref}::VARCHAR)`
 
 /**
  * A number written the way people write them, as SQL text DuckDB can cast. Currency signs go, "(250)"
  * means −250, and separators must be where a thousands separator can be (groups of three): otherwise
- * the value is left unreadable, so "12,5" can't turn into 125. Spaces inside are kept unless commas mark
- * decimals (1 234,56), so a phone number like "98200 12345" isn't mistaken for one.
+ * the value is left unreadable, so "12,5" can't turn into 125. Spaces inside go when they group threes
+ * (1 234 567; any, when commas mark decimals: 1 234,56), so a phone number like "98200 12345" isn't
+ * mistaken for one. A statistics office's marks after a figure go too: 1,234[note 3], 108,021 (p), 56*.
  */
-function numberText(t: string, comma: boolean, drcr = false): string {
+/** A figure without a statistics office's marks after it: [note 3], [x], (p) provisional, (r) revised, (e), *; one or several. */
+export const marksOff = (t: string) => `regexp_replace(${t}, '(\\s*(\\[[^\\]]{1,20}\\]|\\((p|r|e|f|est|prov|provisional|revised|estimated?)\\)|\\*+))+\\s*$', '', 'i')`
+
+export function numberText(t: string, comma: boolean, drcr = false): string {
   // "50,000.00 Cr" / "1,200.00 Dr": a bank statement's credit and debit, plus and minus. Only when asked
   // for: on its own, "₹12 Cr" is twelve crore.
   const debit = drcr ? `regexp_matches(${t}, '[0-9)]\\s*[dD][rR]\\.?$')` : 'false'
-  const unmarked = drcr ? `regexp_replace(${t}, '([0-9)])\\s*([cC][rR]|[dD][rR])\\.?$', '\\1')` : t
+  const crdr = drcr ? `regexp_replace(${t}, '([0-9)])\\s*([cC][rR]|[dD][rR])\\.?$', '\\1')` : t
+  // The currency in letters too: "Rs. 25,000", "INR 7,500", "1,200/-" (as cheques write it).
+  const unmarked = `regexp_replace(${marksOff(crdr)}, '^\\s*(rs\\.|rs\\s|inr|usd|eur|gbp)\\s*|\\s*(inr|usd|eur|gbp|/-)\\s*$', '', 'gi')`
   const noCurrency = `regexp_replace(${unmarked}, '[₹$€£¥${comma ? '\\s\u00a0\u202f' : ''}]', '', 'g')`
-  const negative = `regexp_replace(trim(${noCurrency}), '^\\(\\s*(.*?)\\s*\\)$', '-\\1')`
+  const grouped = comma
+    ? noCurrency
+    : `CASE WHEN regexp_full_match(trim(${noCurrency}), '[-+(]?[0-9]{1,3}([ \u00a0\u202f][0-9]{3})+(\\.[0-9]+)?\\)?') THEN regexp_replace(${noCurrency}, '[ \u00a0\u202f]', '', 'g') ELSE ${noCurrency} END`
+  // (1,200.00) and 1,200.00- (a trailing minus, as SAP and some ledgers write it) are negative: with a
+  // separator in it, so 2024- or 60- (a range, a year) isn't read as minus anything.
+  const negative = `regexp_replace(regexp_replace(trim(${grouped}), '^\\(\\s*(.*?)\\s*\\)$', '-\\1'), '^([0-9][0-9.,]*[.,][0-9]+)\\s*-$', '-\\1')`
   // A separator followed by anything but three digits isn't a thousands separator (two are allowed
   // before another comma: Indian grouping, 1,00,000).
   const badGroup = comma ? `'\\.([0-9]{0,2}([^0-9]|$)|[0-9]{4})'` : `',([0-9]?([^0-9]|$)|[0-9]{2}([^0-9,]|$)|[0-9]{4})'`
   const plain = comma ? `replace(replace(${negative}, '.', ''), ',', '.')` : `replace(${negative}, ',', '')`
-  return drcr ? `CASE WHEN NOT regexp_matches(${negative}, ${badGroup}) THEN (CASE WHEN ${debit} THEN '-' ELSE '' END) || ${plain} END` : `CASE WHEN NOT regexp_matches(${negative}, ${badGroup}) THEN ${plain} END`
+  // A figure has a digit in it: NaN, inf and Infinity (which the engine would read as numbers) are no
+  // figure, and 1_000 (which it reads as a thousand) isn't how anyone writes one.
+  const ok = `regexp_matches(${negative}, '[0-9]') AND NOT contains(${negative}, '_') AND NOT regexp_matches(${negative}, ${badGroup})`
+  return drcr ? `CASE WHEN ${ok} THEN (CASE WHEN ${debit} THEN '-' ELSE '' END) || ${plain} END` : `CASE WHEN ${ok} THEN ${plain} END`
 }
 
 /*
@@ -86,17 +102,20 @@ function numberText(t: string, comma: boolean, drcr = false): string {
  */
 const T = textOf('x')
 const GRAND_OR_SUB = '(grand|sub)[ -]*totals?:?'
-const ANY_TOTAL = '(.*[^ ] +)?totals?:?'
+// "North Total", "Total:"; and a report's "Total for Acme Corp" (QuickBooks), "Total of Region" — not "Total Gym".
+const ANY_TOTAL = '(.*[^ ] +)?totals?:?|totals? (for|of) .+'
 
 export const CLEAN_MACROS: string[] = [
   `CREATE OR REPLACE TEMP MACRO number_from_text(x) AS TRY_CAST(${numberText(T, false)} AS DOUBLE)`,
   `CREATE OR REPLACE TEMP MACRO number_from_text_comma(x) AS TRY_CAST(${numberText(T, true)} AS DOUBLE)`,
   `CREATE OR REPLACE TEMP MACRO number_from_cr_dr(x) AS TRY_CAST(${numberText(T, false, true)} AS DOUBLE)`,
-  `CREATE OR REPLACE TEMP MACRO percent_from_text(x) AS TRY_CAST(${numberText(`rtrim(${T}, '%')`, false)} AS DOUBLE) / 100`,
-  `CREATE OR REPLACE TEMP MACRO percent_from_text_comma(x) AS TRY_CAST(${numberText(`rtrim(${T}, '%')`, true)} AS DOUBLE) / 100`,
+  `CREATE OR REPLACE TEMP MACRO percent_from_text(x) AS TRY_CAST(${numberText(`rtrim(trim(${marksOff(T)}), '%')`, false)} AS DOUBLE) / 100`,
+  `CREATE OR REPLACE TEMP MACRO percent_from_text_comma(x) AS TRY_CAST(${numberText(`rtrim(trim(${marksOff(T)}), '%')`, true)} AS DOUBLE) / 100`,
   // %Y also reads "24" as the year 24: only values with a four-digit year qualify. Two-digit years are
   // read as spreadsheets read them: 30–99 are 1930–1999, 00–29 are 2000–2029.
+  // (A date has a digit in it: "-Infinity" reads as one to the engine, and isn't.)
   `CREATE OR REPLACE TEMP MACRO date_from_text(x, fmt) AS CASE
+    WHEN NOT regexp_matches(${T}, '[0-9]') THEN NULL
     WHEN contains(fmt, '%Y') THEN CASE WHEN regexp_matches(${T}, '[0-9]{4}') THEN try_strptime(${T}, fmt)::DATE END
     WHEN year(try_strptime(${T}, fmt)) >= 2030 THEN (try_strptime(${T}, fmt) - INTERVAL 100 YEAR)::DATE
     ELSE try_strptime(${T}, fmt)::DATE END`,
@@ -130,8 +149,11 @@ export function cleanExpr(c: Clean): string {
       return c.drcr ? `number_from_cr_dr(${col})` : `number_from_text${c.comma ? '_comma' : ''}(${col})`
     case 'percent':
       return `percent_from_text${c.comma ? '_comma' : ''}(${col})`
-    case 'date':
-      return `date_from_text(${col}, ${quoteLiteral(c.format ?? '%Y-%m-%d')})`
+    case 'date': {
+      const all = [c.format ?? '%Y-%m-%d', ...(c.formats ?? [])]
+      const one = (f: string) => `date_from_text(${col}, ${quoteLiteral(f)})`
+      return all.length > 1 ? `coalesce(${all.map(one).join(', ')})` : one(all[0])
+    }
     case 'trim':
       return `tidy_spaces(${col})`
     case 'upper':
@@ -160,7 +182,7 @@ export const CLEAN_LABEL: Record<CleanKind, string> = {
   number: 'as number',
   percent: 'as number (from %)',
   date: 'as date',
-  trim: 'trimmed',
+  trim: 'spaces tidied',
   upper: 'UPPER CASE',
   lower: 'lower case',
   title: 'Title Case',
@@ -170,12 +192,14 @@ export const CLEAN_LABEL: Record<CleanKind, string> = {
   replace: 'values replaced',
 }
 
-const shown = (v: string | null | undefined) => (v === null || v === undefined || v === '' ? 'empty' : `“${v}”`)
+/** Spaces at either end, made visible ("Mumbai␣"): otherwise "Mumbai " → "Mumbai" reads as nothing changing. */
+export const visibleSpaces = (v: string) => v.replace(/^\s+|\s+$/g, (m) => '␣'.repeat(m.length)).replace(/\s{2,}/g, (m) => '␣'.repeat(m.length))
+const shown = (v: string | null | undefined) => (v === null || v === undefined || v === '' ? 'empty' : `“${visibleSpaces(v)}”`)
 
 export const describeClean = (c: Clean) =>
   `${c.column} ${
     c.kind === 'date'
-      ? `as date (${formatLabel(c.format)})`
+      ? `as date (${[c.format, ...(c.formats ?? [])].map(formatLabel).join(' or ')})`
       : c.kind === 'number' && c.drcr
         ? 'as number (Cr +, Dr −)'
         : c.kind === 'number' && c.comma
@@ -242,279 +266,15 @@ export interface DropRows {
   label: string
   /** True for the rows to keep (written against the table's columns; never NULL). */
   keep: string
-  /** Checked: their numbers add up to the rows kept (sub-totals, a grand total), so nothing is lost; the column checked and the rows' sum. */
-  checked?: { column: string; sum: number }
+  /** The tie-out: whether their numbers come to the rows kept (sub-totals, a grand total), column by column. */
+  checked?: TieOut
+  /** What these rows are: total lines (the ones a tie-out adds up), a statement's balance lines, empty rows. */
+  kind?: 'totals' | 'balance' | 'undated' | 'notes' | 'empty'
 }
 
-/** One kind of row that isn't data, as SQL: true for those rows (drop), and its opposite (keep). */
-export interface Junk {
-  drop: string
-  keep: string
-}
-
-
-/**
- * Rows that aren't data, given the table's columns as SQL references:
- *   - blank: nothing in any column
- *   - strong: "Grand Total", "Sub-total:", "Subtotal" in any text column (never a real value)
- *   - weak: "Total" or "North Total" (Excel's subtotal lines) in the first text column, in a row with at
- *     least one empty cell: a fuel brand called Total, or a census row for both sexes, fills its row
- * The keep forms are written out (not NOT(drop)) so a filter can stop at the first column that settles
- * it, and the patterns only run on the few values that mention "total".
- */
-export function junkPredicates(cols: { ref: string; text: boolean }[]): { blank: Junk; strong: Junk | null; weak: Junk | null; label: Junk | null; first: string | null } {
-  const empty = (r: string) => `NOT has_value(${r})`
-  const filled = (r: string) => `has_value(${r})`
-  // Each one is parenthesised, so it can be combined with AND / OR as it is.
-  const all = (parts: string[], op: 'AND' | 'OR') => (parts.length > 1 ? `(${parts.join(` ${op} `)})` : (parts[0] ?? (op === 'AND' ? 'true' : 'false')))
-  const blank = { drop: cols.length ? all(cols.map((c) => empty(c.ref)), 'AND') : 'false', keep: cols.length ? all(cols.map((c) => filled(c.ref)), 'OR') : 'true' }
-  const texts = cols.filter((c) => c.text)
-  if (!texts.length) return { blank, strong: null, weak: null, label: null, first: null }
-  const first = texts[0].ref
-  return {
-    blank,
-    strong: { drop: all(texts.map((c) => `is_grand_or_subtotal(${c.ref})`), 'OR'), keep: all(texts.map((c) => `NOT is_grand_or_subtotal(${c.ref})`), 'AND') },
-    weak: {
-      drop: `(is_total_label(${first}) AND ${all(cols.map((c) => empty(c.ref)), 'OR')})`,
-      keep: `(NOT is_total_label(${first}) OR ${all(cols.map((c) => filled(c.ref)), 'AND')})`,
-    },
-    // "Total" in the first text column, however full the row: trusted once its numbers add up (see totalsAddUp).
-    label: { drop: `is_total_label(${first})`, keep: `NOT is_total_label(${first})` },
-    first,
-  }
-}
-
-/** A column's values as numbers, for checking totals ("₹1,200" text too). */
-const asNumber = (c: { ref: string; numeric?: boolean }) => (c.numeric ? `TRY_CAST(${c.ref} AS DOUBLE)` : `number_from_text(${c.ref}::VARCHAR)`)
-
-/*
- * Checking that lines labelled "Total" really are totals, in two cheap steps: sum each other column over
- * the few labelled lines (t), then, only for the columns where that's a number, over the data rows (d).
- * A report's total line, or its sub-totals together, add up (t = d); sub-totals and a grand total both
- * labelled add up twice (t = 2d). A fuel brand called Total doesn't.
- */
-export function labelSumsSql(table: string, cols: { ref: string; numeric?: boolean }[], label: Junk, first: string): string | null {
-  const others = cols.filter((c) => c.ref !== first)
-  if (!others.length) return null
-  return `SELECT ${others.map((c, i) => `sum(${asNumber(c)})::DOUBLE AS t${i}`).join(', ')} FROM (SELECT * FROM ${table} WHERE ${label.drop})`
-}
-
-/** Sums of the given columns (by their index among the non-label columns) over the rows that are data. */
-export function dataSumsSql(table: string, cols: { ref: string; numeric?: boolean }[], first: string, which: number[], keep: string): string {
-  const others = cols.filter((c) => c.ref !== first)
-  return `SELECT ${which.map((i) => `sum(${asNumber(others[i])})::DOUBLE AS d${i}`).join(', ')} FROM (SELECT * FROM ${table} WHERE ${keep})`
-}
-
-/** Whether the labelled lines add up: in at least half the columns that hold numbers, and at least one. */
-export function totalsAgree(pairs: { t: number; d: number }[]): boolean {
-  const close = (a: number, b: number) => b !== 0 && Math.abs(a - b) <= Math.abs(b) * 0.005
-  const agree = pairs.filter((p) => close(p.t, p.d) || close(p.t, 2 * p.d)).length
-  return agree > 0 && agree * 2 >= pairs.length
-}
-
-/*
- * Group names written once, at the top of each group (a report's Region over its invoices): fill down.
- * Counted over the rows that are data (empty rows and total lines sit between the groups), in the
- * table's own order: how many rows, how many have a value, how often a value is followed by another,
- * whether the first row has one, and the longest value.
- */
-export function fillDownSql(table: string, col: string, cols: string[]): string {
-  const { blank } = junkPredicates(cols.map((ref) => ({ ref, text: false })))
-  const notTotal = `NOT is_grand_or_subtotal(${col}) AND NOT is_total_label(${col})`
-  return `SELECT count(*)::DOUBLE AS n, count(v)::DOUBLE AS filled,
-  count(*) FILTER (WHERE v IS NOT NULL AND nxt IS NOT NULL)::DOUBLE AS pairs,
-  coalesce(bool_or(i = 1 AND v IS NOT NULL), false) AS first, coalesce(max(length(v)), 0)::DOUBLE AS len
-FROM (SELECT v, lead(v) OVER (ORDER BY r) AS nxt, row_number() OVER (ORDER BY r) AS i
-  FROM (SELECT rowid AS r, nullif(trim(${col}::VARCHAR), '') AS v FROM ${table} WHERE ${blank.keep} AND ${notTotal}))`
-}
-
-/**
- * Whether those counts are a group column's: the first row named, at least 3 rows in 10 empty, and a
- * value seldom followed by another (each group has more than one row). A column filled in now and then
- * (a phone number, a note) has its values anywhere, next to each other as often as not.
- */
-export function looksFilledDown(s: { n: number; filled: number; pairs: number; first: boolean; len: number }): boolean {
-  return s.first && s.n >= 6 && s.filled >= 2 && s.n - s.filled >= s.n * 0.3 && s.pairs <= s.filled * 0.25 && s.len <= 60
-}
-
-/** Rows that are either kind. */
-export const eitherJunk = (a: Junk, b: Junk): Junk => ({ drop: `(${a.drop} OR ${b.drop})`, keep: `(${a.keep} AND ${b.keep})` })
-
-/* ------------------------------ Detection ------------------------------ */
-
-/** Text columns are the ones worth cleaning (numbers and dates already have a type). Lists are not text. */
-export const isTextColumn = (type: string) => /^(VARCHAR|TEXT|STRING|CHAR|BPCHAR)(\s*\(\s*\d+\s*\))?$/i.test(type.trim())
-
-/** Names of columns that hold codes made of digits (PIN, phone, account): text on purpose. */
-const CODE_NAME = /(^|_)(id|code|zip|zipcode|pin|pincode|postcode|post_code|postal|phone|mobile|tel|telephone|contact|account|acct|ifsc|pan|aadhaar|uid|sku|ref|no|num|number)(_|$)/
-
-/** Conversions safe to offer for a whole table at once: every sampled value converts, one way only. */
-export function confidentConversion(suggestions: CleanSuggestion[]): Clean | null {
-  const convert = suggestions.filter((s) => isConversion(s.clean))
-  if (convert.length !== 1 || convert[0].note || CODE_NAME.test(nameKey(convert[0].clean.column))) return null
-  return convert[0].clean
-}
-
-export interface CleanStats {
-  /** Non-empty values in the sample. */
-  values: number
-  /** Values that read as numbers with a decimal point, and with a decimal comma. */
-  numbers: number
-  commaNumbers: number
-  /** Values only one of the readings can explain (12.5 / 12,5). */
-  pointOnly: number
-  commaOnly: number
-  percents: number
-  commaPercents: number
-  /** Values that parse with each of DATE_FORMATS, in order. */
-  dates: number[]
-  /** Values with spaces at either end or doubled inside. */
-  untrimmed: number
-  blanks: number
-  /** Values with a leading zero (007): codes, which a number would change. */
-  zeros: number
-  /** Values that read as numbers with Cr as plus and Dr as minus; and how many are marked Dr. */
-  drcrNumbers: number
-  debits: number
-}
-
-/** The counts for one column (refs are SQL for the column), as select-list items prefixed `p`. */
-function statsItems(ref: string, p: string): string[] {
-  const v = textOf(ref)
-  const parses = (expr: string) => `count(TRY_CAST(${expr} AS DOUBLE))::DOUBLE`
-  const pct = `rtrim(${v}, '%')`
-  // For telling 12.5 from 12,5: the value without currency signs and spaces.
-  const bare = `regexp_replace(${v}, '[₹$€£¥\\s]', '', 'g')`
-  return [
-    `count(nullif(${v}, ''))::DOUBLE AS ${p}values`,
-    `${parses(numberText(v, false))} AS ${p}numbers`,
-    `${parses(numberText(v, true))} AS ${p}comma_numbers`,
-    `count(*) FILTER (WHERE regexp_full_match(${bare}, '[-+(]?[0-9]*\\.[0-9]{1,2}%?\\)?|[-+(]?[0-9]{1,3}(,[0-9]{2,3})+\\.[0-9]+%?\\)?'))::DOUBLE AS ${p}point_only`,
-    `count(*) FILTER (WHERE regexp_full_match(${bare}, '[-+(]?[0-9]*,[0-9]{1,2}%?\\)?|[-+(]?[0-9]{1,3}(\\.[0-9]{3})+,[0-9]+%?\\)?'))::DOUBLE AS ${p}comma_only`,
-    `count(*) FILTER (WHERE ${v} LIKE '%\\%' ESCAPE '\\' AND TRY_CAST(${numberText(pct, false)} AS DOUBLE) IS NOT NULL)::DOUBLE AS ${p}percents`,
-    `count(*) FILTER (WHERE ${v} LIKE '%\\%' ESCAPE '\\' AND TRY_CAST(${numberText(pct, true)} AS DOUBLE) IS NOT NULL)::DOUBLE AS ${p}comma_percents`,
-    ...DATE_FORMATS.map((f, i) => {
-      const hit = `try_strptime(${v}, ${quoteLiteral(f.format)}) IS NOT NULL`
-      return `count(*) FILTER (WHERE ${hit}${f.format.includes('%Y') ? ` AND regexp_matches(${v}, '[0-9]{4}')` : ''})::DOUBLE AS ${p}d${i}`
-    }),
-    `count(*) FILTER (WHERE ${ref}::VARCHAR <> regexp_replace(${v}, '\\s+', ' ', 'g'))::DOUBLE AS ${p}untrimmed`,
-    `count(*) FILTER (WHERE ${ref} IS NOT NULL AND ${v} = '')::DOUBLE AS ${p}blanks`,
-    // 007, 0456: codes, not quantities (converting would drop the zeros).
-    `count(*) FILTER (WHERE regexp_full_match(${v}, '0[0-9]+'))::DOUBLE AS ${p}zeros`,
-    `${parses(numberText(v, false, true))} AS ${p}drcr_numbers`,
-    `count(*) FILTER (WHERE regexp_matches(${v}, '[0-9)]\\s*[dD][rR]\\.?$'))::DOUBLE AS ${p}debits`,
-  ]
-}
-
-/**
- * One query over one sample of the table (up to `sampleRows` rows) with the counts for every column
- * given (refs are the columns as SQL). Read each column's counts with readStats(row, i).
- */
-export function statsSql(table: string, refs: string[], sampleRows = 5000): string {
-  const items = refs.flatMap((ref, i) => statsItems(ref, `c${i}_`))
-  return `SELECT\n  ${items.join(',\n  ')}\nFROM (SELECT * FROM ${table} USING SAMPLE ${sampleRows} ROWS)`
-}
-
-export function readStats(row: Record<string, unknown>, i = 0): CleanStats {
-  const n = (k: string) => Number(row[`c${i}_${k}`] ?? 0)
-  return {
-    values: n('values'),
-    numbers: n('numbers'),
-    commaNumbers: n('comma_numbers'),
-    pointOnly: n('point_only'),
-    commaOnly: n('comma_only'),
-    percents: n('percents'),
-    commaPercents: n('comma_percents'),
-    dates: DATE_FORMATS.map((_, j) => n(`d${j}`)),
-    untrimmed: n('untrimmed'),
-    blanks: n('blanks'),
-    zeros: n('zeros'),
-    drcrNumbers: n('drcr_numbers'),
-    debits: n('debits'),
-  }
-}
-
-export interface CleanSuggestion {
-  clean: Clean
-  label: string
-  /** e.g. "3 of 40 sampled values aren't numbers and become empty" */
-  note?: string
-}
-
-const MOST = 0.9
-/** Enough to offer converting "anyway" (in the column menu only, with how many values are lost). */
-const SOME = 0.5
-
-/** "1 sampled value has" / "3 sampled values have". */
-const sampled = (n: number, one: string, many: string) => `${n.toLocaleString(LOCALE)} sampled ${n === 1 ? `value ${one}` : `values ${many}`}`
-
-/** Locales that write 12,5 for twelve and a half (de, fr, es, it, pt, ru, id, nl, tr, …). */
-export const usesDecimalComma = (locale: string) => {
-  try {
-    return (1.5).toLocaleString(locale).includes(',')
-  } catch {
-    return false
-  }
-}
-
-/**
- * What to offer for a text column. Numbers and dates need at least 90% of values to parse (the rest
- * become empty, and the note says how many). Whether "1,234" is a thousand or one-point-something is
- * settled by values only one reading explains ("12,5", "3.25"), then by the reader's locale. When a
- * date could be DD/MM or MM/DD (no day above 12), the locale decides which is offered first.
- */
-export function suggestCleaning(column: string, s: CleanStats, locale = 'en-IN'): CleanSuggestion[] {
-  const out: CleanSuggestion[] = []
-  if (!s.values) return s.blanks ? [{ clean: { column, kind: 'blank' }, label: 'Treat blanks as empty' }] : []
-  const lost = (ok: number, what: string) => {
-    const bad = s.values - ok
-    return bad > 0 ? `${bad.toLocaleString(LOCALE)} of ${s.values.toLocaleString(LOCALE)} sampled values aren’t ${what} and become empty` : undefined
-  }
-  const comma = s.commaOnly > 0 && s.pointOnly === 0 ? true : s.pointOnly > 0 ? false : usesDecimalComma(locale)
-  const mixed = s.commaOnly > 0 && s.pointOnly > 0
-  const numbers = comma ? s.commaNumbers : s.numbers
-  const percents = comma ? s.commaPercents : s.percents
-  const sep = comma ? ' (decimal comma)' : ''
-  if (percents / s.values >= MOST) {
-    out.push({ clean: { column, kind: 'percent', comma }, label: `Convert to number (12% → 0.12)${sep}`, note: lost(percents, 'percentages') })
-  } else if (numbers / s.values >= MOST) {
-    const note = s.zeros
-      ? `${sampled(s.zeros, 'starts', 'start')} with 0 (like a code): the zeros would be dropped`
-      : mixed
-        ? 'Some values use a decimal point and others a decimal comma: check the result'
-        : lost(numbers, 'numbers')
-    out.push({ clean: { column, kind: 'number', comma }, label: `Convert to number${sep}`, note })
-  } else if (s.debits > 0 && s.drcrNumbers / s.values >= SOME) {
-    // A bank statement's balances: "50,000.00 Cr", "1,200.00 Dr". Some Dr: so Cr isn't crore here.
-    const lostNote = lost(s.drcrNumbers, 'amounts')
-    out.push({
-      clean: { column, kind: 'number', drcr: true },
-      label: 'Convert to number (Cr +, Dr −)',
-      note: `Cr counts as plus and Dr as minus, as on a bank statement: check that’s what this file means${lostNote ? `. ${lostNote}` : ''}`,
-    })
-  } else if (numbers / s.values >= SOME) {
-    // A footer or a few notes among the amounts (a bank statement's summary lines): still offered, saying what's lost.
-    out.push({ clean: { column, kind: 'number', comma }, label: `Convert to number anyway${sep}`, note: lost(numbers, 'numbers') })
-  }
-  const dateHits = s.dates
-    .map((hits, i) => ({ hits, f: DATE_FORMATS[i] }))
-    .filter((d) => d.hits / s.values >= MOST)
-    .sort((a, b) => b.hits - a.hits)
-  if (dateHits.length && !out.length) {
-    const best = dateHits[0].hits
-    // 03/04/2024: April 3rd in most of the world, March 4th in the US.
-    const usFirst = /^en-US$/i.test(locale)
-    const tied = dateHits
-      .filter((d) => d.hits === best)
-      .sort((a, b) => Number(/^%m/.test(b.f.format) === usFirst) - Number(/^%m/.test(a.f.format) === usFirst))
-    for (const d of tied.slice(0, 2)) {
-      out.push({ clean: { column, kind: 'date', format: d.f.format }, label: `Convert to date (${d.f.label})`, note: lost(d.hits, `dates like ${d.f.label}`) })
-    }
-  } else if (!out.length) {
-    const some = s.dates.map((hits, i) => ({ hits, f: DATE_FORMATS[i] })).filter((d) => d.hits / s.values >= SOME).sort((a, b) => b.hits - a.hits)[0]
-    if (some) out.push({ clean: { column, kind: 'date', format: some.f.format }, label: `Convert to date anyway (${some.f.label})`, note: lost(some.hits, `dates like ${some.f.label}`) })
-  }
-  if (s.untrimmed) out.push({ clean: { column, kind: 'trim' }, label: 'Trim extra spaces', note: `${sampled(s.untrimmed, 'has', 'have')} extra spaces` })
-  if (s.blanks) out.push({ clean: { column, kind: 'blank' }, label: 'Treat blanks as empty', note: `${sampled(s.blanks, 'is', 'are')} blank` })
-  return out
+export interface TieOut {
+  /** Columns whose total lines come to exactly the rows kept (the largest sum first). */
+  ok: { column: string; sum: number }[]
+  /** Columns whose total lines don't: what the lines say, and what the rows come to. */
+  off: { column: string; says: number; rows: number }[]
 }

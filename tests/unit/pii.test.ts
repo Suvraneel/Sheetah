@@ -90,7 +90,7 @@ test.describe('anonymizing (run on DuckDB)', () => {
     expect(rows.map((r) => r.id)).toEqual([1, 2, 3])
     expect(rows[0].customer_name).toBe(rows[2].customer_name)
     expect(rows[0].customer_name).not.toBe(rows[1].customer_name)
-    expect(String(rows[1].customer_name)).toMatch(/^Person \d$/)
+    expect(String(rows[1].customer_name)).toMatch(/^Customer \d$/)
   })
 })
 
@@ -102,4 +102,17 @@ test.describe('which column names count as personal', () => {
     const email = RULES.find((r) => r.kind === 'email')!
     expect(['E-mail', 'Email Address', 'customerEmail'].every((n) => nameSuggests(email, n))).toBe(true)
   })
+})
+
+test('phone numbers written the US way are phone numbers; a random count of digits is not', async () => {
+  const phone = RULES.find((r) => r.kind === 'phone')!.pattern!
+  const rows = await q(`SELECT v, regexp_full_match(v, '${phone.replace(/'/g, "''")}') AS m FROM (VALUES ('(212) 555-0101'), ('212-555-0101'), ('+1 212 555 0101'), ('98200 12345'), ('2125550101'), ('12345')) t(v)`)
+  expect(rows.map((r) => [r.v, r.m])).toEqual([
+    ['(212) 555-0101', true],
+    ['212-555-0101', true],
+    ['+1 212 555 0101', true],
+    ['98200 12345', true],
+    ['2125550101', false],
+    ['12345', false],
+  ])
 })

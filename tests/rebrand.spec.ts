@@ -30,6 +30,10 @@ const folderExists = (page: Page, name: string) =>
 
 test('saved views, history, theme and kept tables carry over from the Quarry name', async ({ page }) => {
   await openDemo(page)
+  // History is kept in the browser only when asked.
+  await page.getByRole('tab', { name: 'History' }).click()
+  await page.locator('.history-controls input').check()
+  await page.getByRole('tab', { name: 'Tables' }).click()
   await runSql(page, 'CREATE TABLE kept AS SELECT range AS id FROM range(42)')
   await runSql(page, 'SELECT count(*) AS n FROM kept')
   await page.getByRole('button', { name: 'Save view' }).click()
@@ -45,7 +49,7 @@ test('saved views, history, theme and kept tables carry over from the Quarry nam
       ),
     )
     .toBe(true)
-  const toggle = page.getByRole('button', { name: /Colour theme/ })
+  const toggle = page.getByRole('button', { name: /^Theme: / })
   await toggle.click() // Light
   await toggle.click() // Dark
 

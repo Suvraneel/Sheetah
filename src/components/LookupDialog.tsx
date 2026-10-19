@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { LOCALE } from '../engine/sql'
 import { getEngine } from '../engine/db'
-import type { TableMeta } from '../engine/ingest'
+import { share } from '../grid/format'
+import type { TableMeta } from '../engine/tables'
 import { bestPair, lookupMissesSql, lookupNames, lookupStatsSql, suggestMatch, type Lookup } from '../engine/lookup'
 import type { ColumnInfo } from '../engine/result'
 import { BtnIcon } from './Icon'
@@ -188,7 +189,7 @@ export function LookupDialog({ columns, taken, source, tables, initialHere, onAp
                               <b>
                                 {nf.format(shown.matched)} of {nf.format(shown.rows)}
                               </b>{' '}
-                              rows find a match{shown.rows ? ` (${Math.round((100 * shown.matched) / shown.rows)}%)` : ''}.
+                              rows find a match{shown.rows ? ` (${share(shown.matched, shown.rows)})` : ''}.
                               {shown.repeated > 0 && ` ${nf.format(shown.repeated)} ${shown.repeated === 1 ? 'value repeats' : 'values repeat'} in ${tableName}: the first row is used.`}
                               {shown.misses.length > 0 && (
                                 <span className="lookup-misses">

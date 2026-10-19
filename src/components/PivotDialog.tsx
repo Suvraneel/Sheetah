@@ -24,6 +24,11 @@ interface Props {
   columns: ColumnInfo[]
   rowCount: number
   initial?: PivotSpec
+  /** A pivot to start from (not one being edited): categories by month, say. */
+  start?: PivotSpec
+  /** Number columns stored as text (not offered as values until converted), and the one-click conversion. */
+  textNumbers?: string[]
+  onConvert?: () => void
   onCreate: (sql: string, spec: PivotSpec) => void
   onClose: () => void
 }
@@ -31,24 +36,35 @@ interface Props {
 const nf = new Intl.NumberFormat(LOCALE)
 const MAX_VALUES = 3
 
-export function PivotDialog({ sourceSql, columns, rowCount, initial, onCreate, onClose }: Props) {
+export function PivotDialog({ sourceSql, columns, rowCount, initial, start, textNumbers, onConvert, onCreate, onClose }: Props) {
   const dialog = useDialog<HTMLDivElement>(onClose)
   const [counts, setCounts] = useState<Record<string, number> | null>(null)
-  const [edited, setEdited] = useState<PivotSpec | null>(initial ?? null)
+  // A pivot to start from only if its fields are here (the rows may have changed since it was offered).
+  const fits = (s: PivotSpec) => [...s.rows, ...(s.columns ? [s.columns] : [])].every((f) => columns.some((c) => c.name === f.column)) && s.values.every((v) => !v.column || columns.some((c) => c.name === v.column && c.numeric))
+  const [edited, setEdited] = useState<PivotSpec | null>(initial ?? (start && fits(start) ? start : null))
   const [error, setError] = useState<string | null>(null)
   const [working, setWorking] = useState(false)
 
   useEffect(() => {
     let live = true
-    cardinalities(sourceSql, columns)
+    cardinalities(sourceSql, columns, rowCount)
       .then((c) => live && setCounts(c))
       .catch(() => live && setCounts({}))
     return () => {
       live = false
     }
-  }, [sourceSql, columns])
+  }, [sourceSql, columns, rowCount])
 
   const spec = edited ?? (counts ? defaultPivot(columns, counts) : null)
+  // Once the fields are there, start on the first of them: not on Cancel (all the dialog had while it
+  // looked), nor on a field's remove button.
+  const ready = spec !== null
+  useEffect(() => {
+    const el = dialog.current
+    if (!ready || !el) return
+    const at = document.activeElement as HTMLElement | null
+    if (!at?.closest('.pivot-grid') || at.tagName === 'BUTTON') el.querySelector<HTMLElement>('.pivot-grid select')?.focus({ preventScroll: true })
+  }, [ready, dialog])
   const fields = useMemo(() => groupable(columns), [columns])
   const numeric = columns.filter((c) => c.numeric)
   const measures = numeric.filter((c) => !isIdLike(c.name)) // never "Sum of Voucher No."
@@ -59,7 +75,8 @@ export function PivotDialog({ sourceSql, columns, rowCount, initial, onCreate, o
     setEdited({ ...spec, ...patch })
   }
   const colInfo = (name: string) => columns.find((c) => c.name === name)
-  const size = (name: string) => (counts?.[name] ? ` · ≈${nf.format(counts[name])}` : '')
+  // How many different values (an estimate past a thousand): a field with 3 goes across, one with 3,000 down.
+  const size = (name: string) => (counts?.[name] ? ` (${counts[name] > 1000 ? 'about ' : ''}${nf.format(counts[name])} ${counts[name] === 1 ? 'value' : 'values'})` : '')
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -109,7 +126,7 @@ export function PivotDialog({ sourceSql, columns, rowCount, initial, onCreate, o
             <span className="eyebrow">Pivot table</span>
             <h2 id="pivot-title">Summarize this result</h2>
             <p className="muted">
-              Builds a plain GROUP BY over all {nf.format(rowCount)} rows. It lands in the editor, so you can keep editing, chart or save it.
+              Totals over all {nf.format(rowCount)} rows. The pivot opens like any result: chart it, export it or save it as a view.
             </p>
 
             {!spec ? (
@@ -223,6 +240,15 @@ export function PivotDialog({ sourceSql, columns, rowCount, initial, onCreate, o
                     >
                       + Add a value
                     </button>
+                  )}
+                  {onConvert && !!textNumbers?.length && (
+                    <p className="fine">
+                      {textNumbers.slice(0, 2).join(', ')}
+                      {textNumbers.length > 2 ? ` and ${textNumbers.length - 2} more` : ''} {textNumbers.length === 1 ? 'is' : 'are'} stored as text, so not listed.{' '}
+                      <button type="button" className="link-btn" onClick={onConvert}>
+                        Convert to numbers
+                      </button>
+                    </p>
                   )}
                 </fieldset>
 

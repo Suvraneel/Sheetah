@@ -5,6 +5,123 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 ## Unreleased
 
 ### Added
+- **Dates written two ways in one column** (2026-03-01 and 15/03/2026, as two exports put together write them)
+  convert in one step, each value read in its own layout. Never DD/MM with MM/DD: a value that reads both ways
+  is the reader's to settle.
+- **Text compared with a date**: `"Order Date" >= '2026-03-01'` on a column of text runs letter by letter
+  (28/02/2026 comes after it); said after the run, with *Compare as dates* reading the column in the layouts it's
+  written in. Without the quotes, the error says both: quote the date, and the column is text.
+- **A cheque presented late**: the match preview says how many lines have the same amount on the other side
+  further apart, and offers *Allow 16 days* (the nearest of them, up to 20: never last month's instalment of a
+  loan a month away) to match them. The reconciliation statement
+  lists each line with what the match noticed beside it (the same amount later on, an amount typed wrong).
+- **Compare puts the earlier version first** when the names say which (customers_sep before customers_oct,
+  sales_dec before sales_jan, report_202403 before report_202404), from the sidebar or the offer alike.
+- **Charts split by a column**: *Split by* Region (or Status, or any column that names things) draws a line for
+  each over time, or each bar in parts that add up to it (side by side for averages, which don't add up). The
+  largest five are shown and the rest put together as Other; every series' value is in the tooltip, by keyboard
+  too, and *Open as query* gives the table behind it, a column per series.
+- **A pivot's chart is a pivot chart**: a pivot with a field across charts its columns as the parts of each bar
+  (Food, Rent and Travel in each month), titled in the pivot's own words, its Total row and column left out. *Each
+  number column* does the same for any result with several amounts side by side.
+- **An amount typed wrong, said in the match**: a line left over beside one on the other side, within the days
+  allowed, with the same digits in another order (5,400 and 4,500) or a zero more or less (500 and 5,000) says
+  so: *amount differs: 4,500.00 in books on 2024-04-04 (digits swapped?)*. The match preview counts them.
+- **A statement with one Amount and a Dr / Cr column** (Kotak's, card statements) is offered *Split Amount into
+  money in and out*: two columns, after which it sums, summarises by month, matches and reconciles like any
+  statement.
+- **Saved views and next month's file, both open**: the Saved tab says a view *also fits* the newer table and
+  offers *Run on* it, rather than running on last month's without a word.
+- **Amounts written with the currency in letters** convert too: `Rs. 25,000.00`, `INR 7,500`, `USD 99.95`,
+  `1,200/-`, and a trailing minus as SAP writes it (`1,500.00-` is −1,500).
+- **A workbook's cells Excel couldn't give a value** are said as it opens: error cells (#DIV/0!, #N/A) and formulas
+  saved without their result (a program wrote the file without calculating it), which are empty here.
+- **Spreadsheet habits in SQL, put right in one click**: `city & ' - ' & state` (SQL joins text with `||`),
+  `""` for empty text, `"Pune"` and `"1000"` in double quotes, a bare `Pune` where a value goes, dates typed without
+  quotes (`2024-04-01` is a subtraction, `01/04/2024` a division), `SELECT TOP 10`, a `LIMIT` before `WHERE`,
+  `1,000` with its separator, `&&` for AND, `GROUP BY 'city'` and `ORDER BY 'amount'` (the text, the same on every
+  row), `=AVERAGE(amount)` typed as a formula (its SQL, on the table on screen), and Sheetah's own functions given
+  the wrong values (each says how it's written). "Did you mean" only for a name that's a near miss.
+- **Why a query found nothing**: `= NULL` (never true: `IS NULL`), `LIKE 'UPI*'` (`%` is any text), a
+  date-and-time compared with a day (only midnight matches), and text that differs only in capitals or spaces
+  (`'pune'`, when the table writes `'Pune'`: looked up, and offered as the table writes it, or `ILIKE`).
+- **Example queries on the tidied rows**: once a report's total line is left out (or text converted), its example
+  queries read those rows, not the file (a sum no longer counts the total twice). They aren't offered while total
+  lines are still in the rows.
+- **Undo across typed queries**: a query typed (or a slip put right) over the rows on screen is a step Undo takes
+  back; running the steps' own SQL again keeps the steps. A script that changes data starts a history of its own,
+  so Undo and Redo never run it again.
+- **Edited, not run**: said beside Run while the SQL on screen isn't what made the rows below.
+- **Completion** of Sheetah's own functions (`number_from_text`, `date_from_text`, `tidy_spaces`…), each with
+  what it does; the open table's columns complete without its name, and a name with spaces is completed quoted.
+- **A total in a formula column** (`sum(total)`) is offered as the same total on every row: `sum(total) OVER ()`.
+- **Dates typed into a filter as people write them**: `31/01/2024`, `01/31/2024` (the reader's way round, unless a
+  part over 12 settles it), `1 Apr 2024`, `Apr 1, 2024`; one that isn't a date is said, not run.
+- **Bank reconciliation statement**: from the payments matched, *Reconciliation statement* is laid out as an
+  accountant writes one (Particulars, Date, Amount, Total): from the bank's closing balance (where its running
+  balance ends, read the way round its rows run), each heading (deposits not yet credited, cheques not yet
+  presented, the bank's own credits and debits) with its lines under it, to the balance the books should show.
+  Lines left over say where the same amount is on the other side, up to a month away; a line with no date is
+  listed, not matched, and not counted in the statement (which says so). What's left is said as money in and money
+  out. A **cheque or reference number** on both sides pairs lines first, however late the cheque cleared. Compare
+  suggests matching when the two tables are a statement and its books (as tidied).
+- **Opening + in − out = closing**: a statement's opening and closing balance lines, once left out, check the rows
+  between them (*Opening 10,000.00 + in 2,000.00 − out 5,000.00 = closing 7,000.00, as the file says*, or how far
+  apart). A saved view keeps each period it has run on, so a month is checked against the one just before it,
+  whichever ran last. Money in checks is shown to the paisa; passed checks fold into one line until shown.
+- **Ageing**: a list of open bills (Tally's Bills Receivable, an outstanding invoices export) is offered *Ageing by
+  Party's Name*: each party's money not yet due, 0–30 days, 31–60, 61–90, 91–180 and over 180, biggest first, as on
+  the day asked (today, or the month's end). Dr and Cr are read; an advance shows on account.
+- **Totals by ledger**: a day book (each voucher's lines, each to its ledger) sums each ledger's debits and credits
+  and its net, with a total where the debits meet the credits.
+- **GSTIN, PAN and IFSC checks**: a column named for one is checked as the table opens: a GSTIN by its check
+  character (a business's, a TDS deductor's, a UIN), a PAN and an IFSC code by their shape, and a PAN against its
+  GSTIN. A wrong one is named above the rows (NA, URP and the like aren't counted).
+- **A bank's own export, tidied**: a statement's summary below its transactions is offered for leaving out
+  (*undated lines*); an opening balance written in Debit or Credit is a balance line; a total label is found under
+  Particulars or Party when the first column is dates or codes; balances written *2,11,150.00 Cr* are checked.
+- **Financial years**: pivots group dates by financial year (April to March: *FY 2024-25*) and its quarters; with
+  years down the side, quarters across read *Q1 (Apr–Jun)* to *Q4 (Jan–Mar)*.
+- **Tally**: an item invoice's sales ledger is read from its stock lines, a foreign-currency amount in rupees; a
+  voucher whose debits and credits don't agree is named, and a trial balance's totals are checked.
+- **Bank statements, signed and checked**: a statement with money in and money out in two columns (Deposit /
+  Withdrawal, Credit / Debit) is offered *Add signed amount*, one column that sums, charts and pivots. With a running
+  balance, each balance is checked against the one before (oldest or newest first): *Every Closing Balance follows
+  from the row above*, or the row where a line is missing or doubled, and by how much. Its *Opening Balance* and
+  *Closing Balance* lines (and *Balance b/f*, *Carried forward*) are offered for leaving out with the total line.
+  *Money in and out by month* summarises it: each month's money in, money out, the net and how many lines.
+- **Checks that travel with a saved view**: running a view on next month's file checks it again, the running
+  balance and the total lines against the rows, and says what passed or which line is missing. A statement is
+  checked to open where the last one closed (*Opens at 7,000.00, where stmt_apr closed*, or how far apart: a statement
+  missing in between), whether or not each month's file has the same name, and the rows are counted against last
+  time. Checks sit above the rows (not in a passing
+  toast) while the step they checked is there. What a view last ran on stays in this browser, never in a views file.
+- **Tally's own XML opens**: a Day Book or vouchers export becomes one row per ledger line (date, voucher type and
+  number, party, narration, ledger, Debit, Credit: Tally's minus is a debit), and a report (a Trial Balance) one row
+  per account. UTF-16, Tally's default, and the control characters Tally writes (`&#4;`) are handled.
+- **India by its time zone**: a browser left on US English in India reads numbers and dates as India does (1,00,000;
+  01/04/2024 is 1 April), so two-digit years, the date hint and number grouping follow suit.
+- **Match payments, bank against books**: from Compare, *Match payments by amount and date* pairs each line with
+  one line of the other table of the same amount, dated up to a few days apart (3 to start with): same-day lines
+  first, occurrence by occurrence, then each the other's nearest, in rounds, so a missing line doesn't pull its
+  neighbours out of their pairs and five payments of 500 on a day pair up at once (50,000 lines a side in about two
+  seconds). Tables tidied by steps are matched as tidied; Cr/Dr amounts are read; a line whose amount can't be read
+  is listed, not lost. A cash book that writes money the other way round is noticed and turned round (and the
+  reader's say stands). The result lists every line once, *matched* side by side or *only in bank_apr* / *only in
+  books_apr*, with the totals of what's left over said as it opens.
+- **Categories from words**: *Group Narration into categories* (offered once a statement's amount is signed, and in
+  any text column's menu) adds a category column from rules like *swiggy, zomato → Food and dining*: matched where a
+  word starts (*ola* is Ola and OLACABS, not COLA), the first rule winning, the rest *Other*. The column's common words
+  are listed to pick from (payment rails and banks left out; words in any script, and a word starts after a digit
+  or _ too, so HDFC0MERCHANT and UPI_ZOMATO match), the usual categories are one click, and each says how
+  many rows it gets. The rules are readable SQL, kept with a saved view; *Pivot by month* then lays each category out
+  month by month. *Edit these categories…* in the column's menu changes them.
+- **Two-digit years read the right way round**: `01/04/24` is 1 April 2024, not 24 April 2001 (the file reader's
+  guess), and `01/04/24 10:30` is a time, not the year 1. A file read the other way would put its dates years
+  from today, so one that really is year first (`24/01/31`) stays as it is.
+- **Charts by day, week, month, quarter or year**: a *By* control for date axes (a three-month statement now starts
+  by week, not 90 spiky days). A pivot charts in its own order (months by date), its Total row left out, titled
+  *Sum of amount* once. Amounts stored as text are named in Chart and Pivot with *Convert to numbers*.
 - **Undo and redo** for every header action (sort, filters, find, duplicates, clean-up, look-ups, hidden columns):
   ⌘/Ctrl + Z and ⌘/Ctrl + Shift + Z, or the Undo / Redo links. Quick successive clicks build on each other instead
   of the last one silently dropping the one before.
@@ -27,9 +144,12 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   then (a phone number) isn't mistaken for one.
 - **Your SQL on the tidied rows**: a query typed against a table that has tidy-up steps reads the file as it is
   (total lines, amounts as text). Sheetah says so and offers *Run on the tidied rows*, which runs the same query on a
-  `WITH table AS (…)` of the steps (your own WITH and comments are kept).
-- **Tie-out**: leaving out total lines says whether they add up to the rows left (sub-totals and a grand total come
-  to twice them): *Checked: the total lines add up to the rows left. Invoice Total comes to 721,715, counted once.*
+  `WITH table AS (…)` of the steps (your own WITH and comments are kept). When the query failed on what the steps
+  fix (text where a number belongs), that's the error's own fix, in place of advice to convert a converted column.
+- **Tie-out**: leaving out total lines says whether they come to exactly the rows left, column by column (sub-totals
+  and a grand total come to twice them): *The totals match the rows exactly: Invoice Total 721,715*, or *The totals
+  say Withdrawal Amt. is 218,890.84; the rows come to 218,296.92: 593.92 short*. A closing balance or a rate on the
+  total line isn't something the rows add up to, and is left alone.
 - **Saved views keep their steps**: a view saved from a table's header actions comes back as chips, each removable,
   on next month's file too (steps that aren't exactly the view's SQL are ignored, so nothing runs unseen).
 - **More suggestions**: tidy stray spaces in names; hide empty columns (an export's empty first column no longer hides
@@ -133,6 +253,58 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   (the crash screen, a part that failed) (`tests/fixtures.ts`), even when what it checked on screen looked right.
 
 ### Changed
+- A `WHERE` typed after the steps' SQL reads the converted values: SQL ending on a clean-up (or on keeping the first
+  of each value) is read from one more `SELECT`. Views saved with the earlier SQL keep their steps.
+- Step chips are in the order the steps apply: rows left out, columns cleaned, looked up and added, then filters,
+  hidden columns and the sort. "Trim extra spaces" is "Tidy spaces" everywhere, as its SQL (`tidy_spaces`) says.
+- The shortcuts list gives Redo its own line (Ctrl+Shift+Z or Ctrl+Y).
+- The landing page's sketch rolls once (under five seconds), and on while hovered.
+- **Kept tables come back with the work**: with *Keep my tables* on, a reload brings back the query on screen (a
+  stack, a pivot, a table with its steps) and each table's steps, not just the tables. Only a query that reads, as
+  DuckDB itself says, is run again (never a CREATE, DELETE, or a WITH … UPDATE).
+- Example queries sum an amount still written as text (*Amount by customer*, read as a number, with a decimal comma
+  where its figures use one) rather than passing it over for the quantity beside it; not when nothing says how
+  its decimals are written.
+- **Excel exports are about 40% faster and smaller**: each distinct text is written once (shared strings, as Excel
+  does), the checksum comes from the browser's own compressor, and the page draws between every thousand rows
+  instead of freezing on a million.
+- The messy sample is in dollars with sales tax for a reader in the US (rupees with GST elsewhere); the year end
+  among ageing's quick days is 31 December outside India; *Zip code* is said as the US says it.
+- Saving a view lists its steps (*Without 4 total lines*, *Taxable Value as number*), with the SQL they make folded
+  under them. Undo and Clear all stay in view at the end of a phone's row of steps; the phone's folded SQL shows
+  the whole query on one line (*SELECT * FROM report WHERE …*).
+- A pseudonym is named for the column's people (*Customer 1*, *Vendor 2*), so a list of companies reads right.
+- Look up says 99.7% matched, never 100% with rows left without a match.
+- Step chips are named for what clicking them does (*Remove step: Without 1 total line*); an added category column's
+  chip opens its rules, and its × removes it. Category words come from the rows no category has taken yet, and
+  focus stays among them as they're used.
+- *1 row*, *1 column*; the sidebar says text, number, date (the database's type on hover); a view's suggested name
+  leaves out the table's month and year; Excel dates use Excel's own short date (as the reader's computer writes
+  dates); the chart's date grain reads *Auto (month)*.
+- Each table keeps its checks and its steps while another is open: opened again from the list, it comes back
+  tidied (Clear all shows the file as it is).
+- Dates that read both ways (no day past the 12th) are read the reader's way when the file opens: 01/02/2024 is
+  January 2nd in the US, 1 February in India.
+- A register whose running balance follows Debit as money in (QuickBooks, Xero) has its columns turned round.
+- Identifier checks run only where the values begin the Indian way (not Canada's GST numbers, or a card's PAN).
+- Personal data: US phone numbers, and columns named for a phone or ZIP; a column of company names isn't a
+  person's name.
+- The sidebar says what a converted column now is (*date (converted)*); notices sit to the right in the workspace,
+  clear of the rows being read; the Export menu's items load as it's first opened.
+- Three or more columns converted (usually one click on *Convert*) show as one chip, *4 columns converted*: clicking
+  it lists them one by one, and only its × undoes them all. Look-alike values merged in a column group the same way
+  (*City: 4 values merged*), and the column menu offers *Merge all*; a stray space shows as ␣ (*Mumbai␣ → Mumbai*).
+- Pivot rows and columns by month, quarter or year read as the period (2024-04, 2024-Q2), sort as dates, and go to
+  Excel as real months (*Apr 2024*). The pivot dialog speaks plainly: *Totals over all 58 rows*, *Date (50 values)*.
+- A file that doesn't open says which (*Couldn’t open tally.xml.*), not *That query didn’t run.*
+- The shortcuts list fits a laptop screen (two balanced columns, one line a shortcut); on phones the landing page
+  offers opening a file first; while a big file's total lines are looked for, a quiet *Checking for total lines…*
+  holds their chip's place; running a query closes the editor's suggestions.
+- Copy: *Ran “HDFC tidy” on bank_jul: 6 steps, shown above the rows*; *Checked all 112 rows* (not "sample rows")
+  when that's all of them; *3 of 40 values* (not "sampled") when they were every value; a pasted Excel formula is
+  answered with a sum on your own table and column.
+- The code that looks a table over (total lines, fill down, dates, a column's profile) loads with the first table,
+  not the first screen.
 - App.tsx split up: the library tabs (`Library.tsx`), applied steps and suggestions (`StepChips.tsx`,
   `HintChips.tsx`) and the notice stack (`Toasts.tsx`) are components of their own.
 - Usability pass:
@@ -170,6 +342,170 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   says to tap for exact values.
 
 ### Fixed
+- **A bank statement with title lines above and a summary below** (HDFC's *STATEMENT SUMMARY*, neither padded with
+  commas) opened as one row of fragments; it opens from its column names, the summary offered for leaving out. A
+  title line with a comma in it (the account's name and number) is still a title (never a TSV's text with commas,
+  a short header over padded rows, or a line of data under a title in a file without names).
+- **A file read while a query runs** no longer replaces that query's rows when it finishes opening.
+- **A balance with its own Dr / Cr column** (Kotak's second one, named for Dr and Cr: not a Type) is read as the bank
+  means it: overdrawn below zero. The balance check no longer fails on an overdraft, and the reconciliation starts from the right sign.
+- **Charts say the rows they leave out**: rows with no date (or no value) to plot were passed over while the
+  caption said "all N rows"; it says *2 of 4 rows (2 with no paid_on left out)*. A pivot's Total row isn't
+  counted as a row.
+- Errors after a table's tidy-up steps are blamed on the steps only when the steps change what failed (a column
+  they convert, rows they leave out): a date typed without quotes, or COUNTIF, gets its own explanation.
+- Charts: a first chart never groups by an ID; *Each number column* leaves out running balances and serial
+  numbers; thousands are K beside lakh and crore (not T). A pivot's first row field is never a Dr / Cr column.
+  *Ageing* isn't offered on a statement with one Amount and a Dr / Cr column.
+- Column menus: *Merge all* merges the look-alikes shown and any more that differ only in case or spacing (no second
+  round, and never a typo merge that wasn't shown); the most common
+  values show spaces at their ends, so " Delivered " beside "Delivered" isn't the same value twice.
+- The match preview counts lines with the same amount further apart once (not on both sides).
+- **Clicking another table no longer waits for the last one to be looked over**: the look-over scans (numbers
+  stored as text, total lines, personal data…) give way to whatever is asked for, one query at a time, and work
+  each distinct value out once, skipping the costly readings for values that can't be a number or a date. A
+  20,000-row table clicked just after a 300,000-row file opened took 4 seconds; it takes under one.
+- **Big files and long sessions** (from a scale audit up to 1 GB):
+  - A table read whole (`SELECT * FROM t`) is shown from the table itself, not a copy: half the memory, so a
+    sort of an 18-million-row file no longer runs out.
+  - CSV exports are written in pieces of rows (cancellable, with progress), not as one block: 9 million rows
+    export instead of running out of memory.
+  - Keeping tables in this browser writes each snapshot batch by batch from the engine to the disk (a 2.5M-row
+    table crashed the tab), columns of fixed choices (ENUM) as their text; a write the disk refuses stops the save
+    at once rather than leaving it waiting; a snapshot that didn't finish is never restored; one that can't be updated is
+    removed rather than coming back out of date; leaving asks while a snapshot is still being written; turning
+    Keep off in one tab is followed (and said) in the others.
+  - A file too big for the memory left is said before reading it, and a read the engine couldn't do is a
+    failure, never an empty table. Cancelling while a file is being put right (codes re-read as text) no longer
+    leaves the table half-done.
+  - A workbook with a sheet too big for the browser to read as one piece says so and what to do; a line over the
+    file reader's 2 MB is explained; a table of thousands of columns lists its first 200 in the sidebar.
+- **Month-end, as an accountant does it**:
+  - A match leaves out balance lines (Tally's dated Opening Balance in Debit was a "deposit not yet credited").
+  - Compare reads tables tidied by steps as tidied (no total lines, text converted), and never picks an amount
+    (Gross Total) as the key (a GSTIN or a Corporate ID still can be).
+  - A statement saved from Excel, its title lines padded with commas, opens from its real column names (a
+    one-column frame's `,amount` header is still names), and a
+    table whose names were found on a row gets every statement feature (signed amount, match, summary).
+  - The total check accepts Tally's Current Total either way (with the opening balance or without it).
+  - A ledger from the books is summarised as debit and credit by month, not money in and out.
+  - Exports carry what the rows are in their name (an ageing as on its date, a reconciliation).
+  - Money columns (money_in, gross, sales, Invoice Total) show to the paisa; a pivot's count named Total doesn't.
+  - Splitting by Dr / Cr reads the side the way the check does (CR, C, Credit; DR, D, Debit), never a Deposit or a
+    Cheque by its first letter, and never takes a Value Date for the amount.
+- **Numbers no longer change on the way in**: a code longer than a number keeps (an ICCID, 20 digits) stays text,
+  in a CSV and in a workbook that holds it as text, as do codes like `1E5` and `00123` there; in a file that writes
+  decimals with a comma (2,50), whole numbers grouped with points (1.500) are read as text, to convert as fifteen
+  hundred, not 1.5; a column called Zipcode or Pincode keeps the zeros in front of its codes past the first
+  20,000 rows; times from a workbook keep their minute (01:00 was 00:59:59).
+- **One-click conversions are checked over the whole column**: a big table's sample saying every value reads is
+  no longer enough; a value written another way further down keeps the chip away, and the column menu says how many
+  values would become empty.
+- **Two-digit years** are read as spreadsheets read them when a file opens (15/08/55 is 1955, not 2055).
+- **Rows that are data stay**: a vendor or brand called TOTAL isn't taken for a total line when its numbers add up
+  to nothing the other rows come to; dates written `1st April 2024` or `Apr-15-2024` aren't undated notes.
+- **SQL help, sharper**: dates typed in a query are read the same way round as each other (a 30 or a 31 anywhere
+  settles it) and fixed all at once, and are never blamed on the data; a name after `>` or in a join's ON isn't
+  offered as text; `₹1000` is offered as 1000; TOP inside a WITH, TOP n PERCENT and TOP with a LIMIT are explained,
+  not rewritten wrong; names in single quotes are only whole GROUP BY / ORDER BY items, all fixed at once, each said
+  by its own clause; India's `10,00,000`, `LIMIT 1,000`, `FROM order`, a FROM after WHERE and a date the calendar
+  doesn't have are explained; ROUNDUP, DATEDIF, SUMPRODUCT, EOMONTH and more say what does the job in SQL.
+- **No rows, explained in more places**: after a table's alias (`o.city = 'pune'`), in a join (the table that has the
+  column), and `= ''` where empty cells are NULL. The "Use IS NULL" button names what it writes.
+- "Run on the tidied rows" no longer stands in for an error the tidy-up can't change (a typo, a syntax error, a date
+  typed without quotes). A fix pressed from the keyboard moves focus on to the rows; fix buttons say what they do
+  ("Join with ||").
+- Accessibility: chips and suggested words are named as they read on screen (voice control finds them); the pivot
+  dialog starts on its first field once it's ready, the categories dialog on the category just added; notices are a
+  labelled region of their own; focus kept for the rows after an action no longer pulls it back from a click
+  elsewhere.
+- A notice removed under the pointer no longer keeps the next ones up for good; an offer made for one query (Add
+  the comma, Run on the tidied rows) isn't applied to a query typed since. Ctrl+Z in the editor no longer splices
+  text from before a header action into its SQL.
+- **Open data, as statistics offices publish it** (ONS, Destatis, Eurostat, the Census):
+  - A note below the table written with another separator ("Source: ONS | Licence: OGL v3", a legend with
+    semicolons) made the file reader take it for the header: no rows, or every line one column. The file is read
+    by its own columns, and notes in the table (*Source:*, *[note 3] …*, *©*, a legend) are offered for leaving out.
+  - Figures with notes on them (*92,338[note 3]*, *108,021 (p)*, *56\**) and thousands grouped by spaces (*1 234 567*)
+    became empty; they're read as the figures they are. Placeholders for no figure (*x*, *..*, *:*, *-*, *c*) become
+    empty in the one-click conversion, and the column menu says how many.
+  - One suppressed "x" on line 350,003 stopped a file opening: the file is read again looking at every line (said),
+    so those columns are text and nothing is lost.
+  - Codes with zeros in front only further down a big file (ZIP 00020, FIPS 01001 after 56001) lost them: read as
+    text, said so.
+  - A browser that writes decimal commas read a UK file's *194,661* as 194.661 in one click (1000× too small), and
+    an English one a German *1.500* as 1.5: values in groups of three that only the browser's habit reads as decimals
+    are said, and left out of the one-click conversion.
+  - Years with notes (*2023 [note 3]*) are part of the series to turn into rows, named without the notes; years
+    chart as a line over time (not a histogram, or the top 20 of them); a rate isn't summed by default.
+  - Hiding an empty column no longer takes away *Turn N year columns into rows*; *CSV* writes 224918, not 224918.0,
+    and leaves a lone "-" alone.
+  - A saved view with *Use row 4 as column names* runs on next year's release (its columns are taken by position,
+    not by the title the file gave them) while row 4 still names them the same; when the years have moved on, it
+    stops and says so rather than putting 2016's figures under 2015. Running a view says which columns the new
+    file has that the view doesn't (*new in mye_2024, not in the view: 2024*).
+  - A Census file's NAME column of counties isn't flagged as people's names.
+- **Security**: a script could define a macro named for a built-in (*sha256* as md5, *right*, even *duckdb_functions*
+  to hide the others) or change one of Sheetah's own, so Anonymize's pseudonyms or masks quietly stopped protecting
+  anything while their SQL read the same. After every script, however the macro was made (IMPORT DATABASE too), the
+  catalog is read by its system name, such a macro is removed (and said), and Sheetah's own and the pseudonym key
+  are put back; pseudonym() calls the built-ins by their catalog name. *CSV* (safe for Excel) now also quotes a column name that would start a formula and every column
+  that isn't a number, date or true/false (a union, a list); cells copied from the grid are pasted the same way.
+  Query history is kept on the computer only when *Remember queries in this browser* is ticked (history kept before
+  stays). Community extensions and persistent secrets are switched off before the engine is sealed.
+- **Decimal commas read 1000× too big**: a column of 1,500 and 0,750 (kilograms) beside a price of 2,49 was read as
+  thousands. A value only a decimal comma explains (0,750; 1,2345) settles a column, and a column that can't tell
+  is read the way the file's other columns of amounts write decimals (not codes: "1001,1002" in a cell), before
+  the reader's own habit.
+- **US dates in QuickBooks reports** (group lines with no commas) were read day first, 10/02/2026 as 10 February:
+  the reader's habit applies to them as to any file, with *Read Date day first* a click away.
+- **Stacking months counted rows twice** when a month and its revision were both picked: rows in two of the tables
+  are said before stacking (*2 rows are in both sales_dec and sales_dec_rev*). A month whose amounts were read as
+  text (one "N/A") stacks as numbers, saying what becomes empty, instead of turning every month's amounts to text;
+  an identifier (INV/24/1003 one month, a number the next), or a column of which more than one value in ten
+  isn't a number, stacks as text with nothing emptied.
+- A table of 300 columns ran the engine out of memory looking itself over, and the error was taken for a new
+  version: *Reload* lost every table. The look-over runs in parts, and only a missing file counts as a new version.
+- A CSV saved by Excel on Windows (Windows-1252: £, é) didn't open; it's read as that, and said so.
+- A workbook saved as .csv or .xls by a portal opens as the workbook it is; a Word file renamed (even .xlsx) is named
+  as one, and so is an Excel binary workbook (.xlsb).
+- Leaving the page with tables that aren't kept in this browser asks first.
+- *CSV* export: a UTF-8 mark so Excel shows £ and é as written; a plain negative number in a text column (−12.50)
+  isn't quoted as text (a phone number written +91… still is); a sum's float noise (519314.16000000003) is written
+  as Excel would keep it, in CSV and Excel.
+- QuickBooks' "Total for …" lines are offered however many customers there are, when they add up; a US bank's
+  *Beginning Balance* and *Ending Balance* are balance lines, and a short statement's summary (one block above or
+  below its transactions) is offered for leaving out; never "Pending" in a Payment or Due Date column.
+- Dates that read both ways (01/04/24, no day past the 12th) are offered in the one-click conversion the reader's way.
+- Ageing is offered on an open items list with a plain Amount and a due date; whole-number amounts show two
+  decimals like other money (not rates or periods: GST %, Credit Period).
+- A header in two rows (a group merged over its columns) reads as one: *Sales Units*, *Sales Price*.
+- A view that looks a table up in another (this month's sales in the product list) is offered on next month's file.
+- Stacked months are exported as *sales_2024_01-12*, not after the first month.
+- *Add signed amount* on a register says which way round once its balance is read, rather than turning round.
+- Parquet or JSON in a build without them says only that.
+- Dates that read both ways, read the reader's way at load, are offered the other way as one click (*Read paid_on
+  day first*): nothing in the file said which was meant.
+- A table opened again keeps its steps only while it has the same rows and columns and the steps still read it; one
+  made again under its name opens as it is.
+- After a filter or search, leaving lines out no longer looks the columns over again on the filtered rows.
+- *Add signed amount* clicked before the look-over had finished on a QuickBooks or Xero register signed it the bank's
+  way round: it now asks the running balance first.
+- A CSV whose rows end in a trailing separator was taken for a report with title lines; one that failed to read after
+  its title lines were found kept the file registered.
+- Checks are said to screen readers once, as they arrive, not again as they fold and open. On a touch screen the
+  column menu takes focus itself, so the keyboard doesn't open.
+- Columns named for money (Taxable Value, Cost, Fees, Salary…) show two decimals; a count of things doesn't, even
+  when named Total or Net (*Total Units*, *Net Qty*).
+- Ageing took a payment's date (*Paid On*, *Receipt Date*) for the bill's own when leaving out bills after the day.
+- A Customer column with a few people among the companies is personal data again; US card and merchant words
+  (Walmart, Lyft, Comcast; *PURCHASE*, *AUTOPAY*) are read for categories.
+- Tie-outs counted a Tally ledger's closing balance line (and not its opening, which its Current Total includes):
+  a correct ledger was flagged. "Total for Acme Corp" lines weren't seen as totals.
+- Ageing as of a past day counted bills raised after it.
+- A CSV report whose title lines had no separators failed to open, or opened as one column.
+- A statement whose total line has a field missing (read again with its separator) had its two-digit years read
+  year first (13/04/24 as 2013-04-24): now day first, as any other.
 - Charts of a pivot counted its Total row as a category; comparing a whole number with "12.0" read as a change;
   pivot column counts could exceed the rows (approximate distinct counts).
 - "Use row N as column names" was offered on tables whose columns all have real names.

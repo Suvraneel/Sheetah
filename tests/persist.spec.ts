@@ -1,14 +1,16 @@
 import { expect, test } from './fixtures'
 import type { Page } from './fixtures'
-import { openDemo, runSql } from './helpers'
+import { openApp, openDemo, runSql } from './helpers'
 
-/** Whether a snapshot file exists in OPFS (false while the folder doesn't exist yet). */
+/**
+ * Whether a snapshot file exists in OPFS, written (false while the folder doesn't exist yet, and while it's
+ * still being written: its bytes land when the write is closed).
+ */
 const hasSnapshot = (page: Page, file: string) =>
   page.evaluate(async (f) => {
     try {
       const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sheetah-tables')
-      await dir.getFileHandle(f)
-      return true
+      return (await (await dir.getFileHandle(f)).getFile()).size > 0
     } catch {
       return false
     }
@@ -30,8 +32,10 @@ test('kept tables survive a reload with exact types; sample data and wiped data 
   await openDemo(page)
   await runSql(page, MIXED)
   await expect(page.locator('.side-name', { hasText: 'kept' })).toBeVisible()
-  const types = await page.locator('.side-list > li', { hasText: 'kept' }).locator('.side-type').allInnerTexts()
+  const typesOf = () => page.locator('.side-list > li', { hasText: 'kept' }).locator('.side-type').evaluateAll((els) => els.map((e) => e.getAttribute('title')))
+  const types = await typesOf()
   expect(types).toEqual(['bigint', 'bigint', 'decimal(10,2)', 'date', 'timestamp', 'varchar', 'bigint[]'])
+  expect(await page.locator('.side-list > li', { hasText: 'kept' }).locator('.side-type').allInnerTexts()).toEqual(['number', 'number', 'number', 'date', 'date & time', 'text', 'list'])
 
   await page.getByLabel('Keep my tables in this browser').check()
   await expect(page.locator('.toast', { hasText: 'kept in this browser' })).toBeVisible()
@@ -43,10 +47,10 @@ test('kept tables survive a reload with exact types; sample data and wiped data 
   await expect(page.locator('.toast', { hasText: 'Restored 1 table' })).toBeVisible({ timeout: 90_000 })
   await expect(page.locator('.result-meta')).toContainText('1,000 rows')
   await expect(page.locator('.side-name', { hasText: 'orders' })).toHaveCount(0) // sample data is never kept
-  expect(await page.locator('.side-list > li', { hasText: 'kept' }).locator('.side-type').allInnerTexts()).toEqual(types)
+  expect(await typesOf()).toEqual(types)
 
   await runSql(page, 'SELECT sum(big)::VARCHAR AS s, max(price)::VARCHAR AS p, max(day)::VARCHAR AS d FROM kept')
-  await expect(page.locator('.result-meta')).toContainText('1 rows')
+  await expect(page.locator('.result-meta')).toContainText('1 row')
   await expect(page.locator('.statusbar')).toBeVisible()
 
   // Changes are re-saved: drop it and the snapshot goes too.
@@ -65,4 +69,44 @@ test('kept tables survive a reload with exact types; sample data and wiped data 
   expect(await hasFolder(page)).toBe(false)
   await page.getByRole('tab', { name: 'Tables' }).click()
   await expect(page.getByLabel('Keep my tables in this browser')).not.toBeChecked()
+})
+
+test('leaving with tables that aren’t kept asks first; kept ones don’t', async ({ page }) => {
+  await openApp(page)
+  await page.locator('input[type=file]').setInputFiles([{ name: 'sales.csv', mimeType: 'text/csv', buffer: Buffer.from('city,amount\nPune,10\n') }])
+  await expect(page.locator('.result-meta')).toContainText('1 row')
+  await page.locator('.grid-scroll').click() // used, as browsers ask only then
+  const asked: string[] = []
+  page.on('dialog', (d) => asked.push(d.type()))
+  await page.reload()
+  await expect(page.locator('.engine-pill.is-ready')).toBeVisible({ timeout: 60_000 })
+  expect(asked).toEqual(['beforeunload'])
+
+  await page.locator('input[type=file]').setInputFiles([{ name: 'sales.csv', mimeType: 'text/csv', buffer: Buffer.from('city,amount\nPune,10\n') }])
+  await expect(page.locator('.result-meta')).toContainText('1 row')
+  await page.getByLabel('Keep my tables in this browser').check()
+  await expect.poll(() => hasSnapshot(page, 'sales.arrow')).toBe(true)
+  await page.locator('.grid-scroll').click()
+  await page.reload()
+  await expect(page.locator('.toast', { hasText: 'Restored 1 table' })).toBeVisible({ timeout: 90_000 })
+  expect(asked).toEqual(['beforeunload'])
+})
+
+test('kept tables come back with the work as it was: the query on screen, run again', async ({ page }) => {
+  await openApp(page)
+  await page.locator('input[type=file]').setInputFiles([{ name: 'sales.csv', mimeType: 'text/csv', buffer: Buffer.from('city,amount\nPune,10\nGoa,20\nPune,5\n') }])
+  await expect(page.locator('.result-meta')).toContainText('3 rows')
+  await page.getByLabel('Keep my tables in this browser').check()
+  await expect.poll(() => hasSnapshot(page, 'sales.arrow')).toBe(true)
+  // A column of fixed choices (an ENUM) keeps its values.
+  await runSql(page, "CREATE TABLE graded AS SELECT 'high'::ENUM('low', 'high') AS level")
+  await expect.poll(() => hasSnapshot(page, 'graded.arrow')).toBe(true)
+  await runSql(page, 'SELECT city, sum(amount) AS total FROM sales GROUP BY city ORDER BY total DESC')
+  await expect(page.locator('.result-meta')).toContainText('2 rows')
+  await page.reload()
+  await expect(page.locator('.toast', { hasText: 'and the work as you left it' })).toBeVisible({ timeout: 90_000 })
+  await expect(page.locator('.result-meta')).toContainText('2 rows')
+  await expect(page.locator('.cm-content')).toContainText('GROUP BY city')
+  await runSql(page, "SELECT * FROM graded WHERE level = 'high'")
+  await expect(page.locator('.result-meta')).toContainText('1 row')
 })

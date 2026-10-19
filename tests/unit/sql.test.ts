@@ -81,8 +81,9 @@ test.describe('errors in plain words', () => {
     const msg = (v: string, sql = typed) => `Conversion Error: invalid date field format: "${v}", expected format is (YYYY-MM-DD)${at(sql)}`
     const d = explainError(msg('01-04-2024'))
     expect(d.text).toBe("Dates in SQL are written year-month-day: '2024-04-01' is 1 April 2024.")
-    // Month first where the reader writes it so, unless a part over 12 settles it.
-    expect(explainError(msg('01-04-2024'), { monthFirst: true }).fix).toMatchObject({ label: "Use '2024-01-04'" })
+    // Month first where the reader writes it so, unless a part over 12 settles it (here or elsewhere in the query).
+    expect(explainError(msg('01-04-2024', "SELECT * FROM t WHERE d = '01-04-2024'"), { monthFirst: true }).fix).toMatchObject({ label: "Use '2024-01-04'" })
+    expect(explainError(msg('01-04-2024'), { monthFirst: true }).fix).toMatchObject({ label: "Use '2024-04-01'", order: 'dmy' })
     expect(explainError(msg('30-04-2024'), { monthFirst: true }).fix).toMatchObject({ order: 'dmy' })
     expect(applyFix(typed, d.fix!)).toBe("SELECT * FROM t WHERE d BETWEEN '2024-04-01' AND '2024-04-30' AND note = 'x'")
     // A value in the data (CAST(col AS DATE)), not one typed: no fix, and it says so.
@@ -97,7 +98,7 @@ test.describe('errors in plain words', () => {
   })
 
   test('the mistakes spreadsheet people make first are explained in their terms', async () => {
-    const { explainError } = await import('../../src/engine/errors')
+    const { explainError, sumExample } = await import('../../src/engine/errors')
     const at = (sql: string) => `\n\nLINE 1: ${sql}\n        ^`
     // Text in double quotes reads as a column.
     expect(explainError(`Binder Error: Referenced column "Pune" not found in FROM clause!\nCandidate bindings: "city"${at('SELECT * FROM orders WHERE city = "Pune"')}`).text).toBe(
@@ -121,7 +122,13 @@ test.describe('errors in plain words', () => {
     expect(explainError('Parser Error: syntax error at end of input').text).toContain('ends too soon')
     expect(explainError(`Parser Error: unterminated quoted string at or near "'Pune"`).text).toContain('isn’t closed')
     expect(explainError(`Parser Error: syntax error at or near "="${at('=SUM(A1:A3)')}`).text).toContain('spreadsheet formula')
-    expect(explainError(`Parser Error: syntax error at or near "ORDER"${at('SELECT * FROM orders LIMIT 5 ORDER BY id')}`).text).toContain('wrong place')
+    // The example is on the reader's own table: a number column, the amount if there is one.
+    const sum = sumExample({ name: 'sales apr', columns: [{ name: 'City', type: 'VARCHAR' }, { name: 'Qty', type: 'BIGINT' }, { name: 'Net Amount', type: 'DOUBLE' }] })
+    expect(explainError(`Parser Error: syntax error at or near "="${at('=SUM(C2:C9)')}`, { sum }).text).toBe(
+      'That’s a spreadsheet formula. Sheetah speaks SQL: SELECT sum("Net Amount") FROM "sales apr" adds up a column.',
+    )
+    expect(explainError(`Parser Error: syntax error at or near "ORDER"${at('SELECT * FROM orders WHERE x = 1 GROUP BY a ORDER BY id HAVING x')}`).text).toContain('wrong place')
+    expect(explainError(`Parser Error: syntax error at or near "ORDER"${at('SELECT * FROM orders LIMIT 5 ORDER BY id')}`).text).toContain('LIMIT goes at the very end')
     // …unless it's a column of theirs called Order: that needs double quotes.
     expect(explainError(`Parser Error: syntax error at or near "Order"${at("SELECT * FROM t WHERE Order = 'a'")}`, { columns: ['Order', 'Qty'] }).text).toBe(
       'Order is a SQL word, so as a column’s name it goes in double quotes: "Order".',
@@ -148,4 +155,26 @@ test('a missing comma between two column names is found, and put back', async ()
   // A real alias (a new name), AS, an expression, or a comma inside brackets: left alone.
   expect(missingCommas('SELECT Region area, City AS town, round(amount, 2) total FROM t', cols)).toEqual([])
   expect(missingCommas('SELECT * FROM t', cols)).toEqual([])
+})
+
+test('a browser on US English in India reads numbers and dates as India does', async () => {
+  const { readerLocale } = await import('../../src/engine/sql')
+  expect(readerLocale('en-US', 'Asia/Kolkata')).toBe('en-IN')
+  expect(readerLocale('en', 'Asia/Calcutta')).toBe('en-IN')
+  expect(readerLocale('en-US', 'America/New_York')).toBe('en-US')
+  expect(readerLocale('en-GB', 'Asia/Kolkata')).toBe('en-GB') // a choice made: kept
+  expect(readerLocale('hi-IN', 'Asia/Kolkata')).toBe('hi-IN')
+  expect(readerLocale(undefined, undefined)).toBe('en-US')
+})
+
+test('a cell that would start a formula is pasted as text; a plain negative and a dash aren’t touched', async () => {
+  const { pasteSafe } = await import('../../src/engine/sql')
+  expect(pasteSafe('=HYPERLINK("http://x")')).toBe('\'=HYPERLINK("http://x")')
+  expect(pasteSafe('+919876543210')).toBe("'+919876543210")
+  expect(pasteSafe("@SUM(A1)")).toBe("'@SUM(A1)")
+  expect(pasteSafe('-12.50')).toBe('-12.50')
+  expect(pasteSafe('-1,200')).toBe('-1,200')
+  expect(pasteSafe('-')).toBe('-')
+  expect(pasteSafe('-cmd')).toBe("'-cmd")
+  expect(pasteSafe('Pune')).toBe('Pune')
 })

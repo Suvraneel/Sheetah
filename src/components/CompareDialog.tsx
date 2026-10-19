@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { compareSql, defaultCompare, keyHealth, schemaDiff, type CompareSpec, type KeyHealth, type TableColumns } from '../engine/compare'
+import { onTidiedRows } from '../engine/compose'
+import { getEngine } from '../engine/db'
 import { isNumericType, LOCALE } from '../engine/sql'
+import { sideFor } from '../engine/match'
+import { statementColumns } from '../engine/statement'
 import { BtnIcon, Icon } from './Icon'
 import { useDialog } from './useDialog'
 
@@ -11,13 +15,18 @@ interface Props {
   after?: string
   initial?: CompareSpec
   onCompare: (sql: string, spec: CompareSpec) => void
+  /** Matching payments instead (a bank statement against the books): a dialog of its own. */
+  onMatch?: (a: string, b: string) => void
+  /** Tables tidied by their steps, as SQL: their columns as tidied (dates converted) say whether they can be matched. */
+  sources?: Record<string, string>
   onClose: () => void
 }
+const NO_SOURCES: Record<string, string> = {}
 
 const nf = new Intl.NumberFormat(LOCALE)
 const list = (names: string[]) => (names.length > 4 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', '))
 
-export function CompareDialog({ tables, before, after, initial, onCompare, onClose }: Props) {
+export function CompareDialog({ tables, before, after, initial, onCompare, onMatch, sources = NO_SOURCES, onClose }: Props) {
   const dialog = useDialog<HTMLDivElement>(onClose)
   const [pair, setPair] = useState(() => ({
     before: initial?.before ?? before ?? tables[0]?.name ?? '',
@@ -29,8 +38,38 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onClo
   // The key picked before switching to whole rows, restored when switching back.
   const [savedKeys, setSavedKeys] = useState<string[]>([])
 
-  const A = tables.find((t) => t.name === pair.before)
-  const B = tables.find((t) => t.name === pair.after)
+  const rawA = tables.find((t) => t.name === pair.before)
+  const rawB = tables.find((t) => t.name === pair.after)
+  // A tidied table's columns as tidied (its dates converted by a step): what the match would read.
+  // (null: the tidied rows couldn't be read, so the table as it is.)
+  const [tidied, setTidied] = useState<Record<string, TableColumns['columns'] | null>>({})
+  useEffect(() => {
+    let live = true
+    for (const name of [pair.before, pair.after]) {
+      if (!sources[name] || tidied[name] !== undefined) continue
+      void getEngine()
+        .then(({ conn }) => conn.query(`DESCRIBE SELECT * FROM (\n${sources[name]}\n)`))
+        .then((res) => {
+          const columns = res.toArray().map((r) => ({ name: String(r.toJSON().column_name), type: String(r.toJSON().column_type) }))
+          if (live) setTidied((t) => ({ ...t, [name]: columns }))
+        })
+        .catch(() => live && setTidied((t) => ({ ...t, [name]: null })))
+    }
+    return () => {
+      live = false
+    }
+    // The two tables' tidied SQL is what's looked at (a new object each time the app draws isn't).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pair.before, pair.after, sources[pair.before], sources[pair.after]])
+  // A table tidied by steps is compared as tidied (its total lines left out, its text converted): not its file
+  // as it is, where every converted value would read as changed.
+  const asMatched = (t: TableColumns): TableColumns => {
+    const cols = tidied[t.name]
+    return cols ? { ...t, columns: cols, source: sources[t.name] } : t
+  }
+  const waiting = (t?: TableColumns) => !!t && !!sources[t.name] && tidied[t.name] === undefined
+  const A = useMemo(() => (rawA && !waiting(rawA) ? asMatched(rawA) : undefined), [rawA, tidied]) // eslint-disable-line react-hooks/exhaustive-deps
+  const B = useMemo(() => (rawB && !waiting(rawB) ? asMatched(rawB) : undefined), [rawB, tidied]) // eslint-disable-line react-hooks/exhaustive-deps
   const pairKey = `${pair.before}\u0000${pair.after}`
   const diff = useMemo(() => (A && B ? schemaDiff(A, B) : null), [A, B])
 
@@ -53,7 +92,7 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onClo
   useEffect(() => {
     if (!spec || spec.mode !== 'key' || !spec.keys.length) return
     let live = true
-    keyHealth(spec)
+    keyHealth(spec, sources)
       .then((rows) => live && setHealth({ for: healthKey, rows }))
       .catch(() => {})
     return () => {
@@ -78,6 +117,15 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onClo
     update({ mode: 'key', keys, columns: spec.columns.filter((c) => !keys.includes(c)) })
   }
   const ready = !!spec && !same && (spec.mode === 'key' ? spec.keys.length > 0 : spec.columns.length > 0)
+  // A bank statement and books (or two statements): their lines are matched by amount and date, not compared.
+  const payments =
+    !!onMatch && !same && !!A && !!B && !!sideFor(A) && !!sideFor(B) && (!!statementColumns(A.columns) || !!statementColumns(B.columns))
+  // (Both with a running balance and neither the books' ledger: two banks' statements, said as such.)
+  const bank = (t: typeof A) => {
+    const st = t ? statementColumns(t.columns) : null
+    return !!st?.balance && !st.books
+  }
+  const twoBanks = payments && bank(A) && bank(B)
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -86,14 +134,35 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onClo
           className="shell modal modal-wide"
           onSubmit={(e) => {
             e.preventDefault()
-            if (spec && A && B && ready) onCompare(compareSql(spec, A, B), spec)
+            if (spec && A && B && ready) onCompare([B, A].reduce((sql, t) => (t.source ? onTidiedRows(sql, t.name, t.source, 0) : sql), compareSql(spec, A, B)), spec)
           }}
         >
           <div className="core">
             <span className="eyebrow">Compare</span>
             <h2 id="compare-title">What changed between two tables?</h2>
-            <p className="muted">Finds rows that were added, removed or changed, and which columns changed. Runs on every row, here in this tab.</p>
+            <p className="muted">
+              Finds rows that were added, removed or changed, and which columns changed. Runs on every row, here in this tab.
+              {onMatch && !payments && (
+                <>
+                  {' '}
+                  Bank against books?{' '}
+                  <button type="button" className="link-btn" onClick={() => onMatch(pair.before, pair.after)}>
+                    Match payments by amount and date
+                  </button>
+                </>
+              )}
+            </p>
 
+            {payments && (
+              <p className="compare-match">
+                <span>
+                  {pair.before} and {pair.after} look like {twoBanks ? 'two bank statements' : 'a statement and its books'}: payments are matched by amount and date, not compared row by row.
+                </span>
+                <button type="button" className="btn btn-primary btn-sm" onClick={() => onMatch!(pair.before, pair.after)}>
+                  Match payments
+                </button>
+              </p>
+            )}
             <div className="compare-pair">
               <label>
                 <span>Before</span>

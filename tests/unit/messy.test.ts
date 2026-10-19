@@ -2,7 +2,8 @@ import { writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
-import { eitherJunk, junkPredicates, readStats, statsSql, suggestCleaning, type Clean } from '../../src/engine/clean'
+import type { Clean } from '../../src/engine/clean'
+import { eitherJunk, junkPredicates, readStats, statsSql, suggestCleaning } from '../../src/engine/clean-scan'
 import { compose, emptyOps } from '../../src/engine/compose'
 import { messyCsv } from '../../src/engine/messy'
 import { q } from './duck'
@@ -41,4 +42,12 @@ test('the messy sample cleans up into numbers that match its own grand total', a
   const [sums] = await q(`SELECT count(*)::INT AS n, sum("Taxable Value") AS taxable, count(DISTINCT "Region")::INT AS regions, min("Invoice Date")::VARCHAR AS first FROM (${sql})`)
   const [grand] = await q(`SELECT number_from_text("Taxable Value") AS taxable FROM messy WHERE "Region" = 'Grand Total'`)
   expect(sums).toEqual({ n: 16, taxable: grand.taxable, regions: 3, first: '2024-04-01' })
+})
+
+test('a reader in the US gets the same register in dollars and sales tax, adding up the same way', async () => {
+  const us = messyCsv(true)
+  expect(us).toContain('Tax %')
+  expect(us).toContain('"$112,500.00"'.replace('$', '')) // grouped the US way, some without the sign
+  expect(us).not.toMatch(/₹|GST/)
+  expect(us.split('\n').at(-2)).toBe('Grand Total,,,,,"$613,950.00",,"$662,184.00"')
 })

@@ -1,13 +1,17 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { makeFormatter } from '../grid/format'
-import { parseNumber, type Filter, type FilterOp } from '../engine/compose'
-import { cleaningFor, distinctValues, profileColumn, splitParts, topValues, type ColumnInfo, type ColumnProfile, type ResultSet } from '../engine/result'
+import { parseNumber, typedDate, type Filter, type FilterOp } from '../engine/compose'
+import type { ColumnInfo, ResultSet } from '../engine/result'
+import { cleaningFor, distinctValues, profileColumn, splitParts, topValues, type ColumnProfile } from '../engine/scan'
 import { lookAlikes, type Alike } from '../engine/alike'
 import { isIdLike, LOCALE, quoteLiteral, sqlName } from '../engine/sql'
-import { describeClean, isConversion, isTextColumn, type Clean, type CleanSuggestion } from '../engine/clean'
+import { describeClean, isConversion, visibleSpaces, type Clean } from '../engine/clean'
+import { isTextColumn, type CleanSuggestion } from '../engine/clean-scan'
 import { Icon } from './Icon'
 import { Chart } from './Chart'
 import { histogram, isTemporal, type Point } from '../engine/chart'
+
+const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
 
 interface Props {
   result: ResultSet
@@ -25,6 +29,8 @@ interface Props {
   onDedupe?: (mode: 'show' | 'remove') => void
   /** Convert or tidy this column in place (number stored as text, dates, spaces, case). */
   onClean?: (c: Clean) => void
+  /** Several clean-ups as one step (merging every look-alike value at once). */
+  onCleans?: (cs: Clean[]) => void
   /** How this column is already cleaned, if it is (offered for undoing). */
   cleaned?: Clean[]
   onUnclean?: () => void
@@ -39,6 +45,9 @@ interface Props {
   onCountBy?: () => void
   /** Turn this column (and others like it) into rows. */
   onUnpivot?: () => void
+  /** Group the rows into categories by words in this column (or, if it's such a column, edit its rules). */
+  onCategorize?: () => void
+  categorized?: boolean
   onClose: () => void
 }
 
@@ -76,7 +85,7 @@ const OPS: Record<'number' | 'time' | 'text', { op: FilterOp; label: string }[]>
   ],
 }
 
-export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, picked = [], valuesSql, onUnpick, onDedupe, onClean, cleaned, onUnclean, onInsert, onLookup, onHide, onCountBy, onUnpivot, onAddColumns, onClose }: Props) {
+export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, picked = [], valuesSql, onUnpick, onDedupe, onClean, onCleans, cleaned, onUnclean, onInsert, onLookup, onHide, onCountBy, onUnpivot, onCategorize, categorized, onAddColumns, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [profile, setProfile] = useState<ColumnProfile | null>(null)
   const [hist, setHist] = useState<Point[] | null>(null)
@@ -115,6 +124,7 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
   const [choices, setChoices] = useState<{ value: string | null; count: number }[] | null>(null)
   const [cleanings, setCleanings] = useState<CleanSuggestion[] | null>(null)
   const [alikes, setAlikes] = useState<Alike[]>([])
+  const mergeable = alikes.filter((a, i) => i < 4 || a.same)
   const text = isTextColumn(column.type)
   // A text column that really holds numbers or dates: offered as the first thing to fix.
   const convert = cleanings?.find((s) => isConversion(s.clean))
@@ -132,7 +142,7 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
     if (column.numeric && result.table) histogram(result.table, column).then((h) => live && setHist(h)).catch(() => {})
     if (valuesSql) topValues(valuesSql, column.name).then((v) => live && setChoices(v)).catch(() => {})
     if (onClean && isTextColumn(column.type)) cleaningFor(result, column).then((c) => live && setCleanings(c)).catch(() => {})
-    if (onClean && isTextColumn(column.type)) distinctValues(result, column).then((v) => live && setAlikes(lookAlikes(v))).catch(() => {})
+    if (onClean && isTextColumn(column.type)) distinctValues(result, column).then((v) => live && setAlikes(lookAlikes(v, 20))).catch(() => {})
     return () => {
       live = false
     }
@@ -157,6 +167,10 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
   }, [anchor, profile, hist, cleanings])
 
   useEffect(() => {
+    if (coarse) ref.current?.focus({ preventScroll: true })
+  }, [])
+
+  useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose()
     }
@@ -169,7 +183,8 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
     // (Only for Tab: the click that opened the menu also moves focus, and must not close it.)
     const onFocusOut = (e: FocusEvent) => {
       const next = e.relatedTarget as Node | null
-      if (tabbing && next && ref.current && !ref.current.contains(next)) onClose()
+      // (Tab past the last item, to the browser's own controls: no next element, closed all the same.)
+      if (tabbing && ref.current && (!next || !ref.current.contains(next))) onClose()
     }
     const el = ref.current
     // Defer: the mousedown that opened this menu is still bubbling to window.
@@ -201,11 +216,18 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
         return
       }
     }
+    // A date as it's typed here (31/01/2024, 1 Apr 2024): written year-month-day, as SQL reads it.
+    const monthFirst = /^en-US$/i.test(LOCALE)
+    const asDate = (v: string) => (kind === 'time' ? typedDate(v, monthFirst) : v.trim())
+    if (needsValue && kind === 'time' && (asDate(value) === null || (between && asDate(value2) === null))) {
+      setInvalid(`Enter a date, like 2024-01-31 or ${monthFirst ? '01/31/2024' : '31/01/2024'}`)
+      return
+    }
     onFilter({
       column: column.name,
       op,
-      value: needsValue ? (column.percent ? fraction(value) : value.trim()) : undefined,
-      value2: between ? (column.percent ? fraction(value2) : value2.trim()) : undefined,
+      value: needsValue ? (column.percent ? fraction(value) : asDate(value)!) : undefined,
+      value2: between ? (column.percent ? fraction(value2) : asDate(value2)!) : undefined,
       numeric: column.numeric,
       type: column.type,
       percent: column.percent || undefined,
@@ -216,7 +238,15 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
   const maxTop = Math.max(1, ...top.map((t) => t.count))
 
   return (
-    <div className="popover colmenu" ref={ref} style={{ left: pos.left, top: pos.top, maxHeight: window.innerHeight - pos.top - 12 }} role="dialog" aria-label={`Column ${column.name}`}>
+    <div
+      className="popover colmenu"
+      ref={ref}
+      style={{ left: pos.left, top: pos.top, maxHeight: window.innerHeight - pos.top - 12 }}
+      role="dialog"
+      aria-label={`Column ${column.name}`}
+      // On a touch screen the menu itself takes focus (a screen reader is in it), not the filter's text box.
+      tabIndex={-1}
+    >
       <div className="colmenu-head">
         <strong>{column.name}</strong>
         <span className="type-tag">{column.type.toLowerCase()}</span>
@@ -274,7 +304,8 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
             aria-invalid={!!invalid || undefined}
             aria-describedby={invalid ? 'filter-error' : undefined}
             inputMode={kind === 'number' ? 'decimal' : undefined}
-            autoFocus
+            // On a touch screen, not: the keyboard would cover the menu of someone who only wants to sort.
+            autoFocus={!coarse}
           />
         )}
         {between && (
@@ -330,7 +361,8 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
                   >
                     <span className="bar" style={{ transform: `scaleX(${t.count / maxTop})` }} />
                     {picked.length > 0 && <span className="tcheck" aria-hidden>{on ? '✓' : ''}</span>}
-                    <span className="tv">{t.value === null ? 'empty' : t.value === '' ? '(blank)' : kind === 'text' ? t.value : show(t.value)}</span>
+                    {/* (Spaces at the ends shown: " Delivered " beside "Delivered" isn't the same value twice.) */}
+                    <span className="tv">{t.value === null ? 'empty' : t.value === '' ? '(blank)' : kind === 'text' ? visibleSpaces(t.value) : show(t.value)}</span>
                     <span className="tc">{fmt.format(t.count)}</span>
                   </button>
                 </li>
@@ -441,16 +473,23 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
                 {onClean && wordy && alikes.length > 0 && (
                   <span className="colmenu-clean-row colmenu-alike" role="group" aria-label="Values that look alike">
                     <span className="fine">Look alike:</span>
-                    {alikes.map((a) => (
+                    {/* The first four by name; Merge all takes every one (no second round for the rest). */}
+                    {alikes.slice(0, 4).map((a) => (
                       <button
                         key={a.from}
                         className="link-btn"
                         onClick={() => onClean({ column: column.name, kind: 'replace', from: a.from, to: a.to })}
-                        title={`Replace “${a.from}” (${fmt.format(a.fromRows)} ${a.fromRows === 1 ? 'row' : 'rows'}) with “${a.to}” (${fmt.format(a.toRows)})`}
+                        title={`Replace “${visibleSpaces(a.from)}” (${fmt.format(a.fromRows)} ${a.fromRows === 1 ? 'row' : 'rows'}) with “${visibleSpaces(a.to)}” (${fmt.format(a.toRows)})`}
                       >
-                        {a.from} → {a.to}
+                        {visibleSpaces(a.from)} → {visibleSpaces(a.to)}
                       </button>
                     ))}
+                    {/* All: the ones shown, and any more that differ only in case or spacing (never a typo unseen). */}
+                    {onCleans && mergeable.length > 1 && (
+                      <button className="link-btn colmenu-alike-all" onClick={() => onCleans(mergeable.map((a) => ({ column: column.name, kind: 'replace', from: a.from, to: a.to })))}>
+                        Merge all {mergeable.length}
+                      </button>
+                    )}
                   </span>
                 )}
                 {onClean && text && (
@@ -546,6 +585,11 @@ export function ColumnMenu({ result, column, anchor, sortDir, onSort, onFilter, 
         {onCountBy && (
           <button className="link-btn" onClick={onCountBy}>
             {kind === 'time' ? `Count rows by month of “${column.name}”` : `Count rows by “${column.name}”`}
+          </button>
+        )}
+        {onCategorize && (
+          <button className="link-btn" onClick={onCategorize}>
+            {categorized ? 'Edit these categories…' : `Group into categories by words in “${column.name}”…`}
           </button>
         )}
         {onLookup && (

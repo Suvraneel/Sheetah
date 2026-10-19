@@ -4,6 +4,8 @@ import { openApp, openDemo, runSql } from './helpers'
 const file = (name: string, text: string) => ({ name, mimeType: 'text/csv', buffer: Buffer.from(text) })
 
 /** Waits until no query is running (header actions show their chips at once; the result follows). */
+// Saving a view checks its rows once more, then keeps where they closed (for next month's): done before a reload.
+const periodKept = (page: Page) => expect.poll(() => page.evaluate(() => localStorage.getItem('sheetah:views')?.includes('"periods"') ?? false)).toBe(true)
 const idle = (page: Page) => expect(page.getByRole('button', { name: 'Run query' })).toBeVisible({ timeout: 60_000 })
 
 async function columnMenu(page: Page, column: number) {
@@ -39,6 +41,8 @@ test.describe('everyday workflows', () => {
     await page.getByRole('button', { name: 'Show duplicates' }).click()
     await expect(page.locator('.result-meta')).toContainText('4 of 5 rows')
     await page.locator('.op-chip', { hasText: 'Duplicates in email' }).click()
+    // All five again ("4 of 5 rows" says 5 rows too: wait for the rows themselves, not a column menu opened on the old ones).
+    await expect(page.locator('.result-meta')).not.toContainText(' of 5 rows')
     await expect(page.locator('.result-meta')).toContainText('5 rows')
     await columnMenu(page, 1)
     await page.getByRole('button', { name: 'Keep first of each' }).click()
@@ -100,13 +104,13 @@ test.describe('cleaning columns', () => {
     await page.keyboard.press('Escape')
 
     await columnMenu(page, 1)
-    await page.getByRole('button', { name: 'Trim extra spaces' }).click()
-    await expect(page.locator('.op-chip', { hasText: 'city trimmed' })).toBeVisible()
+    await page.locator('.colmenu').getByRole('button', { name: 'Tidy spaces', exact: true }).click()
+    await expect(page.locator('.op-chip', { hasText: 'city spaces tidied' })).toBeVisible()
     await idle(page)
     await columnMenu(page, 1)
-    await expect(page.locator('.colmenu-clean')).toContainText('Cleaned: trimmed')
+    await expect(page.locator('.colmenu-clean')).toContainText('Cleaned: spaces tidied')
     await page.locator('.colmenu-clean').getByRole('button', { name: 'Undo' }).click()
-    await expect(page.locator('.op-chip', { hasText: 'city trimmed' })).toHaveCount(0)
+    await expect(page.locator('.op-chip', { hasText: 'city spaces tidied' })).toHaveCount(0)
     await idle(page)
     await columnMenu(page, 1)
     await page.getByRole('button', { name: 'Title' }).click()
@@ -209,6 +213,29 @@ test.describe('stack', () => {
     await expect(page.locator('.sr-grid [role=columnheader]').first()).toContainText('source')
     await expect(page.locator('.error-banner')).toHaveCount(0)
   })
+
+  test('a month and its revision both picked are said to share rows; a month of amounts as text stacks as numbers', async ({ page }) => {
+    await openApp(page)
+    await page.locator('input[type=file]').setInputFiles([
+      // One "N/A" among November's amounts: read as numbers all the same (it's one in eleven).
+      file('sales_nov.csv', `id,city,amount\n${Array.from({ length: 10 }, (_, i) => `${i + 10},Pune,${i + 1}`).join('\n')}\n2,Goa,N/A\n`),
+      file('sales_dec.csv', 'id,city,amount\n3,Pune,30\n4,Goa,40\n5,Agra,50\n'),
+      file('sales_dec_rev.csv', 'id,city,amount\n3,Pune,30\n4,Goa,45\n5,Agra,50\n'),
+    ])
+    await page.getByRole('button', { name: 'Stack them' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Stack tables into one' })
+    const report = dialog.locator('.stack-report')
+    await expect(report).toContainText('amount is text in sales_nov: read as numbers.')
+    await expect(report).toContainText('1 value of amount in sales_nov isn’t a number and becomes empty (“N/A”).')
+    await expect(report).toContainText('2 rows are in both sales_dec and sales_dec_rev: stacked, they would count twice.')
+    await dialog.getByRole('checkbox', { name: 'sales_dec_rev' }).uncheck()
+    await expect(report).not.toContainText('count twice')
+    await dialog.getByRole('button', { name: 'Stack 2 tables' }).click()
+    await expect(page.locator('.result-meta')).toContainText('14 rows')
+    // Numbers, so shown as money (text would read 30).
+    await expect(page.locator('.sr-grid').last()).toContainText('30.00')
+    await expect(page.locator('.error-banner')).toHaveCount(0)
+  })
 })
 
 test.describe('fill down', () => {
@@ -279,6 +306,24 @@ test.describe('replace a value', () => {
     await expect(page.locator('.topvals li').first()).toContainText('Hyderabad6')
     await expect(page.locator('.colmenu-alike')).toHaveCount(0)
   })
+
+  test('look-alikes show their stray spaces, merge all at once, and come back as one chip', async ({ page }) => {
+    await openApp(page)
+    const cities = [...Array(6).fill('Mumbai'), '"Mumbai "', ...Array(5).fill('Pune'), 'pune', 'Delhi']
+    await page.locator('input[type=file]').setInputFiles([file('cities.csv', `city,n\n${cities.map((c, i) => `${c},${i}`).join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('14 rows')
+    await columnMenu(page, 0)
+    const alike = page.locator('.colmenu-alike')
+    await expect(alike.getByRole('button', { name: 'Mumbai␣ → Mumbai' })).toBeVisible()
+    await alike.getByRole('button', { name: 'Merge all 2' }).click()
+    await expect(page.getByRole('button', { name: 'city: 2 values merged' })).toBeVisible()
+    await idle(page)
+    await page.getByRole('button', { name: 'city: 2 values merged' }).click()
+    await expect(page.locator('.op-chip', { hasText: 'city “pune” → “Pune”' })).toBeVisible()
+    await page.getByRole('button', { name: 'Group city merges' }).click()
+    await page.getByRole('button', { name: 'Undo all 2 merges in city' }).click()
+    await expect(page.locator('.op-chip', { hasText: 'merged' })).toHaveCount(0)
+  })
 })
 
 test.describe('rows that are not data', () => {
@@ -319,12 +364,12 @@ test.describe('hints follow their table', () => {
       file('plain.csv', 'a,b\n1,2\n'),
       file('report.csv', 'region,rep,sales\nNorth,Asha,"₹1,200"\nSouth,Ravi,"₹800"\nTotal,,"₹2,000"\n'),
     ])
-    await expect(page.locator('.result-meta')).toContainText('1 rows')
+    await expect(page.locator('.result-meta')).toContainText('1 row')
     await page.locator('.side-table', { hasText: 'report' }).click()
     await expect(page.getByRole('button', { name: 'Leave out 1 total line' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Convert 1 text column to numbers' })).toBeVisible()
     await page.locator('.side-table', { hasText: 'plain' }).click()
-    await expect(page.locator('.result-meta')).toContainText('1 rows')
+    await expect(page.locator('.result-meta')).toContainText('1 row')
     await expect(page.locator('.hint-chips')).toHaveCount(0)
     await page.locator('.side-table', { hasText: 'report' }).click()
     await expect(page.getByRole('button', { name: 'Leave out 1 total line' })).toBeVisible()
@@ -338,14 +383,22 @@ test.describe('the messy sample', () => {
     await expect(page.locator('.result-meta')).toContainText('23 rows')
     await page.getByRole('button', { name: 'Leave out 4 total lines and 3 empty rows' }).click()
     // Tied out: the sub-totals and the Grand Total add up to the invoices, so nothing's lost.
-    await expect(page.locator('.toast', { hasText: 'Checked: the total lines add up to the rows left. Invoice Total comes to 721,' })).toBeVisible()
+    // (In dollars, with sales tax: this browser reads as the US does.)
+    await expect(page.locator('.checks', { hasText: 'The totals match the rows exactly: Invoice Total 662,184.00' })).toBeVisible()
     await expect(page.locator('.result-meta')).toContainText('16 of 23 rows')
     await idle(page)
     await page.getByRole('button', { name: /^Convert 4 text columns to numbers and dates/ }).click()
+    // Four columns converted in one click: one chip for them; clicking it shows each, its × undoes them all.
+    await expect(page.getByRole('button', { name: 'Undo all 4 conversions' })).toBeVisible()
+    // The sidebar says what the columns are now, beside what the file has.
+    await expect(page.locator('.side-type', { hasText: 'number (converted)' }).first()).toBeVisible()
+    await page.getByRole('button', { name: '4 columns converted' }).click()
     await expect(page.locator('.op-chip', { hasText: 'Taxable Value as number' })).toBeVisible()
+    await page.getByRole('button', { name: 'Group conversions' }).click()
+    await expect(page.locator('.op-chip', { hasText: 'Taxable Value as number' })).toHaveCount(0)
     await expect(page.locator('.toast', { hasText: 'Save these steps as a view' })).toBeVisible()
     await idle(page)
-    // Names typed with stray spaces (" asha rao ") are offered for tidying too.
+    // Names typed with stray spaces (" emma clark ") are offered for tidying too.
     await expect(page.locator('.hint-chips').getByRole('button', { name: 'Tidy spaces in Customer' })).toBeVisible()
     // Region is named once per group: offered too, and gone once it's done.
     await page.locator('.hint-chips').getByRole('button', { name: 'Fill down Region' }).click()
@@ -353,24 +406,33 @@ test.describe('the messy sample', () => {
     await expect(page.locator('.sr-grid [role=row]').nth(2)).toContainText('North')
     await expect(page.locator('.op-chip', { hasText: 'Region filled down' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Fill down Region' })).toHaveCount(0)
-    // GST % was "18%" text: it shows as 18%, and a filter typed as a percentage means one.
-    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('18%')
+    // Tax % was "8%" text: it shows as 8%, and a filter typed as a percentage means one.
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('8%')
     await page.locator('.toast', { hasText: 'Save these steps' }).getByRole('button', { name: 'Dismiss' }).click()
     await columnMenu(page, 6)
-    await page.getByLabel('Filter value').fill('12')
+    await page.getByLabel('Filter value').fill('6')
     await page.locator('.colmenu').getByRole('button', { name: 'Filter' }).click()
-    await expect(page.locator('.op-chip', { hasText: 'GST % > 12%' })).toBeVisible()
+    await expect(page.locator('.op-chip', { hasText: 'Tax % > 6%' })).toBeVisible()
     await expect(page.locator('.result-meta')).toContainText('9 of 23 rows')
     await expect(page.locator('.error-banner')).toHaveCount(0)
     // SQL typed against the file reads it as it is: offered the tidied rows instead.
     await runSql(page, 'SELECT sum("Taxable Value") AS taxable FROM sales_register_april')
-    await expect(page.locator('.error-banner')).toContainText('needs numbers')
-    const offer = page.locator('.toast', { hasText: 'without its 7 tidy-up steps' })
-    await offer.getByRole('button', { name: 'Run on the tidied rows' }).click()
+    // It fails on the total lines' text: the error's own fix is the tidied rows (not "convert the column", done already).
+    await expect(page.locator('.error-banner')).toContainText('This query skips sales_register_april’s 7 tidy-up steps')
+    await page.locator('.error-banner').getByRole('button', { name: 'Run on the tidied rows' }).click()
     await expect(page.locator('.cm-content')).toContainText('WITH sales_register_april AS (')
-    await expect(page.locator('.result-meta')).toContainText('1 rows')
+    await expect(page.locator('.result-meta')).toContainText('1 row')
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('613,950') // the invoices, not the totals too
     await expect(page.locator('.error-banner')).toHaveCount(0)
+    // A mistake of another kind (a misspelt column) keeps its own explanation, and no offer the tidied rows
+    // can't help with (they'd fail the same way).
+    await runSql(page, 'SELECT sum(Taxabel) FROM sales_register_april')
+    await expect(page.locator('.error-banner')).toContainText('Taxabel')
+    await expect(page.locator('.error-banner')).not.toContainText('skips')
+    await expect(page.locator('.error-banner').getByRole('button', { name: 'Run on the tidied rows' })).toHaveCount(0)
+    // One the tidy-up does change (text where a number belongs, in a function) still gets it.
+    await runSql(page, 'SELECT abs("Taxable Value") FROM sales_register_april')
+    await expect(page.locator('.error-banner')).toContainText('tidy-up steps')
   })
 })
 
@@ -401,8 +463,9 @@ test.describe('unpivot', () => {
 test.describe('column names on a later row', () => {
   test('a row picked by its number becomes the column names, and Undo brings the file back', async ({ page }) => {
     await openApp(page)
-    // Title lines padded to the full width: the file reader takes them for data.
-    await page.locator('input[type=file]').setInputFiles([file('padded.csv', 'Sales report,,\nApril 2024,,\nInvoice,Customer,Amount\nINV-1,Asha,"1,200"\nINV-2,Ravi,800\nTotal,,"2,000"\n')])
+    // Title lines with more than one thing in them (a report's name and its month): the file reader takes them
+    // for data. (Lines padded to the width with only a title in them are left out as the file opens.)
+    await page.locator('input[type=file]').setInputFiles([file('padded.csv', 'Sales report,April 2024,\nRegion: North,,\nInvoice,Customer,Amount\nINV-1,Asha,"1,200"\nINV-2,Ravi,800\nTotal,,"2,000"\n')])
     await expect(page.locator('.result-meta')).toContainText('5 rows')
     // Most columns got made-up names, and row 2 is all words: offered.
     await page.locator('.hint-chips').getByRole('button', { name: 'Use row 2 as column names' }).click()
@@ -420,5 +483,391 @@ test.describe('column names on a later row', () => {
     await page.mouse.click(box.x + 12, box.y + 44 + 30 + 15) // row 2's number
     await page.locator('.statusbar').getByRole('button', { name: 'Use row 2 as column names' }).click()
     await expect(page.locator('.result-meta')).toContainText('3 rows · 3 columns')
+  })
+})
+
+test.describe('bank statements', () => {
+  test('a statement gets a signed amount, and its balances are checked', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance',
+      '01/04/24,Opening balance,,,"10,000.00"',
+      '02/04/24,UPI to Ravi,500.00,,"9,500.00"',
+      '05/04/24,NEFT from Asha,,"2,000.00","11,500.00"',
+      '09/04/24,ATM,"1,500.00",,"10,000.00"',
+    ].join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('statement.csv', `${csv}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('4 rows')
+    await page.getByRole('button', { name: 'Add signed amount (Deposit Amt. − Withdrawal Amt.)' }).click()
+    await expect(page.locator('.checks', { hasText: 'Every Closing Balance follows from the row above (3 rows checked)' })).toBeVisible()
+    await expect(page.locator('.op-chip', { hasText: 'amount (Deposit − Withdrawal)' })).toBeVisible()
+    await expect(page.locator('.sr-grid [role=columnheader]').last()).toContainText('amount')
+    await expect(page.getByRole('button', { name: /^Add signed amount/ })).toHaveCount(0)
+
+    // The same statement with a line missing: the row whose balance doesn't follow is named.
+    const gap = csv.split('\n').filter((l) => !l.includes('UPI to Ravi')).join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('statement_gap.csv', `${gap}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    await page.getByRole('button', { name: /^Add signed amount/ }).click()
+    await expect(page.locator('.checks .is-off', { hasText: 'Closing Balance on row 2 doesn’t follow from the row above: off by 500' })).toBeVisible()
+  })
+
+  test('narrations become categories by their words, then a pivot of each category by month', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance',
+      '13/04/24,UPI-SWIGGY-swiggy@icici,500.00,,"9,500.00"',
+      '15/04/24,NEFT CR-ACME-SALARY,,"50,000.00","59,500.00"',
+      '19/04/24,UPI-UBER-trip,300.00,,"59,200.00"',
+      '14/05/24,UPI-ZOMATO-order,400.00,,"58,800.00"',
+      '22/05/24,UPI-Mystery Shop,100.00,,"58,700.00"',
+    ].join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('stmt.csv', `${csv}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('5 rows')
+    await page.getByRole('button', { name: /^Add signed amount/ }).click()
+    await page.getByRole('button', { name: 'Group Narration into categories' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Group Narration into categories' })
+    await dialog.getByRole('button', { name: /^Start with the usual ones/ }).click()
+    await expect(dialog.getByLabel('Category 1 name')).toHaveValue('Food and dining')
+    await expect(dialog.getByLabel('Category 1 words')).toHaveValue('swiggy, zomato')
+    // A word of its own, picked from the column's common words, goes to the category being edited.
+    await dialog.getByLabel('Category 1 words').focus()
+    await dialog.getByRole('group', { name: 'Common words in Narration' }).getByRole('button', { name: /^mystery 1 row: add/ }).click()
+    await expect(dialog.getByLabel('Category 1 words')).toHaveValue('swiggy, zomato, mystery')
+    // Every row has a category now: no words are left to offer, and focus goes back to the words it went to.
+    await expect(dialog.getByRole('group', { name: /^Common words in Narration/ })).toContainText('none left')
+    await expect(dialog.getByLabel('Category 1 words')).toBeFocused()
+    await expect(dialog.getByRole('status')).toHaveText('5 rows: 5 in 3 categories, 0 as Other.')
+    await dialog.getByRole('button', { name: 'Add the category column' }).click()
+    await expect(page.locator('.op-chip', { hasText: 'category (by Narration)' })).toBeVisible()
+    // The chip opens the rules again (its × is what removes the column).
+    await page.getByRole('button', { name: 'Edit the categories in category' }).click()
+    const editing = page.getByRole('dialog', { name: 'Group Narration into categories' })
+    await expect(editing.getByLabel('Category 1 words')).toHaveValue('swiggy, zomato, mystery')
+    await editing.getByRole('button', { name: 'Cancel' }).click()
+    await expect(page.getByRole('button', { name: 'Remove step: category column' })).toBeVisible()
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('Food and dining')
+    await page.locator('.toast', { hasText: 'Added category: 3 categories by words in Narration' }).getByRole('button', { name: 'Pivot by month' }).click()
+    const pivot = page.getByRole('dialog', { name: 'Summarize this result' })
+    await expect(pivot.locator('.pivot-name')).toHaveText(['category'])
+    await expect(pivot.getByLabel('Column field')).toHaveValue('Date')
+    await pivot.getByRole('button', { name: 'Create pivot' }).click()
+    // Food and dining, Salary, Travel, and the total; April and May across.
+    await expect(page.locator('.result-meta')).toContainText('4 rows · 4 columns')
+    await expect(page.locator('.sr-grid [role=columnheader]').nth(1)).toContainText('2024-04')
+  })
+
+  test('a statement’s money in and out, month by month', async ({ page }) => {
+    await openApp(page)
+    const csv = ['Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance', '13/04/24,Rent,"3,000.00",,"7,000.00"', '25/04/24,Salary,,"50,000.00","57,000.00"', '14/05/24,UPI,700.00,,"56,300.00"']
+    await page.locator('input[type=file]').setInputFiles([file('summary.csv', `${csv.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    await page.getByRole('button', { name: /^Add signed amount/ }).click()
+    await page.getByRole('button', { name: 'Money in and out by month' }).click()
+    await expect(page.locator('.result-meta')).toContainText('2 rows · 5 columns')
+    await expect(page.locator('.origin-chip')).toContainText('Money in and out by month, from summary')
+    const april = page.locator('.sr-grid [role=row]').nth(1)
+    await expect(april).toContainText('2024-04-01')
+    await expect(april).toContainText('50,000')
+    await expect(april).toContainText('47,000')
+  })
+
+  test('a US bank’s summary above its transactions is offered for leaving out; a Pending payment date isn’t', async ({ page }) => {
+    await openApp(page)
+    const csv = ['Date,Description,Deposits,Withdrawals,Balance', 'Account Summary,,,,', 'Beginning Balance,,,,1000.00', 'Total Deposits,700.00,,,', 'Ending Balance,,,,1450.00']
+    for (const [d, what, dep, wd, bal] of [['01/03/2026', 'ACH deposit', '200.00', '', '1200.00'], ['01/05/2026', 'Card purchase', '', '50.00', '1150.00'], ['01/09/2026', 'Check 1001', '', '100.00', '1050.00'], ['01/15/2026', 'Payroll', '500.00', '', '1550.00'], ['01/20/2026', 'Card purchase', '', '60.00', '1490.00'], ['01/28/2026', 'Card purchase', '', '40.00', '1450.00']])
+      csv.push([d, what, dep, wd, bal].join(','))
+    await page.locator('input[type=file]').setInputFiles([file('us_stmt.csv', `${csv.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('10 rows')
+    await page.getByRole('button', { name: /^Leave out .*undated line/ }).click()
+    await expect(page.locator('.result-meta')).toContainText('6 of 10 rows')
+    // Its dates are dates now that the summary's gone: converted in the one click with the rest.
+    await expect(page.getByRole('button', { name: /^Convert .*dates/ })).toBeVisible()
+
+    // Open invoices: "Pending" in a Payment Date column is an open item, never a line to leave out.
+    const open = ['Invoice,Customer,Payment Date,Amount', 'A1,Acme,01/02/2026,100', 'A2,Beta,Pending,200', 'A3,Cyan,01/05/2026,300', 'A4,Dune,Pending,50', 'A5,Echo,01/09/2026,75', 'A6,Fern,01/12/2026,20']
+    await page.locator('input[type=file]').setInputFiles([file('open_items.csv', `${open.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('6 rows')
+    await idle(page)
+    await expect(page.getByRole('button', { name: /undated/ })).toHaveCount(0)
+  })
+
+  test('payments are matched bank against books: what’s left on either side is listed', async ({ page }) => {
+    await openApp(page)
+    const bank = ['Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance', '13/04/24,UPI Ravi,500.00,,"9,500.00"', '15/04/24,NEFT Acme,,"50,000.00","59,500.00"', '19/04/24,Bank charges,118.00,,"59,382.00"', ',Total,618.00,"50,000.00",']
+    const books = ['Posted,Party,Amount', '2024-04-12,Ravi,-500', '2024-04-14,Acme Ltd,50000', '2024-04-28,Kiran,2500']
+    await page.locator('input[type=file]').setInputFiles([file('bank_apr.csv', `${bank.join('\n')}\n`), file('books_apr.csv', `${books.join('\n')}\n`)])
+    await expect(page.locator('.side-table .side-name')).toHaveText(['bank_apr', 'books_apr'])
+    // The statement's total line is left out by a step: the match reads the tidied rows, not the file.
+    await page.locator('.side-table .side-name', { hasText: 'bank_apr' }).click()
+    await page.getByRole('button', { name: /^Leave out 1 total line/ }).click()
+    await expect(page.locator('.result-meta')).toContainText('3 of 4 rows')
+    await page.getByRole('button', { name: 'Compare two tables' }).click()
+    // A statement and its books: Compare says rows aren't the way to compare them, and offers the match.
+    await expect(page.getByRole('dialog').getByText('bank_apr and books_apr look like a statement and its books')).toBeVisible()
+    await page.getByRole('button', { name: 'Match payments', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Bank against books' })
+    await expect(dialog.getByLabel('Table').first()).toBeFocused()
+    await expect(dialog.getByRole('status')).toHaveText('2 matched · 1 only in bank_apr (out 118.00) · 1 only in books_apr (in 2,500.00)')
+    await dialog.getByRole('button', { name: 'Match them' }).click()
+    await expect(page.locator('.result-meta')).toContainText('4 rows · 8 columns')
+    await expect(page.locator('.origin-chip')).toContainText('Payments matched')
+    await expect(page.locator('.sr-grid [role=row]').nth(4)).toContainText('only in books_apr')
+    // The month-end write-up: from the bank's closing balance to what the books should show, each line under its heading.
+    await page.getByRole('button', { name: 'Reconciliation statement' }).click()
+    await expect(page.locator('.result-meta')).toContainText('8 rows · 4 columns')
+    await expect(page.locator('.origin-chip')).toContainText('Bank reconciliation, from payments matched')
+    const line = (i: number) => page.locator('.sr-grid [role=row]').nth(i)
+    await expect(line(1)).toContainText('Balance as per bank statement on Apr 19, 2024')
+    await expect(line(1)).toContainText('59,382')
+    await expect(line(2)).toContainText('Add: deposits not yet credited by the bank')
+    await expect(line(3)).toContainText('Kiran')
+    await expect(line(3)).toContainText('2,500')
+    await expect(line(7)).toContainText('Bank charges')
+    await expect(line(8)).toContainText('Balance as per books (should be)')
+    await expect(line(8)).toContainText('62,000')
+  })
+
+  test('a cheque presented a fortnight late: the preview offers the days to match it, and a typo is said', async ({ page }) => {
+    await openApp(page)
+    const bank = ['Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance', '18/04/26,CHQ PAID-MEHTA,"12,000.00",,"88,000.00"', '20/04/26,CHQ PAID-TATA POWER,"5,400.00",,"82,600.00"', '22/04/26,NEFT CR-ACME,,"7,000.00","89,600.00"']
+    const books = ['Posted,Party,Amount', '2026-04-02,Mehta Transport,-12000', '2026-04-20,Tata Power,-4500', '2026-04-22,Acme,7000']
+    await page.locator('input[type=file]').setInputFiles([file('hdfc_apr26.csv', `${bank.join('\n')}\n`), file('books_apr26.csv', `${books.join('\n')}\n`)])
+    await expect(page.locator('.side-table .side-name')).toHaveText(['books_apr26', 'hdfc_apr26'])
+    await page.locator('.side-table .side-name', { hasText: 'hdfc_apr26' }).click()
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    await page.getByRole('button', { name: 'Compare two tables' }).click()
+    await page.getByRole('button', { name: 'Match payments', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Bank against books' })
+    const status = dialog.getByRole('status')
+    await expect(status).toContainText('1 matched')
+    await expect(status).toContainText('1 with the same amount on the other side further apart')
+    await expect(status).toContainText('1 pair where an amount may be typed wrong on one side')
+    await status.getByRole('button', { name: 'Allow 16 days' }).click()
+    await expect(dialog.getByRole('spinbutton')).toHaveValue('16')
+    await expect(status).toContainText('2 matched')
+    await dialog.getByRole('button', { name: 'Match them' }).click()
+    await page.getByRole('button', { name: 'Reconciliation statement' }).click()
+    // The typed-wrong pair is under its headings with what the match noticed beside it.
+    await expect(page.locator('.result-meta')).toContainText('4 columns')
+    await expect(page.locator('.sr-grid [role=row]', { hasText: 'amount differs: 4,500.00 in books_apr26 on 2026-04-20 (digits swapped?)' }).first()).toBeAttached()
+  })
+
+  test('a statement that keeps its file name each month is still checked against last month’s', async ({ page }) => {
+    await openApp(page)
+    const head = 'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance'
+    const april = [head, '13/04/24,UPI to Ravi,500.00,,"9,500.00"', '19/04/24,ATM,"1,500.00",,"8,000.00"']
+    await page.locator('input[type=file]').setInputFiles([file('Statement.csv', `${april.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('2 rows')
+    await page.getByRole('button', { name: /^Add signed amount/ }).click()
+    await expect(page.getByRole('button', { name: 'Run query' })).toBeVisible({ timeout: 60_000 })
+    await page.getByRole('main').getByRole('button', { name: 'Save view' }).click()
+    await page.fill('#view-name', 'Monthly')
+    await page.locator('.modal .btn-primary').click()
+    await expect(page.locator('.side-view')).toContainText('Monthly')
+    await periodKept(page)
+
+    // May's file, same name; it opens at 7,500, not the 8,000 April closed at.
+    await page.reload()
+    await expect(page.locator('.engine-pill.is-ready')).toBeVisible({ timeout: 90_000 })
+    const may = [head, '14/05/24,Salary,,"10,000.00","17,500.00"', '20/05/24,Rent,"3,000.00",,"14,500.00"', '22/05/24,UPI,100.00,,"14,400.00"']
+    await page.locator('input[type=file]').setInputFiles([file('Statement.csv', `${may.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    await page.locator('.side-tabs button', { hasText: 'Saved' }).click()
+    await page.locator('.side-view', { hasText: 'Monthly' }).click()
+    await expect(page.locator('.toast', { hasText: '· 3 rows (2 last time)' })).toBeVisible()
+    await expect(page.locator('.checks .is-off', { hasText: 'Opens at 7,500.00, but the statement to 2024-04-19 closed at 8,000.00: 500.00 apart' })).toBeVisible()
+  })
+
+  test('next month’s statement is checked when a saved view runs on it: a missing line is named', async ({ page }) => {
+    await openApp(page)
+    const head = 'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance'
+    const april = [head, ',Opening Balance,,,"10,000.00"', '02/04/24,UPI to Ravi,500.00,,"9,500.00"', '05/04/24,NEFT from Asha,,"2,000.00","11,500.00"',
+      '09/04/24,ATM,"1,500.00",,"10,000.00"', '15/04/24,Rent,"3,000.00",,"7,000.00"', ',,,,', ',Total,"5,000.00","2,000.00",', ',Closing Balance,,,"7,000.00"']
+    await page.locator('input[type=file]').setInputFiles([file('stmt_apr.csv', `${april.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('8 rows')
+    // The opening and closing balance lines aren't transactions: left out with the total line.
+    await page.getByRole('button', { name: 'Leave out 1 total line, 2 balance lines and 1 empty row' }).click()
+    await expect(page.locator('.result-meta')).toContainText('4 of 8 rows')
+    // Checks that pass fold into one line, until shown.
+    await expect(page.locator('.checks')).toContainText('2 checks passed: totals, opening to closing')
+    await page.locator('.checks').getByRole('button', { name: 'Show' }).click()
+    // The same button folds them again: focus stays on it.
+    await expect(page.locator('.checks').getByRole('button', { name: 'Fold' })).toBeFocused()
+    await expect(page.locator('.checks').getByRole('button', { name: 'Fold' })).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('.checks .is-ok', { hasText: 'The totals match the rows exactly: Withdrawal Amt. 5,000.00 · Deposit Amt. 2,000.00' })).toBeVisible()
+    await expect(page.locator('.checks .is-ok', { hasText: 'Opening 10,000.00 + in 2,000.00 − out 5,000.00 = closing 7,000.00, as the file says' })).toBeVisible()
+    await page.getByRole('button', { name: /^Add signed amount/ }).click()
+    await expect(page.locator('.checks .is-ok', { hasText: 'Every Closing Balance follows from the row above' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Run query' })).toBeVisible({ timeout: 60_000 })
+    await page.getByRole('main').getByRole('button', { name: 'Save view' }).click()
+    await page.fill('#view-name', 'Statement tidy')
+    await page.locator('.modal .btn-primary').click()
+    await expect(page.locator('.side-view')).toContainText('Statement tidy')
+    await periodKept(page)
+
+    // May's statement, with its 1,300.00 groceries line missing (its footer still counts it).
+    await page.reload()
+    await expect(page.locator('.engine-pill.is-ready')).toBeVisible({ timeout: 90_000 })
+    const may = [head, ',Opening Balance,,,"7,000.00"', '03/05/24,Salary,,"50,000.00","57,000.00"', '06/05/24,UPI to Ravi,700.00,,"56,300.00"',
+      '20/05/24,Rent,"3,000.00",,"52,000.00"', ',,,,', ',Total,"5,000.00","50,000.00",', ',Closing Balance,,,"52,000.00"']
+    await page.locator('input[type=file]').setInputFiles([file('stmt_may.csv', `${may.join('\n')}\n`)])
+    await page.locator('.toast', { hasText: 'Your view “Statement tidy” fits stmt_may' }).getByRole('button', { name: 'Run it' }).click()
+    await expect(page.locator('.toast', { hasText: /Ran “Statement tidy” on stmt_may: \d+ steps, shown above the rows · 3 rows \(stmt_apr had 4\)/ })).toBeVisible()
+    // It opens where April closed (7,000.00): no statement missing in between.
+    await expect(page.locator('.checks .is-ok', { hasText: 'Opens at 7,000.00, where stmt_apr closed' })).toBeVisible()
+    await expect(page.locator('.checks .is-off', { hasText: 'The totals say Withdrawal Amt. is 5,000.00; the rows come to 3,700.00: 1,300.00 short' })).toBeVisible()
+    await expect(page.locator('.checks .is-off', { hasText: 'Closing Balance on row 3 doesn’t follow from the row above: off by 1,300.00' })).toBeVisible()
+    await expect(page.locator('.checks .is-off', { hasText: 'Opening 7,000.00 + in 50,000.00 − out 3,700.00 comes to 53,300.00, but the closing balance line says 52,000.00: 1,300.00 apart' })).toBeVisible()
+    // A check stays only while its step does: with the total line back, there's no tie-out to show.
+    await page.locator('.op-chip', { hasText: 'Without 1 total line' }).click()
+    await expect(page.locator('.checks', { hasText: 'The totals say' })).toHaveCount(0)
+    await expect(page.locator('.checks', { hasText: 'Closing Balance on row 3' })).toBeVisible()
+  })
+})
+
+test.describe('open bills', () => {
+  test('what each party owes, by how long it has been due', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      "Date,Ref. No.,Party's Name,Pending Amount,Due on",
+      '2019-11-01,INV-1,Acme Ltd,"11,800.00 Dr",2020-01-01',
+      '2019-12-01,INV-2,Beta,"2,000.00 Dr",2020-02-01',
+      '2026-09-01,INV-9,Acme Ltd,"5,000.00 Dr",2099-01-01',
+    ]
+    await page.locator('input[type=file]').setInputFiles([file('receivables.csv', `${csv.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    // American English (these tests' reader): aging, as of. India's reader sees ageing, as on.
+    await page.getByRole('button', { name: "Aging by Party's Name" }).click()
+    // As of a day (today to start with): the month's last day for month-end.
+    const dialog = page.getByRole('dialog', { name: "Pending Amount by Party's Name" })
+    await expect(dialog.getByLabel('As of')).toBeFocused()
+    // The days a month-end asks about are a click away.
+    await dialog.getByRole('button', { name: /^Month end/ }).click()
+    await expect(dialog.getByRole('button', { name: /^Month end/ })).toHaveAttribute('aria-pressed', 'true')
+    await dialog.getByLabel('As of').fill('2026-09-30')
+    await dialog.getByRole('button', { name: 'Show the aging' }).click()
+    await expect(page.locator('.origin-chip')).toContainText("Aging by Party's Name as of")
+    await expect(page.locator('.result-meta')).toContainText('3 rows · 10 columns')
+    const header = page.locator('.sr-grid [role=columnheader]')
+    await expect(header.nth(1)).toContainText('Not yet due')
+    await expect(header.nth(6)).toContainText('Over 180 days')
+    const acme = page.locator('.sr-grid [role=row]').nth(1)
+    await expect(acme).toContainText('Acme Ltd')
+    await expect(acme).toContainText('5,000')
+    await expect(acme).toContainText('11,800')
+    await expect(page.locator('.sr-grid [role=row]').nth(3)).toContainText('Total')
+  })
+})
+
+test.describe('a bank’s own export', () => {
+  test('the statement summary below the transactions is offered for leaving out, with the balance lines', async ({ page }) => {
+    await openApp(page)
+    const rows = [
+      'Date,Narration,Chq./Ref.No.,Value Dt,Withdrawal Amt.,Deposit Amt.,Closing Balance',
+      ...Array.from({ length: 9 }, (_, i) => `0${i + 1}/04/24,UPI-${i},00004123${i},0${i + 1}/04/24,100.00,,"${(9900 - i * 100).toLocaleString('en-IN')}.00"`),
+      ',,,,,,',
+      'STATEMENT SUMMARY :-,,,,,,',
+      'Opening Balance,Dr Count,Cr Count,Debits,Credits,Closing Bal,',
+      '"10,000.00",9,0,900.00,0.00,"9,100.00",',
+      'Generated On: 18/10/2026,,,,,,',
+    ]
+    await page.locator('input[type=file]').setInputFiles([file('hdfc.csv', `${rows.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('14 rows')
+    await page.getByRole('button', { name: /^Leave out .*4 undated lines/ }).click()
+    await expect(page.locator('.result-meta')).toContainText('9 of 14 rows')
+  })
+
+  test('title lines above and a summary below, neither padded to the table’s width: read from the names between', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      'HDFC BANK Ltd.',
+      'Statement of account',
+      'SHARMA TRADERS PVT LTD,Account No :50100123456789',
+      'Statement From : 01/04/2026 To : 30/04/2026',
+      '',
+      'Date,Narration,Chq./Ref.No.,Value Dt,Withdrawal Amt.,Deposit Amt.,Closing Balance',
+      '01/04/2026,OPENING BALANCE,,01/04/2026,,,"1,25,000.00"',
+      '02/04/2026,NEFT CR-ABC ENTERPRISES,N092261234567,02/04/2026,,"50,000.00","1,75,000.00"',
+      '03/04/2026,CHQ PAID-RAMESH SUPPLIERS,000100231,03/04/2026,"25,000.00",,"1,50,000.00"',
+      '05/04/2026,UPI-RENT APR-KAPOOR ESTATES,UPI611234,05/04/2026,"18,000.00",,"1,32,000.00"',
+      '',
+      'STATEMENT SUMMARY :-',
+      'Opening Balance,Dr Count,Cr Count,Debits,Credits,Closing Bal',
+      '"1,25,000.00",2,1,"43,000.00","50,000.00","1,32,000.00"',
+    ].join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('hdfc_apr.csv', `${csv}\n`)])
+    await expect(page.locator('.toast', { hasText: 'Left out 5 title lines above the column names in hdfc_apr.csv' })).toBeVisible()
+    await expect(page.locator('.result-meta')).toContainText('7 columns')
+    await expect(page.locator('.sr-grid [role=columnheader]').nth(1)).toContainText('Narration')
+    await page.getByRole('button', { name: /^Leave out .*undated lines/ }).click()
+    await expect(page.locator('.result-meta')).toContainText(/^3 of \d+ rows/)
+  })
+
+  test('a title over a table without names keeps every row (no line of data taken for the names)', async ({ page }) => {
+    await openApp(page)
+    await page.locator('input[type=file]').setInputFiles([file('sensor.csv', 'Sensor export 2024\n1.5,2,3\n4.5,5,6\n7.5,8,9\n10.5,11,12\n')])
+    await expect(page.locator('.result-meta')).toContainText(/^4 rows · 3 columns/)
+    await expect(page.locator('.toast', { hasText: 'title line' })).toHaveCount(0)
+  })
+})
+
+test.describe('a register from the books', () => {
+  test('a QuickBooks register’s Debit is money in: its signed amount and balance check go that way', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      'Date,Type,Num,Name,Memo,Split,Debit,Credit,Balance',
+      '2024-07-01,Deposit,,Acme Corp,Invoice 1001,Accounts Receivable,"1,723.10",,"11,723.10"',
+      '2024-07-03,Check,1042,Office Depot,Supplies,Office Expenses,,250.00,"11,473.10"',
+      '2024-07-05,Deposit,,Globex,Invoice 1002,Accounts Receivable,"3,000.00",,"14,473.10"',
+      '2024-07-09,Check,1043,City Power,Electric,Utilities,,410.25,"14,062.85"',
+    ]
+    await page.locator('input[type=file]').setInputFiles([file('checking.csv', `${csv.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('4 rows')
+    await page.getByRole('button', { name: 'Add signed amount (Debit − Credit)' }).click()
+    await expect(page.locator('.checks .is-ok', { hasText: 'Every Balance follows from the row above (3 rows checked)' })).toBeVisible()
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('1,723.10')
+  })
+})
+
+test.describe('statements as banks write them', () => {
+  test('one Amount and a Dr / Cr column is split into money in and out, then summed by month', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      'Txn Date,Description,Amount,Dr / Cr,Balance',
+      '13/09/2026,Salary,"50,000.00",CR,"60,000.00"',
+      '15/09/2026,Rent,"20,000.00",DR,"40,000.00"',
+      '20/09/2026,Charges,118.00,DR,"39,882.00"',
+      '14/10/2026,Refund,500.00,CR,"40,382.00"',
+    ].join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('kotak.csv', `${csv}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('4 rows')
+    await page.getByRole('button', { name: 'Split Amount into money in and out (by Dr / Cr)' }).click()
+    await expect(page.locator('.op-chip', { hasText: 'money_in' })).toBeVisible()
+    // A statement now: its signed amount, and then the summary, as for any statement.
+    await page.getByRole('button', { name: /^Add signed amount/ }).click()
+    await page.getByRole('button', { name: 'Money in and out by month' }).click()
+    const sept = page.locator('.sr-grid [role=row]').nth(1)
+    await expect(sept).toContainText('2026-09-01')
+    await expect(sept).toContainText('50,000.00')
+    await expect(sept).toContainText('20,118.00')
+  })
+
+  test('title lines Excel padded to the table’s width are left out; the statement reads as one', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      'HDFC BANK Ltd.,,,,',
+      'Statement of account,,,,',
+      'Account No: 50100012345678,,,,',
+      ',,,,',
+      'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance',
+      '01/09/26,Salary,,"50,000.00","60,000.00"',
+      '03/09/26,Rent,"20,000.00",,"40,000.00"',
+      '04/09/26,UPI-Swiggy,450.00,,"39,550.00"',
+    ].join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('hdfc.csv', `${csv}\n`)])
+    await expect(page.locator('.toast', { hasText: 'title lines above the column names in hdfc.csv' })).toBeVisible()
+    await expect(page.locator('.result-meta')).toContainText('3 rows · 5 columns')
+    await expect(page.getByRole('button', { name: /^Add signed amount/ })).toBeVisible()
   })
 })

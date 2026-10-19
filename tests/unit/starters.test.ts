@@ -55,3 +55,37 @@ test('an amount stored as text is no category; a category named like one still i
   expect(startersFor('sales', [cols[1], cols[2]], 1000).some((s) => s.label.includes('by Unit Rate'))).toBe(false)
   expect(startersFor('costs', [{ name: 'Cost Centre', type: 'VARCHAR', distinct: 6 }, cols[2]], 1000)[0].label).toBe('Qty by Cost Centre')
 })
+
+test('a statement’s amounts stored as text are no categories, however they are written', () => {
+  const statement = ['Narration', 'Withdrawal Amt.', 'Deposit Amt.', 'Amount (INR)', 'Dr/Cr'].map((name, i) => ({ name, type: 'VARCHAR', distinct: 3 + i }))
+  const labels = startersFor('stmt', statement, 500).map((s) => s.label)
+  expect(labels.filter((l) => /^Rows by (Withdrawal|Deposit|Amount)/.test(l))).toEqual([])
+})
+
+test('an amount still written as text is summed as a number, not passed over for the quantity', async () => {
+  await q(`CREATE OR REPLACE TABLE qbr AS SELECT ['Acme', 'Beta', 'Cyan'][1 + i % 3] AS customer, (i % 7 + 1) AS qty, '1,' || lpad((i * 37 % 1000)::VARCHAR, 3, '0') || '.50' AS "Amount" FROM range(30) t(i)`)
+  const cols = (await columnsOf('qbr')).map((c) => (c.name === 'Amount' ? { ...c, comma: false } : c))
+  const starters = startersFor('qbr', cols, 30)
+  expect(starters.map((s) => s.label)).toEqual(['Amount by customer', 'Top 10 by Amount', 'Summary of every column'])
+  const rows = await q(starters[0].sql)
+  expect(rows.reduce((n, r) => n + Number(r.total_amount), 0)).toBeGreaterThan(30_000)
+  // Written with decimal commas: read that way. And when nothing says which, not offered at all.
+  expect(startersFor('qbr', cols.map((c) => (c.name === 'Amount' ? { ...c, comma: true } : c)), 30)[0].sql).toContain('number_from_text_comma("Amount")')
+  expect(startersFor('qbr', cols.map((c) => (c.name === 'Amount' ? { ...c, comma: null } : c)), 30)[0].label).toBe('qty by customer')
+})
+
+test('on tidied rows, every example runs and leaves the total line out, a quoted table name too', async () => {
+  const { onTidied } = await import('../../src/components/starters')
+  const { compose, emptyOps } = await import('../../src/engine/compose')
+  await q(`CREATE OR REPLACE TABLE "sales apr" AS SELECT * FROM (VALUES ('North', 10.0), ('South', 20.0), ('Total', 30.0)) t(region, amount)`)
+  const tidied = compose('SELECT * FROM "sales apr"', { ...emptyOps(), drop: [{ label: '1 total line', keep: `region <> 'Total'`, kind: 'totals' }] })
+  const cols = [
+    { name: 'region', type: 'VARCHAR', distinct: 2 },
+    { name: 'amount', type: 'DECIMAL(3,1)', distinct: 3 },
+  ]
+  const list = onTidied(startersFor('sales apr', cols, 2), 'sales apr', tidied, 1)
+  expect(list.map((s) => s.label)).toContain('Summary of every column')
+  for (const s of list) await q(s.sql)
+  const byRegion = list.find((s) => s.label === 'amount by region')!
+  expect((await q(byRegion.sql)).map((r) => r.region).sort()).toEqual(['North', 'South'])
+})

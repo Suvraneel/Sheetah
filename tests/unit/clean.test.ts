@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
-import { addClean, dataSumsSql, fillDownSql, looksFilledDown, labelSumsSql, totalsAgree, percentColumns, cleanExpr, describeClean, eitherJunk, junkPredicates, cleanSql, confidentConversion, readStats, statsSql, suggestCleaning, type Clean } from '../../src/engine/clean'
+import { addClean, percentColumns, cleanExpr, describeClean, cleanSql, type Clean } from '../../src/engine/clean'
+import { dataSumsSql, fillDownSql, looksFilledDown, labelSumsSql, totalsAgree, eitherJunk, junkPredicates, confidentConversion, readStats, statsSql, maybeNumbersSql, suggestCleaning, decimalsSql, fileDecimalComma } from '../../src/engine/clean-scan'
 import { compose, emptyOps } from '../../src/engine/compose'
 import { q } from './duck'
 
@@ -20,6 +21,14 @@ test.describe('clean a column (run on DuckDB)', () => {
   test('numbers stored as text: currency, separators, Indian grouping, accounting negatives', async () => {
     expect(await clean({ kind: 'number' }, ['₹ 1,234.50', '$99', ' 12 ', '1,00,000', '(1,200)', 'n/a', null])).toEqual(['1234.5', '99.0', '12.0', '100000.0', '-1200.0', null, null])
     expect(await clean({ kind: 'percent' }, ['12%', '7.5 %'])).toEqual(['0.12', '0.075'])
+    // A statistics office's figures: marks after them, thousands grouped by spaces; placeholders stay empty.
+    expect(await clean({ kind: 'number' }, ['92,338[note 3]', '108,021 (p)', '56*', '1 234 567', '55 259 929.5', 'x', '..', '[x]', '98200 12345'])).toEqual([
+      '92338.0', '108021.0', '56.0', '1234567.0', '55259929.5', null, null, null, null,
+    ])
+    expect(await clean({ kind: 'number', comma: true }, ['1 234,5 (r)', '718.420[note 1]'])).toEqual(['1234.5', '718420.0'])
+    // Several marks; marks after a percent sign; a negative in brackets with a mark.
+    expect(await clean({ kind: 'number' }, ['1,234 [note 3] (p)', '(250) (p)'])).toEqual(['1234.0', '-250.0'])
+    expect(await clean({ kind: 'percent' }, ['12.5% (p)', '12.5%*'])).toEqual(['0.125', '0.125'])
   })
 
   test('a separator in the wrong place is never read as a thousands separator', async () => {
@@ -52,7 +61,7 @@ test.describe('clean a column (run on DuckDB)', () => {
 
   test('suggestions follow the data', async () => {
     expect((await suggestionsFor(['₹1,200', '₹950', '₹3,400'])).map((s) => s.label)).toEqual(['Convert to number'])
-    expect((await suggestionsFor(['12.5', '3', 'x', '4', '5', '6', '7', '8', '9', '10']))[0]).toMatchObject({ label: 'Convert to number', note: expect.stringContaining('1 of 10') })
+    expect((await suggestionsFor(['12.5', '3', 'pending', '4', '5', '6', '7', '8', '9', '10']))[0]).toMatchObject({ label: 'Convert to number', note: expect.stringContaining('1 of 10') })
     expect((await suggestionsFor(['10%', '12.5%'])).map((s) => s.clean.kind)).toEqual(['percent'])
     // A day above 12 settles the layout; otherwise both are offered, the reader's own first.
     expect((await suggestionsFor(['25/01/2024', '03/02/2024'])).map((s) => s.clean.format)).toEqual(['%d/%m/%Y'])
@@ -73,8 +82,35 @@ test.describe('clean a column (run on DuckDB)', () => {
     expect(de[0]).toMatchObject({ clean: { kind: 'number', comma: true }, label: 'Convert to number (decimal comma)' })
     expect((await suggestionsFor(['1.234,56', '€ 7,10'])).map((s) => s.clean.comma)).toEqual([true])
     expect((await suggestionsFor(['1,234', '5,678'], 'de-DE'))[0].clean.comma).toBe(true)
+    // …but said, and never one click: a UK file's 194,661 in a German browser would be 1000× too small.
+    const uk = await suggestionsFor(['194,661', '61,234', '12'], 'de-DE')
+    expect(uk[0].note).toContain('read with a decimal comma')
+    expect(confidentConversion(uk)).toBeNull()
+    expect(confidentConversion(await suggestionsFor(['194,661', '12'], 'en-GB'))).toMatchObject({ kind: 'number', comma: false })
     expect((await suggestionsFor(['1,234', '5,678'], 'en-IN'))[0].clean.comma).toBe(false)
     expect((await suggestionsFor(['1,234', '5.5'], 'de-DE'))[0].clean.comma).toBe(false)
+    // 0,750 and 1,2345 are never a thousands separator: kilograms to three places are decimals.
+    expect((await suggestionsFor(['1,500', '0,750', '10,125'], 'en-GB'))[0].clean.comma).toBe(true)
+    expect((await suggestionsFor(['1,500', '1,2345'], 'en-GB'))[0].clean.comma).toBe(true)
+    expect((await suggestionsFor(['1.500', '0.750'], 'de-DE'))[0].clean.comma).toBe(false)
+  })
+
+  test('a column that can’t tell is read the way the file’s other columns write decimals', async () => {
+    await q(`CREATE OR REPLACE TABLE eu AS SELECT * FROM (VALUES ('1,500', '2,49'), ('10,125', '1,99')) t(kg, preis)`)
+    const [row] = await q(decimalsSql('eu', ['"kg"', '"preis"']))
+    const file = fileDecimalComma([{ name: 'kg', s: readStats(row, 0) }, { name: 'preis', s: readStats(row, 1) }])
+    expect(file).toBe(true)
+    const [kg] = await q(statsSql('eu', ['"kg"']))
+    expect(suggestCleaning('kg', readStats(kg, 0), 'en-GB', true, file)[0].clean.comma).toBe(true)
+    expect(suggestCleaning('kg', readStats(kg, 0), 'en-GB')[0].clean.comma).toBe(false)
+    const n = (pointOnly: number, commaOnly: number) => ({ values: 4, numbers: 4, commaNumbers: 4, pointOnly, commaOnly })
+    expect(fileDecimalComma([{ name: 'a', s: n(2, 0) }, { name: 'b', s: n(0, 3) }])).toBe(undefined)
+    expect(fileDecimalComma([{ name: 'a', s: n(0, 0) }])).toBe(undefined)
+    // Codes in a cell (two phone numbers, a list of invoice numbers) say nothing about decimals.
+    await q(`CREATE OR REPLACE TABLE codes AS SELECT * FROM (VALUES ('9876543210,9123456780', '1001,1002', 'Acme'), ('9876500000', '1003', 'Beta')) t(phones, refs, customer)`)
+    const [c] = await q(decimalsSql('codes', ['"phones"', '"refs"', '"customer"']))
+    expect(fileDecimalComma(['phones', 'refs', 'customer'].map((name, i) => ({ name, s: readStats(c, i) })))).toBe(undefined)
+    expect(readStats(c, 0).commaOnly + readStats(c, 1).commaOnly).toBe(0)
   })
 
   test('cleaning composes first, so filters and sorting see the converted values', async () => {
@@ -136,6 +172,21 @@ test.describe('what counts as numbers stored as text', () => {
     }
   })
 
+  test('dates that read both ways convert in one click the reader’s way; a column of other dates isn’t forced', async () => {
+    expect(confidentConversion(await suggestionsFor(['01/04/24', '05/04/24', '12/04/24'], 'en-IN'))).toMatchObject({ kind: 'date', format: '%d/%m/%y' })
+    expect(confidentConversion(await suggestionsFor(['01/04/2024', '05/04/2024'], 'en-US'))).toMatchObject({ kind: 'date', format: '%m/%d/%Y' })
+    expect(confidentConversion(await suggestionsFor(['25/04/24', '30/04/24'], 'en-US'))).toMatchObject({ kind: 'date', format: '%d/%m/%y' })
+  })
+
+  test('a column of figures with placeholders (x, .., :) converts in one click; the placeholders become empty, said', async () => {
+    const s = await suggestionsFor(['1,200', 'x', '350', '..', ':', '4,100'], 'en-GB')
+    expect(s[0]).toMatchObject({ clean: { kind: 'number' }, quiet: true })
+    expect(s[0].note).toContain('placeholders for no figure')
+    expect(confidentConversion(s)).toMatchObject({ kind: 'number' })
+    // Something else among them: still said, never one click.
+    expect(confidentConversion(await suggestionsFor(['1,200', 'x', '350', 'pending review', '4,100', '9'], 'en-GB'))).toBeNull()
+  })
+
   test('one query covers every column', async () => {
     await q(`CREATE OR REPLACE TABLE multi AS SELECT * FROM (VALUES ('₹1,200', ' x', '15/08/2024'), ('₹950', 'y', '16/08/2024')) t(a, b, c)`)
     const [row] = await q(statsSql('multi', ['a', 'b', 'c']))
@@ -186,6 +237,18 @@ test('total lines and empty rows are found and left out before cleaning', async 
     count(*) FILTER (WHERE ${total.drop})::INT AS total, count(*) FILTER (WHERE ${total.keep} AND ${p.blank.keep})::INT AS kept FROM rep`)
   // "Total" filling a whole row (a fuel brand) and "Total" outside the first text column are data.
   expect(counts).toEqual({ blank: 2, strong: 2, total: 3, kept: 6 })
+  // Unnamed columns (no names given) keep to the first text column; a first column of dates or codes
+  // (dates not converted yet, a Ref. No.) has its label looked for in the next one that names things.
+  const named = junkPredicates([
+    { ref: '"Date"', text: true, name: 'Date' },
+    { ref: '"Particulars"', text: true, name: 'Particulars' },
+    { ref: '"Debit"', text: true, name: 'Debit' },
+  ])
+  expect(named.label!.drop).toBe('(is_total_label("Date") OR is_total_label("Particulars"))')
+  expect(junkPredicates([{ ref: '"Ref. No."', text: true, name: 'Ref. No.' }, { ref: '"Party\'s Name"', text: true, name: "Party's Name" }]).label!.keep).toBe(
+    '(NOT is_total_label("Ref. No.") AND NOT is_total_label("Party\'s Name"))',
+  )
+  expect(junkPredicates([{ ref: '"Region"', text: true, name: 'Region' }, { ref: '"Item"', text: true, name: 'Item' }]).label!.drop).toBe('is_total_label("Region")')
   const drop = [
     { label: '3 total lines', keep: total.keep },
     { label: '2 empty rows', keep: p.blank.keep },
@@ -259,7 +322,7 @@ test('a column of amounts with a footer among them is still offered, saying how 
   await q(`CREATE OR REPLACE TABLE fo AS SELECT unnest([${values.map((v) => `'${v}'`).join(', ')}]) AS "Withdrawal"`)
   const [row] = await q(statsSql('fo', ['"Withdrawal"']))
   const s = suggestCleaning('Withdrawal', readStats(row, 0), 'en-IN')
-  expect(s[0]).toMatchObject({ label: 'Convert to number anyway', note: '2 of 8 sampled values aren’t numbers and become empty' })
+  expect(s[0]).toMatchObject({ label: 'Convert to number anyway', note: '2 of 8 values aren’t numbers and become empty' })
   // Never the one-click suggestion: that's for columns that are numbers through and through.
   expect(confidentConversion(s)).toBeNull()
 })
@@ -278,4 +341,92 @@ test('bank-statement amounts marked Cr and Dr read as plus and minus, and the su
   expect(s[0]).toMatchObject({ label: 'Convert to number (Cr +, Dr −)', note: expect.stringContaining('Cr counts as plus') })
   // Checked by hand first: never the one-click suggestion.
   expect(confidentConversion(s)).toBeNull()
+  // A balance in credit all month is all Cr (SBI, Axis): read as the bank means it when the column is a balance.
+  const allCr = ['2,11,150.00 Cr', '2,01,150.00 Cr', '1,99,500.00 Cr']
+  expect(await suggestionsFor(allCr, undefined, 'Balance')).toContainEqual(expect.objectContaining({ label: 'Convert to number (Cr +, Dr −)' }))
+  expect(await suggestionsFor(allCr, undefined, 'Amount')).not.toContainEqual(expect.objectContaining({ label: 'Convert to number (Cr +, Dr −)' }))
 })
+
+test('a report’s “Total for Acme Corp” is a total label; a product called Total Gym is not', async () => {
+  const rows = await q(
+    `SELECT v, is_total_label(v) AS t FROM (VALUES ('Total for Acme Corp'), ('TOTAL'), ('North Total'), ('Total of Region'), ('Total Gym 2000'), ('Totally')) x(v)`,
+  )
+  expect(rows.map((r) => [r.v, r.t])).toEqual([
+    ['Total for Acme Corp', true],
+    ['TOTAL', true],
+    ['North Total', true],
+    ['Total of Region', true],
+    ['Total Gym 2000', false],
+    ['Totally', false],
+  ])
+})
+
+test('a conversion is checked over the whole column: values written another way are counted, placeholders aren’t', async () => {
+  const { lossesSql } = await import('../../src/engine/clean-scan')
+  const { cleanExpr } = await import('../../src/engine/clean')
+  await q(`CREATE OR REPLACE TABLE amounts_far AS SELECT * FROM (VALUES ('₹1,200.00'), ('₹15,00,000.50'), ('n/a'), (''), (NULL), ('Rs. 25,000.00'), ('1,500.00-')) t(amount)`)
+  const sql = lossesSql('amounts_far', [{ ref: 'amount', expr: cleanExpr({ column: 'amount', kind: 'number' }) }])
+  const [row] = await q(sql)
+  // Rs. and a trailing minus are read too: nothing lost; n/a and blanks aren't counted.
+  expect(Number(row.l0)).toBe(0)
+  await q(`INSERT INTO amounts_far VALUES ('12 apples')`)
+  expect(Number((await q(sql))[0].l0)).toBe(1)
+  const read = await q(`SELECT list(number_from_text(amount) ORDER BY rowid) AS v FROM amounts_far`)
+  expect(JSON.parse(JSON.stringify(read[0].v))).toEqual([1200, 1500000.5, null, null, null, 25000, -1500, null])
+  const more = await q(`SELECT number_from_text('INR 7,500') AS a, number_from_text('1,200/-') AS b, number_from_text('USD 99.95') AS c, number_from_text('2024-04-01') AS d`)
+  expect(more[0]).toEqual({ a: 7500, b: 1200, c: 99.95, d: null })
+  // Not a currency, not a minus: a part number, a year or a range written with a dash.
+  const not = await q(`SELECT number_from_text('RS-485') AS a, number_from_text('RS232') AS b, number_from_text('2024-') AS c, number_from_text('60-') AS d, number_from_text_comma('1.500,00-') AS e`)
+  expect(not[0]).toEqual({ a: null, b: null, c: null, d: null, e: -1500 })
+})
+
+test('a column’s counts are the same when only values that could be a number or a date are worked out as one', async () => {
+  const values = [
+    '₹ 1,234.50', '$99', ' 12 ', '1,00,000', '(1,200)', 'n/a', '92,338[note 3]', '108,021 (p)', '56*', '1 234 567', 'x', '..',
+    'Rs. 25,000.00', 'INR 7,500', 'USD 99.95', '1,200/-', '1,500.00-', '50,000.00 Cr', '1,200.00 Dr', '18%', '7,5 %', '1.2E-05',
+    '2024-04-01', '01/04/2024', '04-01-2024', '01.04.2024', '2024/04/01', '01 Apr 2024', '01-Apr-2024', 'Apr 01, 2024',
+    '1 April 2024', 'September 30, 2024', '01/04/24', '01-Apr-24', 'Apr-24', 'Apr-2024', 'Apr 2024', 'April 2024', '2024-04',
+    '007', '0456', 'user_42', 'a@b.c', '10:30', 'INV-0042', 'Pune', '', '  two  spaces ', 'Total', '1,234', '1.234', '12,5', '0,750',
+    // What the engine alone would read as a figure (NaN, 1_000), notes with odd characters, and a tab.
+    'NaN', 'nan', 'inf', '-Infinity', 'Infinity%', '1_000', '1,234 [note: 3]', '1,234 [a&b]', '1,234 [x?]', 'Rs. 1,200 (provisional)',
+    '12,345 [note 12] (estimated)', '(see note) Dr', '01\tApr\t2024',
+  ]
+  await q(`CREATE OR REPLACE TABLE gates AS SELECT unnest([${values.map((v) => `'${v.replace(/'/g, "''")}'`).join(', ')}]) AS v`)
+  const sql = statsSql('gates', ['v'], 1000)
+  const [gated] = await q(sql)
+  const [every] = await q(sql.replace(/CASE WHEN __(num|date) THEN/g, 'CASE WHEN true THEN'))
+  expect(gated).toEqual(every)
+  expect(Number(gated.c0_numbers)).toBeGreaterThan(10)
+  expect(Number(gated.c0_d0)).toBe(1)
+  // A column none of whose values could be a number is counted the quick way, to the same counts; the first
+  // look says which columns those are.
+  await q(`CREATE OR REPLACE TABLE mails AS SELECT 'p' || range || '@example.com' AS m, ' Pune ' AS city, v FROM range(30), (SELECT v FROM gates LIMIT 1)`)
+  const [looks] = await q(maybeNumbersSql('mails', ['m', 'city', 'v']))
+  expect(looks).toEqual({ m0: false, m1: false, m2: true })
+  expect((await q(statsSql('mails', ['m', 'city'], 5000, [true, true])))[0]).toEqual((await q(statsSql('mails', ['m', 'city'])))[0])
+  // A column called __n, __num or __date is counted like any other.
+  await q(`CREATE OR REPLACE TABLE odd AS SELECT v AS __n, v AS __num, v AS __date FROM gates`)
+  const [odd] = await q(statsSql('odd', ['"__n"', '"__num"', '"__date"'], 1000))
+  expect([odd.c0_numbers, odd.c1_numbers, odd.c2_numbers]).toEqual([gated.c0_numbers, gated.c0_numbers, gated.c0_numbers])
+})
+
+test('NaN, inf and 1_000 aren’t figures; -Infinity isn’t a date', async () => {
+  expect(await clean({ kind: 'number' }, ['NaN', 'inf', '-Infinity', '1_000', '1,234 [note: 3]', '12'])).toEqual([null, null, null, null, '1234.0', '12.0'])
+  expect(await clean({ kind: 'percent' }, ['Infinity%', '18%'])).toEqual([null, '0.18'])
+  expect(await clean({ kind: 'date', format: '%d/%m/%y' }, ['-Infinity', '01/04/24'])).toEqual([null, '2024-04-01'])
+})
+
+test('a column in two date layouts converts each value in its own (never two that read both ways)', async () => {
+  const values = [...Array.from({ length: 12 }, (_, i) => `2026-03-${String(i + 10).padStart(2, '0')}`), ...Array.from({ length: 8 }, (_, i) => `${String(i + 13).padStart(2, '0')}/03/2026`)]
+  const s = await suggestionsFor(values, 'en-IN')
+  const date = s.find((x) => x.clean.kind === 'date')!
+  expect(date.clean).toEqual({ column: 'v', kind: 'date', format: '%Y-%m-%d', formats: ['%d/%m/%Y'] })
+  expect(date.label).toBe('Convert to date (YYYY-MM-DD or DD/MM/YYYY)')
+  expect(date.note).toBeUndefined()
+  expect(confidentConversion(s)).toEqual(date.clean)
+  expect(await clean({ kind: 'date', format: '%Y-%m-%d', formats: ['%d/%m/%Y'] }, ['2026-03-10', '15/03/2026', 'soon'])).toEqual(['2026-03-10', '2026-03-15', null])
+  // DD/MM and MM/DD are one layout read two ways: never put together.
+  const us = await suggestionsFor(['01/02/2026', '02/03/2026', '13/01/2026', '01/13/2026'], 'en-IN')
+  expect(us.some((x) => x.clean.formats)).toBe(false)
+})
+

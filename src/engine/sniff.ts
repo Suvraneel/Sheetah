@@ -33,8 +33,31 @@ export function sniff(head: Uint8Array): FileKind {
   return 'text'
 }
 
+/** What a zip holds, by the names of the files in it (its first entry and its directory at the end). */
+export type ZipInside = 'xlsx' | 'xlsb' | 'docx' | 'pptx' | 'ods' | null
+export function zipInside(bytes: Uint8Array): ZipInside {
+  const s = new TextDecoder('latin1').decode(bytes)
+  // An Excel binary workbook (.xlsb) has xl/ too, its parts .bin.
+  if (/xl\/workbook\.bin|xl\/worksheets\/[^/]*\.bin/.test(s)) return 'xlsb'
+  if (/xl\/workbook\.xml|xl\/worksheets\/[^/]*\.xml/.test(s)) return 'xlsx'
+  if (/word\/document\.xml/.test(s)) return 'docx'
+  if (/ppt\/presentation\.xml/.test(s)) return 'pptx'
+  if (/application\/vnd\.oasis\.opendocument\.spreadsheet/.test(s)) return 'ods'
+  return null
+}
+
+/** Whether bytes read as UTF-8 (a character cut off at the end of the slice doesn't count against them). */
+export function isUtf8(bytes: Uint8Array): boolean {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes, { stream: true })
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Files that aren't tables at all, in plain words; null for the ones worth reading. */
-export function notATable(kind: FileKind, name: string): string | null {
+export function notATable(kind: FileKind, name: string, inside: ZipInside = null): string | null {
   const ext = /\.([a-z0-9]+)$/i.exec(name)?.[1].toLowerCase() ?? ''
   switch (kind) {
     case 'pdf':
@@ -42,12 +65,15 @@ export function notATable(kind: FileKind, name: string): string | null {
     case 'image':
       return `${name} is an image. Sheetah opens tables (CSV, Excel, JSON, Parquet), not pictures of them.`
     case 'zip':
-      if (ext === 'xlsx' || ext === 'xlsm') return null
-      if (ext === 'docx') return `${name} is a Word document. Copy its table into a spreadsheet and save that as .xlsx or CSV.`
-      if (ext === 'pptx') return `${name} is a PowerPoint file. Copy its table into a spreadsheet and save that as .xlsx or CSV.`
-      if (ext === 'ods') return `${name} is an OpenDocument spreadsheet. Save it as .xlsx or CSV and open that.`
+      // What's inside counts for more than the name: a portal's "report.xls" or "export.csv" that is a
+      // workbook, a Word file renamed .xlsx. The name decides only when the inside can't be told.
+      if (inside === 'xlsx') return null
+      if (inside === 'xlsb' || (!inside && ext === 'xlsb')) return `${name} is an Excel binary workbook (.xlsb). Save it as .xlsx or CSV in Excel and open that.`
+      if (!inside && (ext === 'xlsx' || ext === 'xlsm')) return null
+      if (inside === 'docx' || (!inside && ext === 'docx')) return `${name} is a Word document. Copy its table into a spreadsheet and save that as .xlsx or CSV.`
+      if (inside === 'pptx' || (!inside && ext === 'pptx')) return `${name} is a PowerPoint file. Copy its table into a spreadsheet and save that as .xlsx or CSV.`
+      if (inside === 'ods' || (!inside && ext === 'ods')) return `${name} is an OpenDocument spreadsheet. Save it as .xlsx or CSV and open that.`
       if (ext === 'numbers') return `${name} is a Numbers spreadsheet. Export it as CSV or Excel and open that.`
-      if (ext === 'xlsb') return `${name} is an Excel binary workbook (.xlsb). Save it as .xlsx or CSV in Excel and open that.`
       return `${name} is a zip archive. Unzip it and open the CSV or Excel file inside.`
     case 'ole':
       // A password (or a sensitivity label) wraps an .xlsx in this older container.
@@ -60,4 +86,100 @@ export function notATable(kind: FileKind, name: string): string | null {
     default:
       return null
   }
+}
+
+/** A line's fields by a separator, quotes respected ("Acme, Inc" is one). */
+function fields(line: string, sep: string): number {
+  let n = 1
+  let quoted = false
+  for (const ch of line) {
+    if (ch === '"') quoted = !quoted
+    else if (ch === sep && !quoted) n++
+  }
+  return n
+}
+
+/** Whether a line's first field has something in it. */
+function firstFilled(line: string, sep: string): boolean {
+  let quoted = false
+  let cur = ''
+  for (const ch of line) {
+    if (ch === '"') quoted = !quoted
+    else if (ch === sep && !quoted) break
+    else cur += ch
+  }
+  return cur.trim() !== ''
+}
+
+/** How many of a line's fields have something in them ("HDFC BANK Ltd.,,,,,," has one). */
+function filled(line: string, sep: string): number {
+  let n = 0
+  let quoted = false
+  let cur = ''
+  for (const ch of `${line}${sep}`) {
+    if (ch === '"') quoted = !quoted
+    else if (ch === sep && !quoted) {
+      if (cur.trim()) n++
+      cur = ''
+    } else cur += ch
+  }
+  return n
+}
+
+/**
+ * A report's title lines above its table, written without separators ("Sales by Customer Detail", "Acme
+ * Inc", "January 2024"): the file reader takes the first as the only column. The separator and how many
+ * lines come before the column names (the first line with as many fields as most of the lines), or null.
+ */
+export function titleLines(text: string, headerFirst = false): { sep: string; skip: number; fields: number } | null {
+  const lines = text.split(/\r?\n/).slice(0, 60).filter((l, i, all) => l.trim() !== '' || i < all.length - 1)
+  for (const sep of [',', ';', '\t', '|']) {
+    const counts = lines.map((l) => (l.trim() ? fields(l, sep) : 0))
+    const tally = new Map<number, number>()
+    for (const c of counts) if (c > 1) tally.set(c, (tally.get(c) ?? 0) + 1)
+    const [common, times] = [...tally].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0] ?? [0, 0]
+    if (common < 2 || times < 2) continue
+    // Title lines have no separator at all; the column names are the first line with them, as many as most.
+    const skip = counts.findIndex((c) => c > 1)
+    if (skip > 0 && counts[skip] === common && counts.slice(0, skip).every((c) => c <= 1)) return { sep, skip, fields: common }
+    // Or they have them, all empty but the first: a title saved from Excel is padded to the table's width
+    // ("HDFC BANK Ltd.,,,,,,"). The names are the first line with two or more filled, as wide as most.
+    const named = counts.findIndex((c, i) => c === common && filled(lines[i], sep) >= 2)
+    // (The title in the first field: ",amount" or "","x" — a one-column frame's header as pandas or R writes
+    // it — is names, not a title.)
+    if (named > 0 && lines.slice(0, named).every((l) => filled(l, sep) <= 1 && (filled(l, sep) === 0 || firstFilled(l, sep)))) return { sep, skip: named, fields: common }
+    // (Or, asked for when the file reader gave up on a file whose names are its first line: group names
+    // without separators between its rows, a QuickBooks report exported without its titles.)
+    if (headerFirst && skip === 0 && counts[0] === common) return { sep, skip: 0, fields: common }
+  }
+  return titledWithSeparators(lines)
+}
+
+/**
+ * Last, a title line with a separator in it ("SHARMA TRADERS PVT LTD,Account No :5010…"): lines of at most half
+ * as many fields as the names have, above names filled in (most of them) that the lines after them follow.
+ * Not when another separator reads the first line as the table's own width (a TSV whose text has commas), nor
+ * for a short header over rows padded with separators (Name,Amount over Asha,100,,,,).
+ */
+function titledWithSeparators(lines: string[]): { sep: string; skip: number; fields: number } | null {
+  const shape = (sep: string) => {
+    const counts = lines.map((l) => (l.trim() ? fields(l, sep) : 0))
+    const tally = new Map<number, number>()
+    for (const c of counts) if (c > 1) tally.set(c, (tally.get(c) ?? 0) + 1)
+    const [common] = [...tally].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0] ?? [0]
+    return { counts, common }
+  }
+  const seps = [',', ';', '\t', '|']
+  if (seps.some((sep) => { const { counts, common } = shape(sep); return common >= 2 && counts[0] === common })) return null
+  for (const sep of seps) {
+    const { counts, common } = shape(sep)
+    if (common < 4) continue
+    const named = counts.findIndex((c, i) => c === common && filled(lines[i], sep) > common / 2)
+    if (named <= 0 || !counts.slice(0, named).every((c) => c <= common / 2)) continue
+    // The table under the names: the lines up to the first empty one (a summary may follow it).
+    const end = counts.indexOf(0, named + 1)
+    const body = counts.slice(named + 1, end < 0 ? undefined : end)
+    if (body.length >= 2 && body.filter((c) => c === common).length >= 0.8 * body.length) return { sep, skip: named, fields: common }
+  }
+  return null
 }

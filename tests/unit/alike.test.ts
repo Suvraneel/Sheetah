@@ -7,7 +7,7 @@ test('one value written two ways is offered for merging into the common spelling
   const found = lookAlikes([v('Hyderabad', 40), v('Mumbai', 55), v('Hydrabad', 3), v('new delhi', 2), v('New Delhi', 30), v('Pune', 12)])
   expect(found).toEqual([
     { from: 'Hydrabad', to: 'Hyderabad', fromRows: 3, toRows: 40 },
-    { from: 'new delhi', to: 'New Delhi', fromRows: 2, toRows: 30 },
+    { from: 'new delhi', to: 'New Delhi', fromRows: 2, toRows: 30, same: true },
   ])
 })
 

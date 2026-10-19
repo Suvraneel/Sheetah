@@ -1,7 +1,6 @@
 import { DataType, type Table } from 'apache-arrow'
-import { CancelledError, RESULTS_SCHEMA, ensureExtension, getEngine, isCancel, quoteIdent, quoteLiteral, restorePseudonym, sandboxPath, sendAll, withRunLock } from './db'
-import { confidentConversion, dataSumsSql, eitherJunk, fillDownSql, isTextColumn, looksFilledDown, junkPredicates, labelSumsSql, totalsAgree, readStats, statsSql, suggestCleaning, type Clean, type CleanSuggestion, type DropRows } from './clean'
-import { LOCALE, isNumericType, splitStatements } from './sql'
+import { CancelledError, RESULTS_SCHEMA, ensureExtension, foreground, getEngine, isCancel, quoteIdent, quoteLiteral, restorePseudonym, sandboxPath, sendAll, unshadow, withRunLock } from './db'
+import { isNumericType, pasteSafe, splitStatements } from './sql'
 
 export { CancelledError, cancelRunning } from './db'
 export { splitStatements } from './sql'
@@ -76,6 +75,8 @@ const alive: string[] = []
 const held = new Map<string, number>()
 
 async function dropResult(table: string) {
+  // Only Sheetah's own copies: never a table of the user's (shown as it is).
+  if (!table.startsWith(`${RESULTS_SCHEMA}.`)) return
   const { conn } = await getEngine()
   await conn.query(`DROP TABLE IF EXISTS ${table}`).catch(() => {})
 }
@@ -116,7 +117,21 @@ export function runSql(sql: string, opts: { isCurrent?: () => boolean } = {}): P
   return withRunLock(async () => {
     // Queued behind a file load or another query and superseded meanwhile: don't run it at all.
     if (opts.isCurrent && !opts.isCurrent()) throw new CancelledError()
-    return runLocked(sql)
+    // After every script, whatever it says: no macro may stand in for a built-in or for Sheetah's own (see unshadow).
+    let res: ResultSet | undefined
+    let failed: unknown
+    try {
+      res = await runLocked(sql)
+    } catch (e) {
+      failed = e
+    }
+    const names = await unshadow().catch(() => [] as string[])
+    if (names.length)
+      throw new Error(
+        `Sheetah doesn’t let a script redefine a built-in function or one of its own (${names.join(', ')}): it would quietly change what Anonymize and the clean-up steps compute. Sheetah’s own were put back.`,
+      )
+    if (failed !== undefined) throw failed
+    return res!
   }, 'query')
 }
 
@@ -131,6 +146,10 @@ async function runLocked(sql: string): Promise<ResultSet> {
   for (const s of statements.slice(0, -1)) await sendAll(s)
   const last = statements[statements.length - 1]
   const id = ++counter
+  // A table read whole (SELECT * FROM sales) is shown from the table itself, not a copy of it: a file of a
+  // gigabyte would take twice the memory on screen, and the next sort would run out.
+  const direct = await ownTable(last)
+  if (direct) return materialised(id, direct, last, started, false)
   const table = `${RESULTS_SCHEMA}.result_${id}`
 
   try {
@@ -166,8 +185,39 @@ async function runLocked(sql: string): Promise<ResultSet> {
   return materialised(id, table, last, started)
 }
 
+/**
+ * The table a plain "SELECT * FROM t" reads, when the grid can show it as it is: a table (not a view), its
+ * row positions 0, 1, 2… with none missing (rows deleted leave gaps), and no column of its own called rowid.
+ */
+async function ownTable(sql: string): Promise<string | null> {
+  const m = /^\s*SELECT\s+\*\s+FROM\s+("(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*)\s*;?\s*$/i.exec(sql)
+  if (!m) return null
+  const name = m[1].startsWith('"') ? m[1].slice(1, -1).replace(/""/g, '"') : m[1]
+  try {
+    // Only where the name means that table: the default database and schema (not after a USE), and no temporary
+    // table of the same name in front of it.
+    const t = (
+      await sendAll(
+        `SELECT table_name AS n FROM information_schema.tables WHERE table_catalog = 'memory' AND table_schema = 'main' AND table_type = 'BASE TABLE' AND lower(table_name) = lower(${quoteLiteral(name)})
+           AND current_database() = 'memory' AND current_schema() = 'main'
+           AND NOT EXISTS (SELECT 1 FROM duckdb_tables() WHERE temporary AND lower(table_name) = lower(${quoteLiteral(name)}))
+           AND NOT EXISTS (SELECT 1 FROM duckdb_views() WHERE temporary AND lower(view_name) = lower(${quoteLiteral(name)}))`,
+      )
+    ).toArray()[0]?.toJSON() as { n: string } | undefined
+    if (!t) return null
+    const table = `memory.main.${quoteIdent(t.n)}`
+    const cols = (await sendAll(`SELECT count(*) FILTER (WHERE lower(column_name) = 'rowid')::INTEGER AS r FROM information_schema.columns WHERE table_schema = 'main' AND table_name = ${quoteLiteral(t.n)}`)).toArray()[0]?.toJSON() as { r: number }
+    if (Number(cols.r)) return null
+    const ok = (await sendAll(`SELECT (count(*) = coalesce(max(rowid) + 1, 0))::INTEGER AS ok FROM ${table}`)).toArray()[0]?.toJSON() as { ok: number }
+    return Number(ok.ok) ? table : null
+  } catch (e) {
+    if (isCancel(e)) throw new CancelledError()
+    return null
+  }
+}
+
 /** Called inside the run lock: the result table is inspected on runConn, after everything queued before it. */
-async function materialised(id: number, table: string, sql: string, started: number): Promise<ResultSet> {
+async function materialised(id: number, table: string, sql: string, started: number, own = true): Promise<ResultSet> {
   const { conn } = await getEngine()
   let columns: ColumnInfo[]
   let rowCount: number
@@ -187,13 +237,14 @@ async function materialised(id: number, table: string, sql: string, started: num
     rowCount = Number(countRes.toArray()[0]?.toJSON().n ?? 0)
   } catch (e) {
     // Cancelled (or failed) after the table was made: don't leave a full copy of the rows behind.
-    void dropResult(table)
+    if (own) void dropResult(table)
     throw isCancel(e) ? new CancelledError() : e
   }
   const elapsedMs = performance.now() - started
 
   // Free older results' memory (the one on screen stays until this one replaces it; held ones until released).
-  alive.push(table)
+  // A table shown as it is isn't a result's to drop.
+  if (own) alive.push(table)
   while (alive.length > 2) {
     const old = alive.shift()!
     if (!held.has(old)) void dropResult(old)
@@ -209,7 +260,7 @@ async function materialised(id: number, table: string, sql: string, started: num
     columns,
     elapsedMs,
     async fetch(start, end) {
-      const res = await conn.query(`SELECT ${select} FROM ${table} WHERE rowid >= ${start} AND rowid < ${end} ORDER BY rowid`)
+      const res = await foreground(() => conn.query(`SELECT ${select} FROM ${table} WHERE rowid >= ${start} AND rowid < ${end} ORDER BY rowid`))
       const vecs = columns.map((_, i) => res.getChildAt(i))
       const out: Row[] = new Array(res.numRows)
       for (let r = 0; r < res.numRows; r++) {
@@ -265,247 +316,6 @@ export async function rangeStats(result: ResultSet, cols: ColumnInfo[], r0: numb
   }
 }
 
-export interface ColumnProfile {
-  column: ColumnInfo
-  nonNull: number
-  nulls: number
-  distinct: number
-  /** False when `distinct` is an estimate (very large results). */
-  distinctExact: boolean
-  min: string | null
-  max: string | null
-  sum: number | null
-  avg: number | null
-  top: { value: string | null; count: number }[]
-}
-
-export async function profileColumn(result: ResultSet, column: ColumnInfo): Promise<ColumnProfile | null> {
-  if (!result.table) return null
-  const { conn } = await getEngine()
-  const c = colRef(column)
-  // Exact up to a million rows (fast enough); beyond that an estimate, which can be off by a fifth.
-  const exact = result.rowCount <= 1_000_000
-  const distinct = exact ? `count(DISTINCT ${c})` : `least(approx_count_distinct(${c}), count(${c})) /* the estimate can overshoot */`
-  const stats = (
-    await conn.query(`SELECT count(${c})::DOUBLE AS non_null, (count(*) - count(${c}))::DOUBLE AS nulls,
-      ${distinct}::DOUBLE AS distinct_n, min(${c})::VARCHAR AS min, max(${c})::VARCHAR AS max
-      ${column.numeric ? `, avg(${c})::DOUBLE AS avg, sum(${c})::DOUBLE AS sum` : ''} FROM ${result.table}`)
-  ).toArray()[0]?.toJSON() as Record<string, unknown>
-  const top = (
-    await conn.query(`SELECT ${c}::VARCHAR AS v, count(*)::DOUBLE AS n FROM ${result.table} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 8`)
-  )
-    .toArray()
-    .map((r) => {
-      const o = r.toJSON() as { v: string | null; n: number }
-      return { value: o.v, count: Number(o.n) }
-    })
-  return {
-    column,
-    nonNull: Number(stats.non_null ?? 0),
-    nulls: Number(stats.nulls ?? 0),
-    distinct: Number(stats.distinct_n ?? 0),
-    distinctExact: exact,
-    min: (stats.min as string | null) ?? null,
-    max: (stats.max as string | null) ?? null,
-    sum: column.numeric && stats.sum != null ? Number(stats.sum) : null,
-    avg: column.numeric && stats.avg != null ? Number(stats.avg) : null,
-    top,
-  }
-}
-
-/** Rows that aren't data in a freshly opened table: completely empty rows and total lines. */
-/**
- * Date columns that could have been read the other way round: every day is the 12th or before, so
- * 01/02/2024 could be 1 February or January 2nd.
- */
-export async function ambiguousDates(result: ResultSet): Promise<string[]> {
-  const dates = result.columns.filter((c) => c.type === 'DATE')
-  if (!result.table || !dates.length) return []
-  const { conn } = await getEngine()
-  const row = (await conn.query(`SELECT ${dates.map((c, i) => `max(day(${colRef(c)}))::DOUBLE AS d${i}, count(${colRef(c)})::DOUBLE AS n${i}`).join(', ')} FROM ${result.table}`)).toArray()[0]?.toJSON() as
-    | Record<string, number | null>
-    | undefined
-  return row ? dates.filter((_, i) => Number(row[`n${i}`]) > 1 && Number(row[`d${i}`]) <= 12).map((c) => c.name) : []
-}
-
-const emptyScans = new WeakMap<ResultSet, Promise<string[]>>()
-
-/**
- * Text columns with nothing in any row (an export's empty first column, a spacer): no use as labels or
- * data. Never every column (that's an empty table, not empty columns). Looked for in a sample first, then
- * confirmed on every row for the few candidates; asked once per result (several scans want it).
- */
-export function emptyTextColumns(result: ResultSet): Promise<string[]> {
-  const known = emptyScans.get(result)
-  if (known) return known
-  const scan = (async () => {
-    const texts = result.columns.filter((c) => isTextColumn(c.type))
-    if (!result.table || !texts.length || result.columns.length < 2 || result.rowCount === 0) return []
-    const { conn } = await getEngine()
-    const filled = async (cols: ColumnInfo[], from: string) => {
-      const row = (await conn.query(`SELECT ${cols.map((c, i) => `count(nullif(trim(${colRef(c)}::VARCHAR), ''))::DOUBLE AS f${i}`).join(', ')} FROM ${from}`)).toArray()[0]?.toJSON() as
-        | Record<string, number>
-        | undefined
-      return row ? cols.filter((_, i) => Number(row[`f${i}`]) === 0) : []
-    }
-    const sampled = result.rowCount > 100_000 ? await filled(texts, `(SELECT * FROM ${result.table} USING SAMPLE 20000 ROWS)`) : texts
-    const empty = sampled.length ? await filled(sampled, result.table) : []
-    return empty.length < result.columns.length ? empty.map((c) => c.name) : []
-  })()
-  emptyScans.set(result, scan)
-  return scan
-}
-
-/**
- * Total lines in a big table (a year of a register, half a million rows and more): only the rows that
- * mention "total" are looked at (one quick pass), for "Sub-total" and "Grand Total" lines and short
- * "Total" lines. Empty rows and full "Total" lines that need their sums checked are left to smaller tables.
- */
-async function bigTableTotals(result: ResultSet): Promise<DropRows[]> {
-  const texts = result.columns.filter((c) => isTextColumn(c.type))
-  if (!result.table || !texts.length) return []
-  const { conn } = await getEngine()
-  const p = junkPredicates(result.columns.map((c) => ({ ref: colRef(c), text: isTextColumn(c.type) })))
-  if (!p.strong || !p.weak) return []
-  const mentions = texts.map((c) => `${colRef(c)}::VARCHAR ILIKE '%total%'`).join(' OR ')
-  const row = (
-    await conn.query(`SELECT count(*) FILTER (WHERE ${p.strong.drop})::DOUBLE AS strong, count(*) FILTER (WHERE ${eitherJunk(p.strong, p.weak).drop})::DOUBLE AS total FROM (SELECT * FROM ${result.table} WHERE ${mentions})`)
-  ).toArray()[0]?.toJSON() as { strong: number; total: number } | undefined
-  const named = junkPredicates(result.columns.map((c) => ({ ref: quoteIdent(c.name), text: isTextColumn(c.type) })))
-  if (!row || !named.strong || !named.weak) return []
-  const strong = Number(row.strong)
-  const total = Number(row.total)
-  const weakOk = total - strong <= Math.max(3, result.rowCount * 0.1)
-  const n = weakOk ? total : strong
-  if (!n) return []
-  return [{ label: `${n.toLocaleString(LOCALE)} total line${n === 1 ? '' : 's'}`, keep: (weakOk ? eitherJunk(named.strong, named.weak) : named.strong).keep }]
-}
-
-export async function junkRows(result: ResultSet): Promise<DropRows[]> {
-  if (!result.table || !result.columns.length) return []
-  // Scanning every value of a big table would hold the engine for seconds: a quick check for total lines only.
-  if (result.rowCount > 500_000) return result.rowCount <= 5_000_000 ? bigTableTotals(result) : []
-  const { conn } = await getEngine()
-  // An empty first column (some exports start with one) would hide the labels in the next: left out.
-  const empty = new Set(await emptyTextColumns(result))
-  const columns = result.columns.filter((c) => !empty.has(c.name))
-  if (!columns.length) return []
-  const refs = columns.map((c) => ({ ref: colRef(c), text: isTextColumn(c.type), numeric: c.numeric }))
-  const p = junkPredicates(refs)
-  const counts = [`count(*) FILTER (WHERE ${p.blank.drop})::DOUBLE AS blank`]
-  if (p.strong && p.weak && p.label)
-    counts.push(
-      `count(*) FILTER (WHERE ${p.strong.drop})::DOUBLE AS strong`,
-      `count(*) FILTER (WHERE ${eitherJunk(p.strong, p.weak).drop})::DOUBLE AS total`,
-      `count(*) FILTER (WHERE ${eitherJunk(p.strong, p.label).drop})::DOUBLE AS labelled`,
-    )
-  const row = (await conn.query(`SELECT ${counts.join(', ')} FROM ${result.table}`)).toArray()[0]?.toJSON() as
-    | { blank: number; strong?: number; total?: number; labelled?: number }
-    | undefined
-  if (!row) return []
-  // The same predicates written against the columns' own names, for the composed query.
-  const named = junkPredicates(columns.map((c) => ({ ref: quoteIdent(c.name), text: isTextColumn(c.type) })))
-  const out: DropRows[] = []
-  const n = (x: number, one: string) => `${x.toLocaleString(LOCALE)} ${one}${x === 1 ? '' : 's'}`
-  const strong = Number(row.strong ?? 0)
-  let total = Number(row.total ?? 0)
-  let totals = named.strong && named.weak ? eitherJunk(named.strong, named.weak) : null
-  let totalsHere = p.strong && p.weak ? eitherJunk(p.strong, p.weak) : null // the same, on the result table
-  // "Total" lines with nothing empty in them (Region, Sales / Total, 2000): trusted when they add up, and
-  // while they're at most a quarter of the rows (a census's both-sexes rows add up too, by construction).
-  const labelled = Number(row.labelled ?? 0)
-  let verified = false
-  const labelSql = p.label && p.first ? labelSumsSql(result.table, refs, p.label, p.first) : null
-  if (labelled > total && labelled <= result.rowCount * 0.25 && labelSql && p.strong && p.label && p.first && named.strong && named.label) {
-    const t = (await conn.query(labelSql)).toArray()[0]?.toJSON() as Record<string, number | null> | undefined
-    const which = Object.keys(t ?? {})
-      .filter((k) => typeof t![k] === 'number')
-      .map((k) => Number(k.slice(1)))
-    if (t && which.length) {
-      const keep = `${p.label.keep} AND ${p.strong.keep} AND ${p.blank.keep}`
-      const d = (await conn.query(dataSumsSql(result.table, refs, p.first, which, keep))).toArray()[0]?.toJSON() as Record<string, number | null> | undefined
-      const pairs = which.filter((i) => typeof d?.[`d${i}`] === 'number').map((i) => ({ t: t[`t${i}`] as number, d: d![`d${i}`] as number }))
-      if (totalsAgree(pairs)) {
-        verified = true
-        total = labelled
-        totals = eitherJunk(named.strong, named.label)
-        totalsHere = eitherJunk(p.strong, p.label)
-      }
-    }
-  }
-  // Plain "Total" lines are trusted when they add up, or while they're a few; a lot of them that don't add
-  // up is a real value (a category called Total).
-  const weakOk = verified || total - strong <= Math.max(3, result.rowCount * 0.1)
-  if (totals && named.strong && (weakOk ? total : strong)) {
-    // Tie-out: the total lines' numbers against the rows they'd leave (sub-totals and a grand total
-    // come to twice them). Said on the suggestion, so leaving them out is a checked step, not a guess.
-    let checked: DropRows['checked']
-    const here = weakOk ? totalsHere : p.strong
-    if (here && p.first) {
-      const sums = labelSumsSql(result.table, refs, here, p.first)
-      const t = sums ? ((await conn.query(sums)).toArray()[0]?.toJSON() as Record<string, number | null> | undefined) : undefined
-      const which = Object.keys(t ?? {}).filter((k) => typeof t![k] === 'number').map((k) => Number(k.slice(1)))
-      if (t && which.length) {
-        const d = (await conn.query(dataSumsSql(result.table, refs, p.first, which, `${here.keep} AND ${p.blank.keep}`))).toArray()[0]?.toJSON() as Record<string, number | null> | undefined
-        const pairs = which.filter((i) => typeof d?.[`d${i}`] === 'number').map((i) => ({ i, t: t[`t${i}`] as number, d: d![`d${i}`] as number }))
-        const others = columns.filter((_, k) => refs[k].ref !== p.first)
-        // The column people check first: the one that adds up with the largest sum (the amount).
-        const best = pairs.filter((x) => totalsAgree([x])).sort((a, b) => Math.abs(b.d) - Math.abs(a.d))[0]
-        if (totalsAgree(pairs) && best && others[best.i]) checked = { column: others[best.i].name, sum: best.d }
-      }
-    }
-    out.push({ label: n(weakOk ? total : strong, 'total line'), keep: (weakOk ? totals : named.strong).keep, ...(checked ? { checked } : {}) })
-  }
-  if (row.blank) out.push({ label: n(Number(row.blank), 'empty row'), keep: named.blank.keep })
-  return out
-}
-
-/**
- * Columns to fill down: a report's group names, written once at the top of each group. Only the first
- * columns, from the left (Region, then Branch within it): group names lead, and a column further right
- * with gaps is more likely filled in now and then.
- */
-export async function fillDownColumns(result: ResultSet): Promise<string[]> {
-  if (!result.table || result.columns.length < 2 || result.rowCount < 6 || result.rowCount > 500_000) return []
-  const { conn } = await getEngine()
-  const refs = result.columns.map(colRef)
-  // An empty leading column (some exports start with one) doesn't count as one of the first.
-  const empty = new Set(await emptyTextColumns(result))
-  const out: string[] = []
-  for (const c of result.columns.filter((x) => !empty.has(x.name)).slice(0, 3)) {
-    const i = result.columns.indexOf(c)
-    if (!isTextColumn(c.type) || i === result.columns.length - 1) break
-    const s = (await conn.query(fillDownSql(result.table, refs[i], refs))).toArray()[0]?.toJSON() as Parameters<typeof looksFilledDown>[0] | undefined
-    if (!s || !looksFilledDown({ ...s, n: Number(s.n), filled: Number(s.filled), pairs: Number(s.pairs), len: Number(s.len) })) break
-    out.push(c.name)
-  }
-  return out
-}
-
-/**
- * The row the column names are really on, when the file reader didn't find them: most columns got
- * made-up names (column1, column_2: their header cells were empty, because titles sat above the
- * names), and one of the first rows is all different words (Invoice, Customer, Amount), not numbers.
- */
-export async function namesRow(result: ResultSet): Promise<number | null> {
-  const made = result.columns.filter((c) => /^column_?\d+$/i.test(c.name)).length
-  if (result.columns.length < 2 || made < Math.ceil((result.columns.length - 1) / 2) || !result.rowCount) return null
-  // A column the reader typed as dates or yes/no can't hold a column name: this file has no names row
-  // (a headerless file of data, whose columns got numbered).
-  if (result.columns.some((c) => /^(DATE|TIMESTAMP|BOOLEAN|TIME)/i.test(c.type.trim()))) return null
-  const rows = await result.fetch(0, Math.min(10, result.rowCount))
-  const year = (v: string) => /^(19|20)\d{2}$/.test(v)
-  for (let r = 0; r < rows.length; r++) {
-    const cells = rows[r].map((v) => (v ?? '').trim())
-    const filled = cells.filter(Boolean)
-    // Words in text columns; in number columns only a year (Region, 2022, 2023, 2024) can be a name.
-    const nameLike = cells.every((c, i) => !c || (result.columns[i].numeric ? year(c) : !/^[-+₹$€£¥(]?[\d.,\s]+%?\)?$/.test(c) || year(c)))
-    const enough = filled.length >= Math.max(2, Math.ceil(cells.length / 2))
-    if (nameLike && enough && new Set(filled.map((c) => c.toLowerCase())).size === filled.length) return r
-  }
-  return null
-}
-
 /** Row n (1-based, in the query's own order) of a query, every column as text, with the columns' names. */
 export async function rowOf(sql: string, n: number): Promise<{ columns: string[]; values: (string | null)[] } | null> {
   const { conn } = await getEngine()
@@ -516,75 +326,6 @@ export async function rowOf(sql: string, n: number): Promise<{ columns: string[]
   return { columns, values: columns.map((c) => (row[c] === null || row[c] === undefined ? null : String(row[c]))) }
 }
 
-/** Which of these columns of a query have nothing in them (an export's months not reached yet). */
-export async function emptyColumns(sql: string, columns: string[]): Promise<string[]> {
-  if (!columns.length) return []
-  const { conn } = await getEngine()
-  const row = (await conn.query(`SELECT ${columns.map((c, i) => `count(${quoteIdent(c)})::DOUBLE AS c${i}`).join(', ')} FROM (\n${sql}\n)`)).toArray()[0]?.toJSON() as
-    | Record<string, number>
-    | undefined
-  return row ? columns.filter((_, i) => Number(row[`c${i}`]) === 0) : []
-}
-
-/** How many pieces a text column splits into at `delim` (the most in any row, capped at 8). */
-export async function splitParts(result: ResultSet, column: ColumnInfo, delim: string): Promise<number> {
-  if (!result.table || !delim) return 0
-  const { conn } = await getEngine()
-  const row = (
-    await conn.query(`SELECT max(len(string_split(${colRef(column)}::VARCHAR, ${quoteLiteral(delim)})))::DOUBLE AS n FROM ${result.table}`)
-  ).toArray()[0]?.toJSON() as { n: number | null } | undefined
-  return Math.min(8, Number(row?.n ?? 0))
-}
-
-/** Ways to clean a text column (convert to number or date, trim…), judged on a sample of its values. */
-export async function cleaningFor(result: ResultSet, column: ColumnInfo, locale = navigator.language): Promise<CleanSuggestion[]> {
-  if (!result.table || !isTextColumn(column.type)) return []
-  const { conn } = await getEngine()
-  const row = (await conn.query(statsSql(result.table, [colRef(column)]))).toArray()[0]?.toJSON() as Record<string, unknown> | undefined
-  return row ? suggestCleaning(column.name, readStats(row, 0), locale) : []
-}
-
-/**
- * Text columns looked over once, in one query over one sample however many columns: numbers or dates
- * stored as text (typically from Excel), to convert; and names typed with stray spaces (" asha rao ",
- * "Kabir  Khan"), to tidy: they group and look up as different values.
- */
-export async function textFindings(result: ResultSet, locale = navigator.language): Promise<{ convert: Clean[]; spaces: string[] }> {
-  const cols = result.columns.filter((c) => isTextColumn(c.type)).slice(0, 40)
-  if (!result.table || !cols.length) return { convert: [], spaces: [] }
-  const { conn } = await getEngine()
-  const row = (await conn.query(statsSql(result.table, cols.map(colRef)))).toArray()[0]?.toJSON() as Record<string, unknown> | undefined
-  if (!row) return { convert: [], spaces: [] }
-  const stats = cols.map((c, i) => ({ c, s: readStats(row, i) }))
-  const convert = stats.map(({ c, s }) => confidentConversion(suggestCleaning(c.name, s, locale))).filter((c): c is Clean => !!c)
-  const converted = new Set(convert.map((c) => c.column))
-  const spaces = stats.filter(({ c, s }) => s.untrimmed > 0 && !converted.has(c.name)).map(({ c }) => c.name)
-  return { convert, spaces }
-}
-
-/** A text column's distinct values with their rows, most first (up to `limit`): for spotting one value written two ways. */
-export async function distinctValues(result: ResultSet, column: ColumnInfo, limit = 400): Promise<{ value: string | null; count: number }[]> {
-  if (!result.table) return []
-  const { conn } = await getEngine()
-  const c = colRef(column)
-  const res = await conn.query(`SELECT ${c}::VARCHAR AS v, count(*)::DOUBLE AS n FROM ${result.table} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT ${Math.floor(limit)}`)
-  return res.toArray().map((r) => {
-    const o = r.toJSON() as { v: string | null; n: number }
-    return { value: o.v, count: Number(o.n) }
-  })
-}
-
-/** Most common values of a column in any query (used to list choices without the column's own filter). */
-export async function topValues(sql: string, column: string, limit = 12): Promise<{ value: string | null; count: number }[]> {
-  const { conn } = await getEngine()
-  const c = quoteIdent(column)
-  const res = await conn.query(`SELECT ${c}::VARCHAR AS v, count(*)::DOUBLE AS n FROM (\n${sql}\n) GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT ${limit}`)
-  return res.toArray().map((r) => {
-    const o = r.toJSON() as { v: string | null; n: number }
-    return { value: o.v, count: Number(o.n) }
-  })
-}
-
 /* ------------------------------------ Export ------------------------------------ */
 
 /**
@@ -593,29 +334,61 @@ export async function topValues(sql: string, column: string, limit = 12): Promis
  */
 const FORMULA_START = `'^[=+\\-@\\t\\r]'`
 
-export async function exportResult(result: ResultSet, format: 'csv' | 'parquet', opts: { excelSafe?: boolean } = {}): Promise<Blob> {
+/** Rows a CSV export writes at a time: each piece goes into the file (a Blob) before the next is made. */
+const CSV_PIECE = 250_000
+
+export async function exportResult(
+  result: ResultSet,
+  format: 'csv' | 'parquet',
+  opts: { excelSafe?: boolean; onProgress?: (done: number) => void; cancelled?: () => boolean } = {},
+): Promise<Blob> {
   if (!result.table) throw new Error('This result can’t be exported.')
   const { db, conn } = await getEngine()
   if (format === 'parquet') await ensureExtension('parquet')
   const file = sandboxPath(`export_${result.id}.${format}`)
   const copyOpts = format === 'csv' ? '(HEADER, DELIMITER \',\')' : '(FORMAT PARQUET, COMPRESSION ZSTD)'
-  // Text-like columns (VARCHAR, ENUM, JSON) are cleaned in Excel-safe mode; everything keeps its own name.
+  // In Excel-safe mode, text-like columns (VARCHAR, ENUM, JSON) that would start a formula get a quote in
+  // front (not a plain number: a refund of -12.50 stays a number), and doubles are written to the 15
+  // significant digits Excel keeps (519314.16, not a sum's 519314.16000000003). Everything keeps its own name.
+  const safe = format === 'csv' && opts.excelSafe
   const cols = result.columns
     .map((c) => {
       const ref = colRef(c)
-      const out = quoteIdent(c.name)
-      if (format === 'csv' && opts.excelSafe && /^(VARCHAR|ENUM|JSON)/i.test(c.type)) {
-        return `CASE WHEN regexp_matches(${ref}::VARCHAR, ${FORMULA_START}) THEN '''' || ${ref}::VARCHAR ELSE ${ref}::VARCHAR END AS ${out}`
+      // A column name that would start a formula is text too (a hostile file's =HYPERLINK(…) header).
+      const out = quoteIdent(safe ? pasteSafe(c.name) : c.name)
+      // Everything that isn't a number, a date or true/false is written as text, and checked as text: a
+      // UNION, a list, a type of the user's own all print as anything.
+      if (safe && !c.numeric && !/^(DATE|TIME|TIMESTAMP|INTERVAL|BOOLEAN)/i.test(c.type)) {
+        const v = `${ref}::VARCHAR`
+        // A plain negative (−12.50, −1,200) or a lone dash: not a phone number written +91…, which Excel would turn into 9.19877E+11.
+        return `CASE WHEN regexp_matches(${v}, ${FORMULA_START}) AND NOT regexp_full_match(${v}, '-([0-9]{1,3}(,[0-9]{3})+|[0-9]{1,15})(\\.[0-9]+)?|[-+]') THEN '''' || ${v} ELSE ${v} END AS ${out}`
+      }
+      if (safe && /^(DOUBLE|FLOAT|REAL)$/i.test(c.type)) {
+        // Whole numbers as whole numbers (224918, not 224918.0).
+        return `CASE WHEN NOT isfinite(${ref}) THEN ${ref}::VARCHAR WHEN ${ref} = trunc(${ref}) AND abs(${ref}) < 1e15 THEN ${ref}::BIGINT::VARCHAR ELSE round(${ref}, 14 - floor(log10(abs(${ref})))::INTEGER)::VARCHAR END AS ${out}`
       }
       return ref === out ? ref : `${ref} AS ${out}`
     })
     .join(', ')
-  let buf: Uint8Array
-  try {
-    await conn.query(`COPY (SELECT ${cols || '*'} FROM ${result.table} ORDER BY rowid) TO ${quoteLiteral(file)} ${copyOpts}`)
-    buf = await db.copyFileToBuffer(file)
-  } finally {
-    await db.dropFile(file).catch(() => {})
+  const type = format === 'csv' ? 'text/csv' : 'application/vnd.apache.parquet'
+  // A byte-order mark, so Excel reads the file as UTF-8 (René, £12.50) rather than its own code page.
+  let out = new Blob(safe ? [new Uint8Array([0xef, 0xbb, 0xbf])] : [], { type })
+  // A CSV in pieces of rows, each added to the file and let go before the next is written: a 9-million-row
+  // export never holds the whole text in the engine and the page at once (it ran out of memory doing so).
+  // Parquet is one piece: its file is compressed, and can't be cut into separately written parts.
+  const pieces = format === 'csv' ? Math.max(1, Math.ceil(result.rowCount / CSV_PIECE)) : 1
+  for (let i = 0; i < pieces; i++) {
+    if (opts.cancelled?.()) throw new DOMException('Export cancelled', 'AbortError')
+    const rows = pieces > 1 ? ` WHERE rowid >= ${i * CSV_PIECE} AND rowid < ${(i + 1) * CSV_PIECE}` : ''
+    const header = format === 'csv' ? `(HEADER ${i === 0 ? 'true' : 'false'}, DELIMITER ',')` : copyOpts
+    try {
+      await conn.query(`COPY (SELECT ${cols || '*'} FROM ${result.table}${rows} ORDER BY rowid) TO ${quoteLiteral(file)} ${header}`)
+      const buf = await db.copyFileToBuffer(file)
+      out = new Blob([out, buf as Uint8Array<ArrayBuffer>], { type })
+    } finally {
+      await db.dropFile(file).catch(() => {})
+    }
+    opts.onProgress?.(Math.min(result.rowCount, (i + 1) * CSV_PIECE))
   }
-  return new Blob([buf as Uint8Array<ArrayBuffer>], { type: format === 'csv' ? 'text/csv' : 'application/vnd.apache.parquet' })
+  return out
 }

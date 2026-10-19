@@ -73,7 +73,28 @@ test.describe('anonymize', () => {
     await page.keyboard.press('ControlOrMeta+a')
     await page.keyboard.insertText(`SELECT count(DISTINCT email) AS people FROM (${sql.replace(/^--.*\n/, '')})`)
     await page.keyboard.press('ControlOrMeta+Enter')
-    await expect(page.locator('.result-meta')).toContainText('1 rows')
+    await expect(page.locator('.result-meta')).toContainText('1 row')
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2')
   })
+})
+
+test('a US customer list: phone numbers and ZIP codes are personal; company names under Customer aren’t', async ({ page }) => {
+  await openApp(page)
+  const csv = ['Customer,Contact Phone,ZIP,Amount', 'Wayne Enterprises,(212) 555-0101,10001,1200', 'Acme Corp,(415) 555-0199,94105,300', 'Stark Industries LLC,212-555-0144,10017,450'].join('\n')
+  await page.locator('input[type=file]').setInputFiles([file('us_customers.csv', `${csv}\n`)])
+  await expect(page.locator('.result-meta')).toContainText('3 rows')
+  await page.locator('.pii-chip', { hasText: 'Personal data' }).click()
+  const flagged = page.getByRole('dialog', { name: 'Remove personal data before you share' }).getByRole('list', { name: 'Columns with personal data' })
+  await expect(flagged.locator('.anon-name', { hasText: /^Contact Phone$/ })).toHaveCount(1)
+  await expect(flagged.locator('.anon-name', { hasText: /^ZIP$/ })).toHaveCount(1)
+  await expect(flagged.locator('.anon-name', { hasText: /^Customer$/ })).toHaveCount(0)
+})
+
+test('a Census file’s NAME column of counties isn’t a person’s name', async ({ page }) => {
+  await openApp(page)
+  const csv = ['GEO_ID,NAME,population', '0500000US01001,"Autauga County, Alabama",58805', '0500000US01003,"Baldwin County, Alabama",231767', '0500000US01005,"Barbour County, Alabama",25223']
+  await page.locator('input[type=file]').setInputFiles([file('census.csv', `${csv.join('\n')}\n`)])
+  await expect(page.locator('.result-meta')).toContainText('3 rows')
+  await expect(page.getByRole('button', { name: 'Run query' })).toBeVisible({ timeout: 60_000 })
+  await expect(page.locator('.pii-chip', { hasText: 'Personal data' })).toHaveCount(0)
 })

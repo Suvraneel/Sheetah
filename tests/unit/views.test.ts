@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
-import { exportViews, mergeViews, parseViews, referencedTables, remapTables, tablesIn, viewsThatFit, type SavedView } from '../../src/engine/views'
+import { referencedTables, remapTables, tablesIn, viewNameFor, viewsThatFit, type SavedView } from '../../src/engine/views'
+import { exportViews, mergeViews, parseViews } from '../../src/engine/views-file'
 
 const view = (over: Partial<SavedView>): SavedView => ({ id: 'v', name: 'Tidy', sql: 'SELECT * FROM april', tables: ['april'], savedAt: 1, ...over })
 const cols = (...names: string[]) => names.map((name) => ({ name }))
@@ -12,6 +13,10 @@ test('a saved view fits next month’s file when that file has its table’s col
   expect(viewsThatFit([tidy], { name: 'April', columns: cols('region', 'amount', 'date') })).toEqual([])
   expect(viewsThatFit([view({})], { name: 'may', columns: cols('region') })).toEqual([])
   expect(viewsThatFit([view({ tables: ['a', 'b'], shapes: { a: ['x', 'y'], b: ['x', 'y'] } })], { name: 'c', columns: cols('x', 'y') })).toEqual([])
+  // This month's sales looked up in the product list: May's sales fit while the product list is open.
+  const lookedUp = view({ tables: ['sales_apr', 'products'], shapes: { sales_apr: ['sku', 'qty', 'region'], products: ['sku', 'cost'] } })
+  expect(viewsThatFit([lookedUp], { name: 'sales_may', columns: cols('sku', 'qty', 'region') }, ['sales_may', 'products'])).toEqual([{ view: lookedUp, from: 'sales_apr' }])
+  expect(viewsThatFit([lookedUp], { name: 'sales_may', columns: cols('sku', 'qty', 'region') }, ['sales_may'])).toEqual([])
 })
 
 test('the most recently used view comes first, and runs on the new table', () => {
@@ -40,7 +45,8 @@ test('a view finds the tables it reads, not columns named like tables', () => {
 })
 
 test('views travel as a file: only names and SQL, checked on the way in, never clashing', () => {
-  const tidy = view({ name: 'Tidy', sql: 'SELECT 1 FROM april', shapes: { april: ['a', 'b'] }, lastRunAt: 9 })
+  // What it last ran on (a closing balance) is the file's data: it stays in this browser.
+  const tidy = view({ name: 'Tidy', sql: 'SELECT 1 FROM april', shapes: { april: ['a', 'b'] }, lastRunAt: 9, last: { table: 'april', rows: 4, closing: 7000 } })
   const file = exportViews([tidy])
   expect(JSON.parse(file)).toEqual({ format: 'sheetah-views', version: 1, views: [{ name: 'Tidy', sql: 'SELECT 1 FROM april', tables: ['april'], shapes: { april: ['a', 'b'] }, savedAt: 1 }] })
   const [back] = parseViews(file)
@@ -79,7 +85,7 @@ test('a views file can’t reach inherited properties or claim tables its SQL do
 })
 
 test('a view keeps the steps it was made of, only while they are exactly its SQL', async () => {
-  const { stepsOf, remapSteps, tableBase, exportViews, parseViews } = await import('../../src/engine/views')
+  const { stepsOf, remapSteps, tableBase } = await import('../../src/engine/views')
   const { compose, emptyOps } = await import('../../src/engine/compose')
   const ops = { ...emptyOps(), drop: [{ label: '1 total line', keep: 'NOT is_total_label(region)' }], clean: [{ column: 'amount', kind: 'number' as const }] }
   const sql = compose(tableBase('sales_april'), ops)
@@ -116,4 +122,43 @@ test('steps and SQL are compared without comments, but quoted text exactly', asy
   const inColumn = { table: 'sales_sep', ops: { ...emptyOps(), computed: [{ name: 'n', expr: '(SELECT count(*) FROM rates_sep)' }] } }
   const moved = remapTables(compose(tableBase('sales_sep'), inColumn.ops), mapping)
   expect(stepsMake(remapSteps(inColumn, mapping), moved)).toBe(false)
+})
+
+test('a views file’s category rules are kept only when they are exactly the column’s formula', async () => {
+  const { categorizeExpr } = await import('../../src/engine/categorize')
+  const { compose } = await import('../../src/engine/compose')
+  const rules = { column: 'Narration', rules: [{ category: 'Food', words: ['swiggy'] }], otherwise: 'Other' }
+  const steps = (categorize: unknown) => ({ table: 'april', ops: { filters: [], computed: [{ name: 'category', expr: categorizeExpr(rules), categorize }] } })
+  const sql = compose('SELECT * FROM april', steps(rules).ops as never)
+  const file = (categorize: unknown) => JSON.stringify({ format: 'sheetah-views', version: 1, views: [{ name: 'Tidy', sql, tables: ['april'], steps: steps(categorize) }] })
+  expect(parseViews(file(rules))[0].steps?.ops.computed[0].categorize).toEqual(rules)
+  // Rules that say something else than the formula, or aren't rules at all: the column stays, its rules go.
+  for (const odd of [{ ...rules, otherwise: 'Misc' }, { rules: 'nope' }, 42]) {
+    const [v] = parseViews(file(odd))
+    expect(v.steps?.ops.computed[0]).toEqual({ name: 'category', expr: categorizeExpr(rules) })
+  }
+})
+
+test('a view is named for its table without the month or year: it is for every month', () => {
+  expect(viewNameFor('stmt_apr_2024')).toBe('stmt view')
+  expect(viewNameFor('sales-2024-04')).toBe('sales view')
+  expect(viewNameFor('HDFC_Statement_April24')).toBe('HDFC Statement view')
+  expect(viewNameFor('fy24_ledger_q1_2024')).toBe('ledger view')
+  expect(viewNameFor('market_share')).toBe('market share view')
+  expect(viewNameFor('Statement')).toBe('Statement view')
+  // Nothing but a date: the table's name, as it is.
+  expect(viewNameFor('2024_04')).toBe('2024 04 view')
+})
+
+test('a view saved before the steps’ SQL was read from one more SELECT keeps its steps', async () => {
+  const { stepsMake } = await import('../../src/engine/views')
+  const { compose, emptyOps } = await import('../../src/engine/compose')
+  const ops = { ...emptyOps(), clean: [{ column: 'amount', kind: 'number' as const }] }
+  const now = compose('SELECT * FROM sales', ops)
+  // Then: the clean-up's REPLACE on its own.
+  const then = now.replace(/^SELECT \*\nFROM \(\n([\s\S]*)\n\)$/, '$1')
+  expect(then).not.toBe(now)
+  expect(stepsMake({ table: 'sales', ops }, now)).toBe(true)
+  expect(stepsMake({ table: 'sales', ops }, then)).toBe(true)
+  expect(stepsMake({ table: 'sales', ops }, `${then}\nWHERE amount > 1`)).toBe(false)
 })

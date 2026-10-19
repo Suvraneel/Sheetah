@@ -1,4 +1,4 @@
-import { commentText, nameKey, quoteLiteral, sqlName } from './sql'
+import { commentText, LOCALE, nameKey, quoteLiteral, sqlName } from './sql'
 
 /*
  * Personal-data rules for "Anonymize": what each kind looks like, how to verify it, and the SQL each
@@ -111,8 +111,8 @@ export const RULES: PiiRule[] = [
     kind: 'phone',
     label: 'Phone number',
     hint: /phone|mobile|(^|_)tel(_|$)|contact_?(no|number)|whatsapp/i,
-    // Indian mobiles (+91, 0 prefixes) and international E.164-ish numbers.
-    pattern: '^(\\+?91[ -]?|0)?[6-9][0-9]{4}[ -]?[0-9]{5}$|^\\+[1-9][0-9 ()-]{7,16}[0-9]$',
+    // Indian mobiles (+91, 0 prefixes), US and Canadian numbers ((212) 555-0101), and international E.164-ish ones.
+    pattern: '^(\\+?91[ -]?|0)?[6-9][0-9]{4}[ -]?[0-9]{5}$|^\\+[1-9][0-9 ()-]{7,16}[0-9]$|^(\\+?1[ .-]?)?\\(?[2-9][0-9]{2}\\)?[ .-]?[0-9]{3}[ .-][0-9]{4}$',
     defaultAction: 'mask',
     actions: ['mask', 'pseudonym', 'remove', 'keep'],
   },
@@ -150,7 +150,7 @@ export const RULES: PiiRule[] = [
   },
   {
     kind: 'postcode',
-    label: 'PIN / postal code',
+    label: /-IN$/i.test(LOCALE) ? 'PIN / postal code' : /^en-US$/i.test(LOCALE) ? 'ZIP code' : 'Postal code',
     hint: /pin_?code|^pin$|zip|post_?code|postal/i,
     pattern: '^[1-9][0-9]{5}$',
     defaultAction: 'generalize',
@@ -205,7 +205,10 @@ export function actionSql(name: string, kind: PiiKind | null, action: PiiAction,
     case 'pseudonym':
       return `pseudonym(${c})`
     case 'label': {
-      const word = kind === 'name' ? 'Person' : 'Value'
+      // Named for who they are where the column says so (Customer 1, Vendor 2: a list of companies reads
+      // right too), else Person 1.
+      const party = /(customer|client|vendor|supplier|party|payee|payer|member|employee|patient|student|tenant|buyer|seller|contact)/i.exec(name)?.[1]
+      const word = kind === 'name' ? (party ? party[0].toUpperCase() + party.slice(1).toLowerCase() : 'Person') : 'Value'
       return `CASE WHEN ${c} IS NULL THEN NULL ELSE ${quoteLiteral(`${word} `)} || dense_rank() OVER (ORDER BY pseudonym(${c})) END`
     }
     case 'mask':

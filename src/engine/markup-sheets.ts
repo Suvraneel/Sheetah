@@ -93,9 +93,9 @@ export function markupSheets(source: string, kind: 'html' | 'xml-sheet'): Markup
 }
 
 /** Each table or worksheet as CSV, with title lines above the column names left out (as for a workbook). */
-export function markupToCsv(source: string, kind: 'html' | 'xml-sheet'): { name: string; csv: string; rows: number; skipped: number }[] {
+export function markupToCsv(source: string, kind: 'html' | 'xml-sheet'): { name: string; csv: string; rows: number; skipped: number; text: string[] }[] {
   return markupSheets(source, kind).flatMap((s) => {
-    const { csv, rows, skipped } = sheetToCsv(s.rows)
-    return csv ? [{ name: s.name, csv, rows, skipped }] : []
+    const { csv, rows, skipped, text } = sheetToCsv(s.rows)
+    return csv ? [{ name: s.name, csv, rows, skipped, text }] : []
   })
 }

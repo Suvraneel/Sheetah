@@ -117,8 +117,48 @@ export const commentText = (s: string) => s.replace(/[\r\n\u2028\u2029]+/g, ' ')
 export const isIdLike = (name: string) =>
   /(^|_)(id|ids|code|no|num|number|pin|zip|zipcode|postcode|postal|year|yr|phone|mobile|sku|ref|uuid|guid|gstin|pan|ifsc|invoice|voucher|serial|sr|sno)$/.test(nameKey(name))
 
-/** The reader's locale for numbers in the interface (12,34,567 in India, 1.234.567 in Germany). */
-export const LOCALE = (typeof navigator !== 'undefined' && navigator.language) || 'en-US'
+/**
+ * The reader's locale, for numbers (12,34,567 in India, 1.234.567 in Germany) and how dates are written.
+ * A browser left on plain or US English in India (its time zone says where it is) reads as India does:
+ * 1,00,000, and 01/04/2024 as 1 April.
+ */
+export function readerLocale(language: string | undefined, zone: string | undefined): string {
+  const lang = language || 'en-US'
+  return /^en(-US)?$/i.test(lang) && /^Asia\/(Kolkata|Calcutta)$/.test(zone ?? '') ? 'en-IN' : lang
+}
+
+const zone = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone
+  } catch {
+    return undefined
+  }
+})()
+export const LOCALE = readerLocale(typeof navigator !== 'undefined' ? navigator.language : undefined, zone)
+
+/** Words that differ between American English and the rest (India's included): aging as of, ageing as on. */
+export const WORDS = /^en-US$/i.test(LOCALE) ? { ageing: 'Aging', asOn: 'As of' } : { ageing: 'Ageing', asOn: 'As on' }
 
 /** Dates and timestamps (with or without a time zone): charted over time, bucketed by month in pivots. */
 export const isTemporal = (c: { type: string }) => /^(DATE|TIMESTAMP)/i.test(c.type)
+
+/** Tables stacked together, named as one: sales_2024_01 … sales_2024_12 → sales_2024_01-12; else the first and how many more. */
+export function stackLabel(names: string[]): string {
+  // In number order: sales_2 before sales_10.
+  const sorted = [...names].sort((x, y) => x.localeCompare(y, undefined, { numeric: true }))
+  const [a, b] = [sorted[0], sorted[sorted.length - 1]]
+  let i = 0
+  while (i < a.length && a[i] === b[i]) i++
+  // Back to a digit run's start, so 2024_01 and 2024_12 differ as 01 and 12, sales_1 and sales_12 as 1 and 12.
+  while (i > 0 && /\d/.test(a[i - 1])) i--
+  return i >= 3 && i < a.length && i < b.length ? `${a}-${b.slice(i)}` : `${sorted[0]}-and-${sorted.length - 1}-more`
+}
+
+/**
+ * A cell's text as it's safe to paste into a spreadsheet: one that would start a formula there (=, +, -, @,
+ * a tab) gets a quote in front, so it stays text (=HYPERLINK(…) from a hostile file can't run). A plain
+ * negative number (−12.50) and a lone dash are left as they are.
+ */
+export function pasteSafe(v: string): string {
+  return /^[=+\-@\t\r]/.test(v) && !/^(-(\d{1,3}(,\d{3})+|\d{1,15})(\.\d+)?|[-+])$/.test(v) ? `'${v}` : v
+}

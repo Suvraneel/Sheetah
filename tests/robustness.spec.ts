@@ -31,7 +31,7 @@ test.describe('engine robustness', () => {
       await page.keyboard.press('Shift+ArrowRight')
     }
     await page.keyboard.press('ControlOrMeta+ArrowDown')
-    await expect(page.locator('.result-meta')).toContainText('1 rows', { timeout: 120_000 })
+    await expect(page.locator('.result-meta')).toContainText('1 row', { timeout: 120_000 })
     await expect(page.locator('.error-banner')).toHaveCount(0)
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText(/\d+/)
   })
@@ -41,7 +41,7 @@ test.describe('engine robustness', () => {
     await runSql(page, SLOW)
     await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible()
     await runSql(page, 'SELECT 42 AS answer')
-    await expect(page.locator('.result-meta')).toContainText('1 rows · 1 columns')
+    await expect(page.locator('.result-meta')).toContainText('1 row · 1 column')
     await expect(page.locator('.sr-grid [role=columnheader]').first()).toContainText('answer')
     await expect(page.getByRole('button', { name: 'Run query' })).toBeVisible()
     await expect(page.locator('.error-banner')).toHaveCount(0)
@@ -77,7 +77,7 @@ test.describe('engine robustness', () => {
   test('opening a file never replaces an existing table, and odd files are handled', async ({ page }) => {
     await openApp(page)
     await page.locator('input[type=file]').setInputFiles([file('Sales.csv', 'a\n1\n')])
-    await expect(page.locator('.result-meta')).toContainText('1 rows')
+    await expect(page.locator('.result-meta')).toContainText('1 row')
     await page.locator('input[type=file]').setInputFiles([file('SALES.CSV.GZ', gzipSync('a,b\n1,2\n3,4\n'))])
     await expect(page.locator('.side-table .side-name')).toHaveText(['sales', 'sales_2'])
     await expect(page.locator('.result-meta')).toContainText('2 rows · 2 columns')
@@ -125,6 +125,17 @@ test.describe('engine robustness', () => {
     expect(dl.suggestedFilename()).toMatch(/\.csv$/)
   })
 
+  test('a table clicked while a big one is still being looked over opens without waiting for the look-over', async ({ page }) => {
+    await openApp(page)
+    const big = ['id,code,city,note', ...Array.from({ length: 200_000 }, (_, i) => `${i},INV-${String(i % 9973).padStart(5, '0')},${['Pune', 'Delhi', 'Goa'][i % 3]},`)].join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('big.csv', big), file('small.csv', 'a,b\n1,2\n')])
+    await expect(page.locator('.result-meta')).toContainText('200,000 rows', { timeout: 60_000 })
+    // The look-over of the big one starts as it shows; the small one is clicked straight away.
+    await page.waitForTimeout(500)
+    await page.locator('.side-table', { hasText: 'small' }).click()
+    await expect(page.locator('.result-meta')).toContainText('1 row', { timeout: 8_000 })
+  })
+
   test('a shared link that inflates to gigabytes is refused, not decoded', async ({ page }) => {
     const bomb = deflateRawSync(Buffer.alloc(40_000_000, 32)).toString('base64url')
     await openApp(page, `/#q=z${bomb}`)
@@ -152,6 +163,20 @@ test.describe('filters that read like people type', () => {
     await page.getByLabel('Filter value').fill('50%')
     await page.getByRole('button', { name: 'Filter', exact: true }).click()
     await expect(page.locator('.result-meta')).toContainText('1 of 4 rows')
+  })
+
+  test('a date typed the way people write it filters by that day', async ({ page }) => {
+    await openDemo(page)
+    await openColumnMenu(page, 1) // ordered_at, a date and time
+    await page.getByLabel('Filter value').fill('31/02/2024')
+    await page.getByRole('button', { name: 'Filter', exact: true }).click()
+    await expect(page.locator('.colmenu-error')).toContainText('Enter a date')
+    // A part over 12 is the day, whatever the reader's habit (en-US here).
+    await page.getByLabel('Filter type').selectOption('equals')
+    await page.getByLabel('Filter value').fill('31/01/2024')
+    await page.getByRole('button', { name: 'Filter', exact: true }).click()
+    await expect(page.locator('.cm-content')).toContainText("ordered_at::DATE = DATE '2024-01-31'")
+    await expect(page.locator('.error-banner')).toHaveCount(0)
   })
 
   test('picking two common values keeps both (IN), and an empty result offers a way back', async ({ page }) => {
@@ -198,6 +223,22 @@ test.describe('charts and pivots at the edges', () => {
     await dialog.getByRole('button', { name: 'Create pivot' }).click()
     await expect(page.locator('.error-banner')).toHaveCount(0)
     await expect(page.locator('.sr-grid [role=columnheader]', { hasText: '(blank)' })).toHaveCount(1)
+  })
+})
+
+test.describe('a very wide table', () => {
+  test('300 columns open and are looked over without running out of memory or claiming a new version', async ({ page }) => {
+    await openApp(page)
+    const cols = Array.from({ length: 300 }, (_, i) => (i % 3 === 0 ? `code_${i}` : i % 3 === 1 ? `amount_${i}` : `contact_${i}`))
+    const lines = [cols.join(',')]
+    for (let r = 0; r < 200; r++) lines.push(cols.map((_, i) => (i % 3 === 0 ? `C-${r}-${i}` : i % 3 === 1 ? (r * 1.5).toFixed(2) : `p${r}.${i}@example.com`)).join(','))
+    await page.locator('input[type=file]').setInputFiles([file('wide.csv', lines.join('\n'))])
+    await expect(page.locator('.result-meta')).toContainText('200 rows · 300 columns')
+    // The look-over runs in parts: personal data is still found.
+    await expect(page.locator('.pii-chip', { hasText: 'Personal data' })).toBeVisible({ timeout: 20_000 })
+    await page.waitForTimeout(1500)
+    await expect(page.getByText('A new version of Sheetah is ready.')).toHaveCount(0)
+    await expect(page.locator('.error-banner')).toHaveCount(0)
   })
 })
 

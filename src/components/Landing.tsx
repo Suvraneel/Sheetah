@@ -2,8 +2,12 @@ import { Suspense, lazy, type CSSProperties, type ReactNode } from 'react'
 import { BtnIcon, Icon, Logo } from './Icon'
 import { ThemeToggle } from './ThemeToggle'
 import { Reveal } from './Reveal'
+import { HairlineFigure } from './HairlineFigure'
 
 const ProductShot = lazy(() => import('./ProductShot').then((m) => ({ default: m.ProductShot })))
+// The two line figures load after the page, with their engine, as their own chunks.
+const loadSheetChart = () => import('../hairline/sheet-chart.js')
+const loadTidyGate = () => import('../hairline/tidy-gate.js')
 
 interface Props {
   sharedSql?: string | null
@@ -55,12 +59,14 @@ export function Landing({ ready, failed, offlineReady, busy, sharedSql, onPick, 
         <Reveal className="hero-copy">
           <span className="eyebrow">Spreadsheet × SQL · In your browser</span>
           <h1>
-            Open the <span className="hl">whole</span> file.
+            <span className="h1-line">Open the</span> <span className="h1-line"><span className="hl">whole</span> file.</span>
           </h1>
           <p className="lede">
             Scroll millions of rows like a spreadsheet, tidy up messy exports in a click, then ask anything in SQL.
             Sheetah runs DuckDB inside this tab, so your data never leaves your computer.
           </p>
+          {/* Point at a column and it rises into a chart of its own values; the line under it is the SQL. */}
+          <HairlineFigure load={loadSheetChart} className="hero-figure" tourOnce hideWhen="(max-width: 960px)" />
         </Reveal>
 
         <Reveal className="hero-drop" delay={120}>
@@ -157,6 +163,33 @@ export function Landing({ ready, failed, offlineReady, busy, sharedSql, onPick, 
         </div>
       </section>
 
+      <section className="tidy-band" aria-labelledby="tidy-title">
+        <Reveal className="tidy-copy">
+          <span className="eyebrow">Tidy a messy export</span>
+          <h2 id="tidy-title">
+            Ragged in, square out. <span className="ink-soft">Every fix is a line of SQL.</span>
+          </h2>
+          <p>
+            Total lines and empty rows are left out, numbers stored as text become numbers, stray spaces go. Each fix
+            is a step you can read, undo, or save to run again on next month’s file.
+          </p>
+          {onMessy && (
+            <button className="btn btn-primary" onClick={onMessy} disabled={!!busy || failed}>
+              Tidy the messy sample
+              <BtnIcon name="arrowRight" />
+            </button>
+          )}
+        </Reveal>
+        <Reveal className="tidy-viz" delay={120}>
+          <div className="shell">
+            <div className="core tidy-core">
+              {/* Rows ride a belt through a comb; hover slows it, and the line under it names the fix. */}
+              <HairlineFigure load={loadTidyGate} />
+            </div>
+          </div>
+        </Reveal>
+      </section>
+
       </main>
 
       <footer className="land-foot">
@@ -195,7 +228,7 @@ function Feature({ title, children, visual, big, wide }: { title: string; childr
 /** Stagger index for the sketches' entry choreography (read by CSS as --i). */
 const nth = (i: number) => ({ '--i': i }) as CSSProperties
 
-/** Decorative mini-grid that "scrolls" forever (transform-only animation). */
+/** Decorative mini-grid that "scrolls" once, and on while hovered (transform-only animation). */
 function GridSketch() {
   return (
     <div className="sketch">

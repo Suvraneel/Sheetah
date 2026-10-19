@@ -16,7 +16,7 @@ test.describe('time data and odd queries', () => {
     await expect(page.locator('.result-meta')).toContainText('2,000 rows')
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2024-01-01 00:00:00')
 
-    expect(await chartCaption(page)).toMatch(/by day \(UTC\)/)
+    expect(await chartCaption(page)).toMatch(/by week \(UTC\)/)
     await expect(page.locator('.chart-panel')).not.toContainText('Couldn’t')
 
     await page.getByRole('button', { name: 'Grid', exact: true }).click()

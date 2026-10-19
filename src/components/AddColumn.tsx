@@ -19,6 +19,8 @@ export function AddColumn({ columns, source, onAdd, onClose }: Props) {
   const [name, setName] = useState('')
   const [expr, setExpr] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
+  // A total in a formula (sum(amount)): the same total on every row is what's meant, written OVER ().
+  const [overAll, setOverAll] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
   const exprRef = useRef<HTMLInputElement>(null)
   const numeric = columns.filter((c) => c.numeric && !isIdLike(c.name)).map((c) => sqlName(c.name))
@@ -41,10 +43,21 @@ export function AddColumn({ columns, source, onAdd, onClose }: Props) {
     setChecking(true)
     try {
       const { conn } = await getEngine()
-      await conn.query(`SELECT (${f}\n) AS x FROM (\n${source}\n) LIMIT 0`)
+      // Beside every column, as it will be: a total alone (sum(amount)) would pass on its own and fail there.
+      await conn.query(`SELECT *, (${f}\n) AS __sheetah_check FROM (\n${source}\n) LIMIT 0`)
       onAdd(n, f)
     } catch (err) {
-      setProblem(explainError(err instanceof Error ? err.message : String(err)).text)
+      const message = err instanceof Error ? err.message : String(err)
+      // Only a formula that's one total (sum(amount)): "sum(x) * 0.18 OVER ()" isn't SQL.
+      const total = /^\s*(sum|avg|count|min|max|median)\s*\((?:[^()]|\([^()]*\))*\)\s*$/i.exec(f)
+      if (total && /must appear in the GROUP BY clause|must be part of an aggregate/i.test(message) && !/\bOVER\s*\(/i.test(f)) {
+        const whole = `${f} OVER ()`
+        setOverAll(whole)
+        setProblem(`${total[1].toLowerCase()}() makes one number of all the rows. For that total on every row (to compare each row with it), write ${whole}.`)
+      } else {
+        setOverAll(null)
+        setProblem(explainError(message).text)
+      }
       exprRef.current?.focus()
     } finally {
       setChecking(false)
@@ -91,6 +104,7 @@ export function AddColumn({ columns, source, onAdd, onClose }: Props) {
             onChange={(e) => {
               setExpr(e.target.value)
               setProblem(null)
+              setOverAll(null)
             }}
             placeholder={example}
             aria-invalid={!!problem || undefined}
@@ -99,7 +113,21 @@ export function AddColumn({ columns, source, onAdd, onClose }: Props) {
           />
           {problem && (
             <p className="colmenu-error" id="col-expr-problem" role="alert">
-              {problem}
+              {problem}{' '}
+              {overAll && (
+                <button
+                  type="button"
+                  className="link-btn"
+                  onClick={() => {
+                    setExpr(overAll)
+                    setOverAll(null)
+                    setProblem(null)
+                    exprRef.current?.focus()
+                  }}
+                >
+                  Use {overAll}
+                </button>
+              )}
             </p>
           )}
           <div className="chips" aria-label="Insert a column">

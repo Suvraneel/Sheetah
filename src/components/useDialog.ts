@@ -20,7 +20,9 @@ export function useDialog<T extends HTMLElement>(onClose: () => void) {
     const el = ref.current
     const focusables = () =>
       Array.from(
-        el?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea, a[href], [tabindex]:not([tabindex="-1"])') ?? [],
+        el?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea, a[href], summary, [contenteditable="true"], [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
       )
     // A dialog that is mostly reading (shortcuts) starts on its heading ([data-autofocus]), not a button below the fold.
     if (el && !el.contains(document.activeElement)) (el.querySelector<HTMLElement>('[data-autofocus]') ?? focusables()[0])?.focus({ preventScroll: true })

@@ -30,3 +30,68 @@ test('what isn’t a table says what to do instead', () => {
   expect(notATable('text', 'a.csv')).toBeNull()
   expect(notATable('html', 'a.xls')).toBeNull()
 })
+
+test('a report’s title lines without separators are found above its table', async () => {
+  const { titleLines } = await import('../../src/engine/sniff')
+  const qb = ['Sales by Customer Detail', 'Acme Inc', 'January - June 2024', '', ',Date,Transaction Type,Num,Amount', 'Wayne Enterprises,,,,', ',06/18/2024,Sales Receipt,1001,"1,200.00"', ',06/19/2024,Invoice,1002,300.00', 'Total for Wayne Enterprises,,,,"1,500.00"'].join('\n')
+  expect(titleLines(qb)).toMatchObject({ sep: ',', skip: 4 })
+  // A plain table: nothing above its names.
+  expect(titleLines('a,b\n1,2\n3,4\n')).toBe(null)
+  expect(titleLines('just one line of text\nand another\n')).toBe(null)
+})
+
+test('a one-column frame’s header (",amount", "","x") is names, not a title line above them', async () => {
+  const { titleLines } = await import('../../src/engine/sniff')
+  expect(titleLines(',amount\n0,10\n1,20\n2,30\n')).toBe(null)
+  expect(titleLines('"","x"\n"1",5\n"2",6\n"3",7\n')).toBe(null)
+  // A bank's name in the first field, the names after it: a title.
+  expect(titleLines('HDFC BANK Ltd.,,\nDate,Narration,Amount\n2024-01-01,Rent,100\n2024-01-02,Fee,5\n')).toMatchObject({ sep: ',', skip: 1 })
+})
+
+test('a title line with a separator in it (the account’s name, its number) is still a title', async () => {
+  const { titleLines } = await import('../../src/engine/sniff')
+  const head = ['HDFC BANK Ltd.', 'SHARMA TRADERS PVT LTD,Account No :50100123456789', '', 'Date,Narration,Debit,Credit,Balance', '01/04/2026,Rent,100,,900', '02/04/2026,Fee,5,,895'].join('\n')
+  expect(titleLines(head)).toMatchObject({ sep: ',', skip: 3, fields: 5 })
+  // A header one field short of rows that end in a separator is no title.
+  expect(titleLines(['a,b,c', '1,2,3,', '4,5,6,', '7,8,9,'].join('\n'))).toBe(null)
+  // Nor a TSV whose text has commas, nor a short header over rows padded with separators.
+  expect(titleLines(['Name\tAddress\tAmount', 'Asha\tPune, MH\t100', 'Ben\t12 MG Road, Pune, MH, India\t200', 'Cy\t1 Main St, Goa, GA, India\t300', 'Di\t9 Park Rd, Agra, UP, India\t400'].join('\n'))).toBe(null)
+  expect(titleLines(['Name,Amount', 'Asha,100,,,,', 'Ben,200,,,,', 'Cy,300,,,,'].join('\n'))).toBe(null)
+})
+
+test('rows ending in a trailing separator aren’t a header with title lines above it', async () => {
+  const { titleLines } = await import('../../src/engine/sniff')
+  const trailing = ['Date,Narration,Amount', '2024-01-01,Item 0,0,', '2024-01-02,Item 1,1,', '2024-01-03,Item 2,2,'].join('\n')
+  expect(titleLines(trailing)).toBe(null)
+})
+
+test('a zip says what it holds: a workbook named .csv opens, a Word file renamed is named as one', async () => {
+  const { zipInside, notATable } = await import('../../src/engine/sniff')
+  const zip = (...names: string[]) => new TextEncoder().encode(`PK\x03\x04....${names.join('....')}`)
+  expect(zipInside(zip('[Content_Types].xml', 'xl/workbook.xml'))).toBe('xlsx')
+  expect(zipInside(zip('[Content_Types].xml', 'word/document.xml'))).toBe('docx')
+  expect(zipInside(zip('mimetypeapplication/vnd.oasis.opendocument.spreadsheet'))).toBe('ods')
+  expect(zipInside(zip('data.csv'))).toBe(null)
+  expect(notATable('zip', 'budget export.csv', 'xlsx')).toBe(null)
+  expect(notATable('zip', 'report.csv', 'docx')).toContain('is a Word document')
+  expect(notATable('zip', 'archive.csv', null)).toContain('is a zip archive')
+  // An Excel binary workbook has xl/ too; a Word file renamed .xlsx is still a Word file.
+  expect(zipInside(zip('[Content_Types].xml', 'xl/workbook.bin', 'xl/worksheets/sheet1.bin'))).toBe('xlsb')
+  expect(notATable('zip', 'book.xlsb', 'xlsb')).toContain('Excel binary workbook')
+  expect(notATable('zip', 'report.xlsx', 'docx')).toContain('is a Word document')
+  expect(notATable('zip', 'report.xlsx', null)).toBe(null)
+})
+
+test('UTF-8 or not: a £ written by Excel on Windows is one byte, not two', async () => {
+  const { isUtf8 } = await import('../../src/engine/sniff')
+  expect(isUtf8(new TextEncoder().encode('name,price\nRené,£12.50\n'))).toBe(true)
+  expect(isUtf8(new Uint8Array([0x52, 0x65, 0x6e, 0xe9, 0x2c, 0xa3, 0x31]))).toBe(false) // René,£1 in Windows-1252
+  expect(isUtf8(new TextEncoder().encode('£').slice(0, 1))).toBe(true) // cut off at the end of the slice
+})
+
+test('a report whose names are its first line, with group lines among its rows, is read by its separator when asked', async () => {
+  const { titleLines } = await import('../../src/engine/sniff')
+  const qb = [',Date,Type,Num,Amount', 'Acme Corp', ',06/10/2024,Invoice,1000,100.00', 'Total for Acme Corp,,,,100.00', 'Globex LLC', ',06/11/2024,Invoice,1001,50.00'].join('\r\n')
+  expect(titleLines(qb)).toBe(null)
+  expect(titleLines(qb, true)).toMatchObject({ sep: ',', skip: 0 })
+})

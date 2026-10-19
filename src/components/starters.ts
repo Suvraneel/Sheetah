@@ -1,3 +1,4 @@
+import { onTidiedRows } from '../engine/compose'
 import { isNumericType, nameKey, sqlName } from '../engine/sql'
 
 export interface Starter {
@@ -34,6 +35,9 @@ export interface StarterColumn {
   type: string
   /** Approximate distinct values (from the table), when known. */
   distinct?: number
+  /** For text: how its figures write decimals, as its values (or the file's other columns) say: a comma, a
+   * point, or null when nothing says (1.500 could be either). */
+  comma?: boolean | null
 }
 
 // Anchored: INTEGER[] or DATE[] (lists, from JSON or Parquet) can't be summed or bucketed by month.
@@ -64,18 +68,29 @@ export function startersFor(table: string, cols: StarterColumn[], rows?: number)
   // name says otherwise (salary). Distinct counts are estimates, off by up to ~20%: hence 0.8.
   const unique = (c: StarterColumn) =>
     isInt(c) && rows !== undefined && rows > 10 && (c.distinct ?? 0) >= rows * 0.8 && rank(c.name, MEASURE_WORDS) === MEASURE_WORDS.length
-  const measure = cols
+  const numeric = cols
     .filter((c) => isNumericType(c.type) && !NOT_A_MEASURE.test(nameKey(c.name)) && !unique(c) && (c.distinct ?? 3) > 2)
     // Names that sound like amounts first, then decimals before whole numbers.
     .sort((a, b) => rank(a.name, MEASURE_WORDS) - rank(b.name, MEASURE_WORDS) || Number(isInt(a)) - Number(isInt(b)))[0]
   // Text that names an amount (a rate or price stored as text) is a number to convert, not a category:
-  // by its last word ("Unit Rate", "GST %"), so "Cost Centre" and "Country" stay categories.
-  const amountLike = (c: StarterColumn) => /(^|[^a-z])(rate|price|amount|amt|cost|tax|value|total|balance|qty|quantity)s?$|%$/i.test(c.name.trim())
+  // by its last word ("Unit Rate", "GST %", "Withdrawal Amt.", "Amount (INR)"), so "Cost Centre" and
+  // "Country" stay categories.
+  const amountLike = (c: StarterColumn) =>
+    /(^|[^a-z])(rate|price|amount|amt|cost|tax|value|total|balance|bal|qty|quantity|debit|credit|withdrawal|deposit|dr|cr)s?$|%$/i.test(
+      c.name.trim().replace(/\s*\([^)]*\)$/, '').replace(/[.:]+$/, ''),
+    )
+  // An amount still written as text ("1,145.84" in a QuickBooks report) that sounds more like the amount than
+  // the numbers do (Amount beside Qty): summed read as a number, not passed over for Qty.
+  // Only when its figures say how they write decimals: "1.500" alone could be 1.5 or fifteen hundred.
+  const textAmount = cols
+    .filter((c) => TEXT.test(c.type) && !/BOOLEAN/i.test(c.type) && typeof c.comma === 'boolean' && amountLike(c) && !/%$/.test(c.name.trim()) && rank(c.name, MEASURE_WORDS) < MEASURE_WORDS.length)
+    .sort((a, b) => rank(a.name, MEASURE_WORDS) - rank(b.name, MEASURE_WORDS))[0]
+  const measure = textAmount && (!numeric || rank(textAmount.name, MEASURE_WORDS) < rank(numeric.name, MEASURE_WORDS)) ? textAmount : numeric
   const category = cols
     .filter((c) => TEXT.test(c.type) && c.distinct !== undefined && c.distinct >= 2 && c.distinct <= 60 && !amountLike(c))
     .sort((a, b) => rank(a.name, CATEGORY_WORDS) - rank(b.name, CATEGORY_WORDS) || (a.distinct ?? 0) - (b.distinct ?? 0))[0]
   const time = cols.find((c) => TEMPORAL.test(c.type) && !/birth|dob/i.test(c.name))
-  const m = measure && sqlName(measure.name)
+  const m = measure && (measure === textAmount ? `number_from_text${textAmount.comma ? '_comma' : ''}(${sqlName(measure.name)})` : sqlName(measure.name))
   const total = measure && sqlName(`total_${measure.name.replace(/\W+/g, '_').toLowerCase()}`)
   const out: Starter[] = []
 
@@ -102,4 +117,13 @@ export function startersFor(table: string, cols: StarterColumn[], rows?: number)
   if (measure) out.push({ label: `Top 10 by ${measure.name}`, sql: `SELECT *\nFROM ${t}\nORDER BY ${m} DESC NULLS LAST\nLIMIT 10` })
   out.push({ label: 'Summary of every column', sql: `SUMMARIZE ${t}` })
   return out
+}
+
+/**
+ * The starters made to read a table's tidied rows (total lines left out, text converted): each under a
+ * CTE of the table's name (onTidiedRows), so a sum doesn't count a total line twice. SUMMARIZE can't
+ * follow a WITH: it's read from inside one.
+ */
+export function onTidied(list: Starter[], table: string, tidied: string, steps: number): Starter[] {
+  return list.map((s) => ({ ...s, sql: onTidiedRows(s.sql.replace(/^SUMMARIZE\s+([\s\S]+)$/, 'SELECT * FROM (SUMMARIZE $1)'), table, tidied, steps) }))
 }

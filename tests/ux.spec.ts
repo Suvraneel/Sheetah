@@ -31,11 +31,44 @@ test.describe('workspace conveniences', () => {
     await expect(page.locator('.result-meta')).toContainText('4 rows')
   })
 
+  test('a report with a total line gets its example queries once the total is left out, summed without it', async ({ page }) => {
+    await openApp(page)
+    const rows = Array.from({ length: 30 }, (_, i) => `${['North', 'South', 'East'][i % 3]},${(i + 1) * 10}`)
+    // 10 + 20 + … + 300 = 4,650; the total line says so too, and would double it.
+    await page.locator('input[type=file]').setInputFiles([{ name: 'regions.csv', mimeType: 'text/csv', buffer: Buffer.from(`region,amount\n${rows.join('\n')}\nTotal,4650\n`) }])
+    const leaveOut = page.getByRole('button', { name: 'Leave out 1 total line' })
+    await expect(leaveOut).toBeVisible()
+    const starters = page.getByRole('navigation', { name: 'Example queries' })
+    // Not offered over the rows with the total in them.
+    await expect(starters).toHaveCount(0)
+    await leaveOut.click()
+    await starters.getByRole('button', { name: 'amount by region' }).click()
+    await expect(page.locator('.result-meta')).toContainText('3 rows')
+    await expect(page.locator('.cm-content')).toContainText('-- regions with its 1 tidy-up step')
+    // Each region's own rows: North is 10 + 40 + … + 280 = 1,450, not counting the total line.
+    await expect(page.locator('.sr-grid').last()).toContainText('1,450')
+    await expect(page.locator('.sr-grid').last()).not.toContainText('Total')
+  })
+
+  test('a total in a formula column is offered as the same total on every row', async ({ page }) => {
+    await openDemo(page)
+    await page.getByRole('button', { name: 'Add column' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Add a column' })
+    await dialog.getByLabel('Name').fill('all_revenue')
+    await dialog.getByLabel('Formula').fill('sum(total)')
+    await dialog.getByRole('button', { name: 'Add column' }).click()
+    await expect(dialog.getByRole('alert')).toContainText('sum() makes one number of all the rows')
+    await dialog.getByRole('button', { name: 'Use sum(total) OVER ()' }).click()
+    await expect(dialog.getByLabel('Formula')).toHaveValue('sum(total) OVER ()')
+    await dialog.getByRole('button', { name: 'Add column' }).click()
+    await expect(page.locator('.op-chip', { hasText: 'all_revenue' })).toBeVisible()
+  })
+
   test('theme toggle overrides the system and persists; the canvas grid follows', async ({ page }) => {
     await openDemo(page)
     const html = page.locator('html')
     await expect(html).toHaveAttribute('data-theme', 'light')
-    const toggle = page.getByRole('button', { name: /Colour theme/ })
+    const toggle = page.getByRole('button', { name: /^Theme: / })
     await toggle.click() // System → Light
     await toggle.click() // Light → Dark
     await expect(html).toHaveAttribute('data-theme', 'dark')
