@@ -182,7 +182,66 @@ export interface CleanStats {
  * 1.2345 (not a group of three), 1,234.5; and the same the other way round. (1234.567 too, a point only:
  * "1234,567" is as often two codes in a cell as a decimal.)
  */
-function decimalItems(ref: string, p: string): string[] {
+/**
+ * The counts are worked out over a column's distinct values in the sample, each weighted by its rows (`__n`):
+ * the same numbers as counting rows, but a column of 5,000 rows and five cities works out each city once.
+ * What only a number or a date can be is worked out only for values that could be one (`__num`, `__date`):
+ * user_42 or a@b.c is never put through the conversions, or 22 date formats.
+ */
+/** `full`: false for a column none of whose sampled values could be a number (its numbers' counts are 0, unplanned). */
+const counter = (full: boolean) => ({
+  /** Rows where `cond` holds. */
+  where: (cond: string) => `coalesce(sum(__n) FILTER (WHERE ${cond}), 0)::DOUBLE`,
+  /** Rows where `expr` isn't NULL. */
+  some: (expr: string) => `coalesce(sum(__n) FILTER (WHERE (${expr}) IS NOT NULL), 0)::DOUBLE`,
+  // (CASE, not AND: the engine works out a CASE's THEN only for the values its WHEN lets through.)
+  /** The same, among values that could be a number. */
+  whereNum: (cond: string) => (full ? `coalesce(sum(__n) FILTER (WHERE CASE WHEN __num THEN (${cond}) ELSE false END), 0)::DOUBLE` : '0::DOUBLE'),
+  someNum: (expr: string) => (full ? `coalesce(sum(__n) FILTER (WHERE CASE WHEN __num THEN (${expr}) IS NOT NULL ELSE false END), 0)::DOUBLE` : '0::DOUBLE'),
+  /** Among values that could be a date. */
+  whereDate: (cond: string) => (full ? `coalesce(sum(__n) FILTER (WHERE CASE WHEN __date THEN (${cond}) ELSE false END), 0)::DOUBLE` : '0::DOUBLE'),
+})
+type Count = ReturnType<typeof counter>
+
+/**
+ * The rows the counts are made on: up to `rows` of the table, the same ones each time it's asked (so a first
+ * look at which columns could hold numbers and the counts after it see the same values).
+ */
+const sampleOf = (table: string, rows: number) => `SELECT * FROM ${table} USING SAMPLE reservoir(${rows} ROWS) REPEATABLE (7)`
+
+/**
+ * Whether a value could be a number at all, cheaply: a digit in it, none of the characters no amount is
+ * written with (user_42, a@b.c, 10:30), and no more letters than "Rs. 1,200 [note 3] Dr" has. A date (as
+ * DATE_FORMATS write one) is made of digits, spaces, - / . , and at most a month's name (not INV-0042).
+ */
+const MAYBE_NUMBER = (v: string) => {
+  // Notes after a figure ([note: 3], (provisional)) are left off first, as the conversions leave them off.
+  const bare = `regexp_replace(${v}, '\\[[^\\]]*\\]|\\([^)]*\\)', '', 'g')`
+  return `(regexp_matches(${v}, '[0-9]') AND NOT regexp_matches(${bare}, '[_@#:;=&|"!?<>{}~^\\\\]') AND length(regexp_replace(${bare}, '[^A-Za-z]', '', 'g')) <= 12)`
+}
+const MAYBE_DATE = (v: string) =>
+  `(length(trim(${v})) BETWEEN 4 AND 30 AND regexp_full_match(lower(trim(${v})), '[0-9\\s,./-]*((jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*)?[0-9\\s,./-]*'))`
+
+/** Each column's counts over its distinct values in one sample, side by side in one row. */
+function byValue(table: string, refs: string[], sampleRows: number, items: (ref: string, p: string, k: Count) => string[], lite: boolean[] = []): string {
+  // Each column's values as __val (a column of the table called __n or __num can't get in the way).
+  const v = '__val::VARCHAR'
+  const parts = refs.map((ref, i) => {
+    const values = `(SELECT *, ${MAYBE_NUMBER(v)} AS __num FROM (SELECT ${ref} AS __val, count(*) AS __n FROM s GROUP BY ALL))`
+    return `(SELECT ${items('__val', `c${i}_`, counter(!lite[i])).join(', ')} FROM (SELECT *, __num AND ${MAYBE_DATE(v)} AS __date FROM ${values})) AS q${i}`
+  })
+  return `WITH s AS (${sampleOf(table, sampleRows)})\nSELECT * FROM ${parts.join(',\n  ')}`
+}
+
+/**
+ * For each column, whether any sampled value could be a number (or a date) at all: the ones that can't (emails,
+ * names) are counted without the costly readings, which take the engine longer to plan than to run.
+ */
+export function maybeNumbersSql(table: string, refs: string[], sampleRows = 5000): string {
+  return `WITH s AS (${sampleOf(table, sampleRows)})\nSELECT ${refs.map((ref, i) => `coalesce(bool_or(${MAYBE_NUMBER(`${ref}::VARCHAR`)}), false) AS m${i}`).join(', ')} FROM s`
+}
+
+function decimalItems(ref: string, p: string, count: Count): string[] {
   // The value without currency signs and spaces.
   const bare = `regexp_replace(${textOf(ref)}, '[₹$€£¥\\s]', '', 'g')`
   const only = (dec: string, group: string) => {
@@ -191,8 +250,8 @@ function decimalItems(ref: string, p: string): string[] {
     return `'[-+(]?(([0-9]*${d}[0-9]{1,2})|(0?${d}[0-9]+)|([0-9]{1,3}${d}[0-9]{4,})${lead}|([0-9]{1,3}(${g}[0-9]${group === ',' ? '{2,3}' : '{3}'})+${d}[0-9]+))%?\\)?'`
   }
   return [
-    `count(*) FILTER (WHERE regexp_full_match(${bare}, ${only('.', ',')}))::DOUBLE AS ${p}point_only`,
-    `count(*) FILTER (WHERE regexp_full_match(${bare}, ${only(',', '.')}))::DOUBLE AS ${p}comma_only`,
+    `${count.whereNum(`regexp_full_match(${bare}, ${only('.', ',')})`)} AS ${p}point_only`,
+    `${count.whereNum(`regexp_full_match(${bare}, ${only(',', '.')})`)} AS ${p}comma_only`,
   ]
 }
 
@@ -200,41 +259,41 @@ function decimalItems(ref: string, p: string): string[] {
 const PLACEHOLDER = `'(x|\\.\\.?|:|-|–|—|c|z|u|n|s|n/?a|nil|none|null|\\*|\\?|\\[[a-z]\\]|\\([a-z]\\)|tbc|tba)'`
 
 /** The counts for one column (refs are SQL for the column), as select-list items prefixed `p`. */
-function statsItems(ref: string, p: string): string[] {
+function statsItems(ref: string, p: string, count: Count): string[] {
   const v = textOf(ref)
   // The clean-up steps' own macros (number_from_text…): what a conversion would do, and short SQL however
   // many columns are counted.
-  const parses = (expr: string) => `count(${expr})::DOUBLE`
   return [
-    `count(nullif(${v}, ''))::DOUBLE AS ${p}values`,
-    `${parses(`number_from_text(${ref})`)} AS ${p}numbers`,
-    `${parses(`number_from_text_comma(${ref})`)} AS ${p}comma_numbers`,
-    ...decimalItems(ref, p),
-    `count(*) FILTER (WHERE regexp_full_match(regexp_replace(${v}, '[₹$€£¥\\s]', '', 'g'), '[-+(]?[0-9]{1,3}(,[0-9]{3})+\\)?'))::DOUBLE AS ${p}amb_comma`,
-    `count(*) FILTER (WHERE regexp_full_match(lower(${v}), ${PLACEHOLDER}))::DOUBLE AS ${p}placeholders`,
-    `count(*) FILTER (WHERE regexp_full_match(regexp_replace(${v}, '[₹$€£¥\\s]', '', 'g'), '[-+(]?[0-9]{1,3}(\\.[0-9]{3})+\\)?'))::DOUBLE AS ${p}amb_point`,
-    `count(*) FILTER (WHERE trim(${marksOff(v)}) LIKE '%\\%' ESCAPE '\\' AND percent_from_text(${ref}) IS NOT NULL)::DOUBLE AS ${p}percents`,
-    `count(*) FILTER (WHERE trim(${marksOff(v)}) LIKE '%\\%' ESCAPE '\\' AND percent_from_text_comma(${ref}) IS NOT NULL)::DOUBLE AS ${p}comma_percents`,
+    `${count.some(`nullif(${v}, '')`)} AS ${p}values`,
+    `${count.someNum(`number_from_text(${ref})`)} AS ${p}numbers`,
+    `${count.someNum(`number_from_text_comma(${ref})`)} AS ${p}comma_numbers`,
+    ...decimalItems(ref, p, count),
+    `${count.whereNum(`regexp_full_match(regexp_replace(${v}, '[₹$€£¥\\s]', '', 'g'), '[-+(]?[0-9]{1,3}(,[0-9]{3})+\\)?')`)} AS ${p}amb_comma`,
+    `${count.where(`regexp_full_match(lower(${v}), ${PLACEHOLDER})`)} AS ${p}placeholders`,
+    `${count.whereNum(`regexp_full_match(regexp_replace(${v}, '[₹$€£¥\\s]', '', 'g'), '[-+(]?[0-9]{1,3}(\\.[0-9]{3})+\\)?')`)} AS ${p}amb_point`,
+    `${count.whereNum(`trim(${marksOff(v)}) LIKE '%\\%' ESCAPE '\\' AND percent_from_text(${ref}) IS NOT NULL`)} AS ${p}percents`,
+    `${count.whereNum(`trim(${marksOff(v)}) LIKE '%\\%' ESCAPE '\\' AND percent_from_text_comma(${ref}) IS NOT NULL`)} AS ${p}comma_percents`,
     ...DATE_FORMATS.map((f, i) => {
-      const hit = `try_strptime(${v}, ${quoteLiteral(f.format)}) IS NOT NULL`
-      return `count(*) FILTER (WHERE ${hit}${f.format.includes('%Y') ? ` AND regexp_matches(${v}, '[0-9]{4}')` : ''})::DOUBLE AS ${p}d${i}`
+      // (As date_from_text reads: a digit in it, four together for %Y; "-Infinity" is no date.)
+      const hit = `regexp_matches(${v}, ${f.format.includes('%Y') ? "'[0-9]{4}'" : "'[0-9]'"}) AND try_strptime(${v}, ${quoteLiteral(f.format)}) IS NOT NULL`
+      return `${count.whereDate(hit)} AS ${p}d${i}`
     }),
-    `count(*) FILTER (WHERE ${ref}::VARCHAR <> regexp_replace(${v}, '\\s+', ' ', 'g'))::DOUBLE AS ${p}untrimmed`,
-    `count(*) FILTER (WHERE ${ref} IS NOT NULL AND ${v} = '')::DOUBLE AS ${p}blanks`,
+    `${count.where(`${ref}::VARCHAR <> regexp_replace(${v}, '\\s+', ' ', 'g')`)} AS ${p}untrimmed`,
+    `${count.where(`${ref} IS NOT NULL AND ${v} = ''`)} AS ${p}blanks`,
     // 007, 0456: codes, not quantities (converting would drop the zeros).
-    `count(*) FILTER (WHERE regexp_full_match(${v}, '0[0-9]+'))::DOUBLE AS ${p}zeros`,
-    `${parses(`number_from_cr_dr(${ref})`)} AS ${p}drcr_numbers`,
-    `count(*) FILTER (WHERE regexp_matches(${v}, '[0-9)]\\s*[dD][rR]\\.?$'))::DOUBLE AS ${p}debits`,
+    `${count.whereNum(`regexp_full_match(${v}, '0[0-9]+')`)} AS ${p}zeros`,
+    `${count.someNum(`number_from_cr_dr(${ref})`)} AS ${p}drcr_numbers`,
+    `${count.where(`regexp_matches(${v}, '[0-9)]\\s*[dD][rR]\\.?$')`)} AS ${p}debits`,
   ]
 }
 
 /**
  * One query over one sample of the table (up to `sampleRows` rows) with the counts for every column
- * given (refs are the columns as SQL). Read each column's counts with readStats(row, i).
+ * given (refs are the columns as SQL). Read each column's counts with readStats(row, i). Each distinct
+ * value is worked out once (a column of five cities costs five, not 5,000).
  */
-export function statsSql(table: string, refs: string[], sampleRows = 5000): string {
-  const items = refs.flatMap((ref, i) => statsItems(ref, `c${i}_`))
-  return `SELECT\n  ${items.join(',\n  ')}\nFROM (SELECT * FROM ${table} USING SAMPLE ${sampleRows} ROWS)`
+export function statsSql(table: string, refs: string[], sampleRows = 5000, lite: boolean[] = []): string {
+  return byValue(table, refs, sampleRows, statsItems, lite)
 }
 
 /**
@@ -252,16 +311,12 @@ export function lossesSql(table: string, items: { ref: string; expr: string }[])
 
 /** Just what says how decimals are written, for each column (read with readStats: values, numbers, commaNumbers, pointOnly, commaOnly). */
 export function decimalsSql(table: string, refs: string[], sampleRows = 5000): string {
-  const items = refs.flatMap((ref, i) => {
-    const v = textOf(ref)
-    return [
-      `count(nullif(${v}, ''))::DOUBLE AS c${i}_values`,
-      `count(number_from_text(${ref}))::DOUBLE AS c${i}_numbers`,
-      `count(number_from_text_comma(${ref}))::DOUBLE AS c${i}_comma_numbers`,
-      ...decimalItems(ref, `c${i}_`),
-    ]
-  })
-  return `SELECT\n  ${items.join(',\n  ')}\nFROM (SELECT * FROM ${table} USING SAMPLE ${sampleRows} ROWS)`
+  return byValue(table, refs, sampleRows, (ref, p, count) => [
+    `${count.some(`nullif(${textOf(ref)}, '')`)} AS ${p}values`,
+    `${count.someNum(`number_from_text(${ref})`)} AS ${p}numbers`,
+    `${count.someNum(`number_from_text_comma(${ref})`)} AS ${p}comma_numbers`,
+    ...decimalItems(ref, p, count),
+  ])
 }
 
 /**

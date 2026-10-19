@@ -193,14 +193,14 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
   }, [dirKey])
 
   // How many lines match, and what's left on each side, a moment after anything changes.
-  const [counts, setCounts] = useState<{ sql: string; rows?: { status: string; n: number; total: number; money_in: number; money_out: number; near: number; undated: number }[]; error?: string } | null>(null)
+  const [counts, setCounts] = useState<{ sql: string; rows?: { status: string; n: number; total: number; money_in: number; money_out: number; near: number; undated: number; typos: number }[]; error?: string } | null>(null)
   useEffect(() => {
     if (!sql) return
     let live = true
     const t = window.setTimeout(() => {
       void getEngine()
         .then(({ conn }) => conn.query(matchCountsSql(sql)))
-        .then((res) => live && setCounts({ sql, rows: res.toArray().map((r) => r.toJSON() as { status: string; n: number; total: number; money_in: number; money_out: number; near: number; undated: number }) }))
+        .then((res) => live && setCounts({ sql, rows: res.toArray().map((r) => r.toJSON() as { status: string; n: number; total: number; money_in: number; money_out: number; near: number; undated: number; typos: number }) }))
         .catch((e: unknown) => live && setCounts({ sql, error: e instanceof Error ? e.message : String(e) }))
     }, 300)
     return () => {
@@ -225,8 +225,11 @@ export function MatchDialog({ tables, sources = NONE, a, b, onMatch, onClose }: 
           ...(() => {
             const near = (of(labels.a)?.near ?? 0) + (of(labels.b)?.near ?? 0)
             const undated = (of(labels.a)?.undated ?? 0) + (of(labels.b)?.undated ?? 0)
+            // (Said beside both lines of each pair: counted once.)
+            const typos = of(labels.a)?.typos ?? 0
             return [
               ...(near ? [`${nf.format(near)} with the same amount further apart (see note)`] : []),
+              ...(typos ? [`${nf.format(typos)} ${typos === 1 ? 'pair' : 'pairs'} where an amount may be typed wrong on one side (see note)`] : []),
               ...(undated ? [`${nf.format(undated)} with no date`] : []),
             ]
           })(),

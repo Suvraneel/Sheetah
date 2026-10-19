@@ -3,9 +3,9 @@
  * fill down or convert, dates that read both ways, a column's profile and values. Loaded when first needed,
  * so the first screen doesn't wait for it.
  */
-import { getEngine, quoteIdent, quoteLiteral } from './db'
+import { background, backgroundSlow, getEngine, quoteIdent, quoteLiteral } from './db'
 import { cleanExpr, isConversion, type Clean, type DropRows } from './clean'
-import { confidentConversion, lossesSql, dataSumsSql, eitherJunk, fillDownSql, isTextColumn, looksFilledDown, junkPredicates, labelSumsSql, readTieOut, totalsAgree, readStats, statsSql, suggestCleaning, decimalsSql, fileDecimalComma, type CleanStats, type CleanSuggestion } from './clean-scan'
+import { confidentConversion, lossesSql, dataSumsSql, eitherJunk, fillDownSql, isTextColumn, looksFilledDown, junkPredicates, labelSumsSql, readTieOut, totalsAgree, readStats, statsSql, maybeNumbersSql, suggestCleaning, decimalsSql, fileDecimalComma, type CleanStats, type CleanSuggestion } from './clean-scan'
 import { LOCALE, nameKey } from './sql'
 import { balanceLineSql, isBalanceName, statementColumns } from './statement'
 import { closingLineSql } from './checks'
@@ -67,7 +67,7 @@ export async function profileColumn(result: ResultSet, column: ColumnInfo): Prom
 export async function ambiguousDates(result: ResultSet): Promise<string[]> {
   const dates = result.columns.filter((c) => c.type === 'DATE')
   if (!result.table || !dates.length) return []
-  const { conn } = await getEngine()
+  const conn = background
   const row = (await conn.query(`SELECT ${dates.map((c, i) => `max(day(${colRef(c)}))::DOUBLE AS d${i}, count(${colRef(c)})::DOUBLE AS n${i}`).join(', ')} FROM ${result.table}`)).toArray()[0]?.toJSON() as
     | Record<string, number | null>
     | undefined
@@ -87,7 +87,7 @@ export function emptyTextColumns(result: ResultSet): Promise<string[]> {
   const scan = (async () => {
     const texts = result.columns.filter((c) => isTextColumn(c.type))
     if (!result.table || !texts.length || result.columns.length < 2 || result.rowCount === 0) return []
-    const { conn } = await getEngine()
+    const conn = background
     const filled = async (cols: ColumnInfo[], from: string) => {
       const row = (await conn.query(`SELECT ${cols.map((c, i) => `count(nullif(trim(${colRef(c)}::VARCHAR), ''))::DOUBLE AS f${i}`).join(', ')} FROM ${from}`)).toArray()[0]?.toJSON() as
         | Record<string, number>
@@ -110,7 +110,7 @@ export function emptyTextColumns(result: ResultSet): Promise<string[]> {
 async function bigTableTotals(result: ResultSet): Promise<DropRows[]> {
   const texts = result.columns.filter((c) => isTextColumn(c.type))
   if (!result.table || !texts.length) return []
-  const { conn } = await getEngine()
+  const conn = background
   const p = junkPredicates(result.columns.map((c) => ({ ref: colRef(c), text: isTextColumn(c.type), name: c.name })))
   if (!p.strong || !p.weak) return []
   const mentions = texts.map((c) => `${colRef(c)}::VARCHAR ILIKE '%total%'`).join(' OR ')
@@ -131,7 +131,7 @@ export async function junkRows(result: ResultSet): Promise<DropRows[]> {
   if (!result.table || !result.columns.length) return []
   // Scanning every value of a big table would hold the engine for seconds: a quick check for total lines only.
   if (result.rowCount > 500_000) return result.rowCount <= 5_000_000 ? bigTableTotals(result) : []
-  const { conn } = await getEngine()
+  const conn = background
   // An empty first column (some exports start with one) would hide the labels in the next: left out.
   const empty = new Set(await emptyTextColumns(result))
   const columns = result.columns.filter((c) => !empty.has(c.name))
@@ -294,7 +294,7 @@ const DATE_LIKE = `'^(\\d{1,2}(st|nd|rd|th)?[/.,\\- ]*([A-Za-z]{3,9}\\.?|\\d{1,2
  */
 export async function fillDownColumns(result: ResultSet): Promise<string[]> {
   if (!result.table || result.columns.length < 2 || result.rowCount < 6 || result.rowCount > 500_000) return []
-  const { conn } = await getEngine()
+  const conn = background
   const refs = result.columns.map(colRef)
   // An empty leading column (some exports start with one) doesn't count as one of the first.
   const empty = new Set(await emptyTextColumns(result))
@@ -393,16 +393,33 @@ export async function cleaningFor(result: ResultSet, column: ColumnInfo, locale 
 export async function textFindings(result: ResultSet, locale = LOCALE): Promise<{ convert: Clean[]; spaces: string[] }> {
   const cols = result.columns.filter((c) => isTextColumn(c.type)).slice(0, 120)
   if (!result.table || !cols.length) return { convert: [], spaces: [] }
-  const { conn } = await getEngine()
-  // Ten columns a query: each column's counts are a few KB of SQL, and a wide table's in one would run the
-  // engine out of memory.
-  const stats: { c: ColumnInfo; s: CleanStats }[] = []
-  for (let i = 0; i < cols.length; i += 10) {
-    const part = cols.slice(i, i + 10)
-    const row = (await conn.query(statsSql(result.table, part.map(colRef)))).toArray()[0]?.toJSON() as Record<string, unknown> | undefined
-    if (!row) return { convert: [], spaces: [] }
-    part.forEach((c, j) => stats.push({ c, s: readStats(row, j) }))
+  const conn = background
+  // First, cheaply, which columns could hold a number or a date at all: the others (names, emails, notes) are
+  // counted without the costly readings, which take the engine longer to plan than to run.
+  const maybe = new Set<ColumnInfo>()
+  for (let i = 0; i < cols.length; i += 40) {
+    const part = cols.slice(i, i + 40)
+    const row = (await conn.query(maybeNumbersSql(result.table, part.map(colRef)))).toArray()[0]?.toJSON() as Record<string, unknown> | undefined
+    part.forEach((c, j) => row?.[`m${j}`] && maybe.add(c))
   }
+  // A few columns a query: each one's counts are a few KB of SQL (a wide table's in one would run the engine
+  // out of memory), and the engine takes one query at a time, so what the user asks for meanwhile waits for
+  // the query under way. On a big table, a column a query; on a small one, the query's cost is in planning it.
+  // (These come after the other scans' queries: a wide table's look-over finds personal data first.)
+  const step = result.rowCount > 20_000 ? 1 : result.rowCount > 2_000 ? 4 : 10
+  const found = new Map<ColumnInfo, CleanStats>()
+  const count = async (list: ColumnInfo[], n: number, lite: boolean) => {
+    for (let i = 0; i < list.length; i += n) {
+      const part = list.slice(i, i + n)
+      const sql = statsSql(result.table!, part.map(colRef), 5000, part.map(() => lite))
+      const row = (await backgroundSlow.query(sql)).toArray()[0]?.toJSON() as Record<string, unknown> | undefined
+      if (!row) return false
+      part.forEach((c, j) => found.set(c, readStats(row, j)))
+    }
+    return true
+  }
+  if (!(await count(cols.filter((c) => maybe.has(c)), step, false)) || !(await count(cols.filter((c) => !maybe.has(c)), 30, true))) return { convert: [], spaces: [] }
+  const stats = cols.map((c) => ({ c, s: found.get(c)! }))
   // A column of 1,500 and 0,750 beside a price of 2,49: read the way the file writes decimals.
   const fileComma = fileDecimalComma(stats.map(({ c, s }) => ({ name: c.name, s })))
   let convert = stats.map(({ c, s }) => confidentConversion(suggestCleaning(c.name, s, locale, true, fileComma))).filter((c): c is Clean => !!c)

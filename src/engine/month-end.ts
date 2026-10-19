@@ -21,7 +21,7 @@ import {
 } from './checks'
 import type { DropRows } from './clean'
 import type { Ops } from './compose'
-import { getEngine } from './db'
+import { background, getEngine } from './db'
 import { idCheckSql, idCheckText, idColumns, panMatchSql, readIdRow } from './ids'
 import type { MatchSide, MatchSpec } from './match'
 import { colRef, type ResultSet } from './result'
@@ -39,8 +39,9 @@ interface Col {
 
 const nf = new Intl.NumberFormat(LOCALE).format
 const money = new Intl.NumberFormat(LOCALE, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format
-const first = async (sql: string) => {
-  const { conn } = await getEngine()
+/** A query's first row. `scan`: looked over unasked (as a table opens), so it waits for the user's own work. */
+const first = async (sql: string, scan = false) => {
+  const conn = scan ? background : (await getEngine()).conn
   return ((await conn.query(sql)).toArray()[0]?.toJSON() ?? {}) as Record<string, number | null>
 }
 
@@ -153,13 +154,13 @@ export async function reconcileQuery({ sql, spec }: { sql: string; spec: MatchSp
  * GSTINs, PANs and IFSC codes, where a column is named for one: whether each is well formed, and (with both
  * a GSTIN and a PAN column) whether each PAN is its GSTIN's. Null when the table has none.
  */
-export async function idCheck(res: ResultSet): Promise<Check | null> {
+export async function idCheck(res: ResultSet, scan = false): Promise<Check | null> {
   const cols = idColumns(res.columns)
   if (!cols.length || !res.table) return null
   const table = res.table
-  const found = await Promise.all(cols.map(async ({ column, kind }) => readIdRow(column.name, kind, await first(idCheckSql(table, column, kind)))))
+  const found = await Promise.all(cols.map(async ({ column, kind }) => readIdRow(column.name, kind, await first(idCheckSql(table, column, kind), scan))))
   const [gstin, pan] = [cols.find((c) => c.kind === 'gstin'), cols.find((c) => c.kind === 'pan')]
-  const pans = gstin && pan ? readIdRow(pan.column.name, 'pan', await first(panMatchSql(table, gstin.column, pan.column))) : undefined
+  const pans = gstin && pan ? readIdRow(pan.column.name, 'pan', await first(panMatchSql(table, gstin.column, pan.column), scan)) : undefined
   return idCheckText(found, pans)
 }
 
@@ -169,7 +170,7 @@ export async function idCheck(res: ResultSet): Promise<Check | null> {
  * When the balance follows the books' way and not the bank's, the columns are turned round: the signed
  * amount is Debit − Credit, and the balance is checked that way. Null when there's nothing to turn.
  */
-export async function orientation(table: string, columns: { name: string; type: string; numeric?: boolean; ident?: string }[]): Promise<'books' | null> {
+export async function orientation(table: string, columns: { name: string; type: string; numeric?: boolean; ident?: string }[], scan = false): Promise<'books' | null> {
   const st = statementColumns(columns)
   if (!st?.balance || st.books || !/^(debits?|dr)$/i.test(st.debit.trim()) || !/^(credits?|cr)$/i.test(st.credit.trim())) return null
   const col = (n: string) => columns.find((c) => c.name === n)!
@@ -177,7 +178,7 @@ export async function orientation(table: string, columns: { name: string; type: 
   const ref = (n: string) => quoteIdent(col(n).ident ?? n)
   const s = { ...st, balance: st.balance }
   const turned = { ...s, credit: st.debit, debit: st.credit }
-  const [bank, books] = await Promise.all([first(balanceCheckSql(table, s, isN, ref)), first(balanceCheckSql(table, turned, isN, ref))])
+  const [bank, books] = await Promise.all([first(balanceCheckSql(table, s, isN, ref), scan), first(balanceCheckSql(table, turned, isN, ref), scan)])
   const bad = (r: Record<string, number | null>) => readBalanceCheck(r)?.bad ?? Infinity
   return bad(books) < bad(bank) ? 'books' : null
 }

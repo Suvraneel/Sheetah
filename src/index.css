@@ -1584,6 +1584,14 @@ body:has(.modal-backdrop) .toast-stack { z-index: 29; }
    dark steps down to #6f7dff to sit inside the dark lightness band, 3:1+ on the dark surface). */
 :root { --viz-1: #3346ff; --viz-wash: rgb(51 70 255 / 0.1); }
 :root[data-theme='dark'] { --viz-1: #6f7dff; --viz-wash: rgb(111 125 255 / 0.12); }
+/* A split's series: the accent first, then colors chosen to stay apart in lightness as well as hue, so that
+   they're told apart with any color vision (simulated protan, deutan and tritan: every pair, the grey too,
+   at least 13 apart in OKLab ×100 on light, 7.6 on dark), each 3:1+ on the surface; the rest put together
+   in grey. Order is fixed so a series keeps its color across charts of the same split. */
+:root { --viz-2: #e4762c; --viz-3: #c11435; --viz-4: #784d96; --viz-5: #2b1980; --viz-6: #620b05; --viz-other: #868e96; }
+:root[data-theme='dark'] { --viz-2: #f0954a; --viz-3: #e03a4e; --viz-4: #c9a0f0; --viz-5: #2fd3c0; --viz-6: #f5e663; --viz-other: #7c8590; }
+.viz-s0 { --s: var(--viz-1); } .viz-s1 { --s: var(--viz-2); } .viz-s2 { --s: var(--viz-3); }
+.viz-s3 { --s: var(--viz-4); } .viz-s4 { --s: var(--viz-5); } .viz-s5 { --s: var(--viz-6); } .viz-other { --s: var(--viz-other); }
 
 .view-switch { display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px; background: var(--sunken); box-shadow: inset 0 0 0 1px var(--hair); }
 .view-switch button {
@@ -1618,11 +1626,22 @@ body:has(.modal-backdrop) .toast-stack { z-index: 29; }
 .chart-tick { fill: var(--faint); font: 11px var(--sans); font-variant-numeric: tabular-nums; }
 .chart-cat { fill: var(--muted); font: 12px var(--sans); }
 .chart-value { fill: var(--text); font: 600 12px var(--sans); }
-.chart-mark { fill: var(--viz-1); transition: opacity 180ms var(--ease); }
+.chart-mark { fill: var(--s, var(--viz-1)); transition: opacity 180ms var(--ease); }
+.chart-part { stroke: var(--grid-bg); stroke-width: 1; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 10px; padding: 0; list-style: none; color: var(--muted); font-size: 12px; }
+.chart-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.chart-swatch { display: block; flex: none; overflow: visible; }
+.chart-swatch .chart-line { stroke-width: 2.5; }
+.chart-key { fill: var(--s, var(--viz-1)); }
+.chart-tip-series { display: grid; gap: 2px; margin: 2px 0 0; }
+.chart-tip-series div { display: flex; justify-content: space-between; gap: 14px; }
+.chart-tip-series dt { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.chart-tip-series dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.chart-tip-total { padding-top: 2px; box-shadow: inset 0 1px 0 var(--hair); }
 .chart:has(.is-active) .chart-mark:not(.is-active), .chart:has(.is-active) g:not(.is-active) > .chart-mark { opacity: 0.45; }
-.chart-line { fill: none; stroke: var(--viz-1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart-line { fill: none; stroke: var(--s, var(--viz-1)); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .chart-wash { fill: var(--viz-wash); }
-.chart-dot { fill: var(--viz-1); stroke: var(--grid-bg); stroke-width: 2; }
+.chart-dot { fill: var(--s, var(--viz-1)); stroke: var(--grid-bg); stroke-width: 2; }
 .chart-cross { stroke: var(--hair-strong); stroke-width: 1; }
 .chart-tip {
   position: absolute; z-index: 2; display: grid; gap: 2px; padding: 7px 10px; border-radius: 10px; pointer-events: none; white-space: nowrap;
@@ -1633,8 +1652,12 @@ body:has(.modal-backdrop) .toast-stack { z-index: 29; }
 .colmenu-hist { margin-bottom: 12px; }
 .chart-compact .chart-tick { font-size: 10px; }
 @media (forced-colors: active) {
-  .chart-mark, .chart-dot { fill: CanvasText; }
+  .chart-mark, .chart-dot, .chart-key { fill: CanvasText; }
   .chart-line { stroke: CanvasText; }
+  /* One color for every series: lines told apart by their dashes, parts by the gap between them. */
+  .chart-line.viz-s1 { stroke-dasharray: 6 3; } .chart-line.viz-s2 { stroke-dasharray: 2 3; } .chart-line.viz-s3 { stroke-dasharray: 8 3 2 3; }
+  .chart-line.viz-s4 { stroke-dasharray: 12 4; } .chart-line.viz-s5, .chart-line.viz-other { stroke-dasharray: 1 4; }
+  .chart-part { stroke: Canvas; stroke-width: 2; }
 }
 
 /* ---------- Pivot ---------- */

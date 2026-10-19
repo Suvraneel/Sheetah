@@ -5,6 +5,16 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 ## Unreleased
 
 ### Added
+- **Charts split by a column**: *Split by* Region (or Status, or any column that names things) draws a line for
+  each over time, or each bar in parts that add up to it (side by side for averages, which don't add up). The
+  largest five are shown and the rest put together as Other; every series' value is in the tooltip, by keyboard
+  too, and *Open as query* gives the table behind it, a column per series.
+- **A pivot's chart is a pivot chart**: a pivot with a field across charts its columns as the parts of each bar
+  (Food, Rent and Travel in each month), titled in the pivot's own words, its Total row and column left out. *Each
+  number column* does the same for any result with several amounts side by side.
+- **An amount typed wrong, said in the match**: a line left over beside one on the other side, within the days
+  allowed, with the same digits in another order (5,400 and 4,500) or a zero more or less (500 and 5,000) says
+  so: *amount differs: 4,500.00 in books on 2024-04-04 (digits swapped?)*. The match preview counts them.
 - **A statement with one Amount and a Dr / Cr column** (Kotak's, card statements) is offered *Split Amount into
   money in and out*: two columns, after which it sums, summarises by month, matches and reconciles like any
   statement.
@@ -320,6 +330,10 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   says to tap for exact values.
 
 ### Fixed
+- **Clicking another table no longer waits for the last one to be looked over**: the look-over scans (numbers
+  stored as text, total lines, personal data…) give way to whatever is asked for, one query at a time, and work
+  each distinct value out once, skipping the costly readings for values that can't be a number or a date. A
+  20,000-row table clicked just after a 300,000-row file opened took 4 seconds; it takes under one.
 - **Big files and long sessions** (from a scale audit up to 1 GB):
   - A table read whole (`SELECT * FROM t`) is shown from the table itself, not a copy: half the memory, so a
     sort of an 18-million-row file no longer runs out.

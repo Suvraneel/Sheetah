@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { LOCALE } from '../engine/sql'
-import { AGGS, TIME_GRAINS, TOP_N, chartData, defaultSpec, isTemporal, xCandidates, type Agg, type ChartData, type ChartSpec, type TimeGrain } from '../engine/chart'
+import { AGGS, TIME_GRAINS, TOP_N, chartData, defaultSpec, eachColumns, isTemporal, xCandidates, yearName, type Agg, type ChartData, type ChartSpec, type TimeGrain } from '../engine/chart'
 import type { ResultSet } from '../engine/result'
 import { Chart } from './Chart'
 import { Icon } from './Icon'
@@ -14,6 +14,8 @@ interface Props {
 }
 
 const nf = new Intl.NumberFormat(LOCALE)
+/** The "of" choice for every number column at once (never a column's name: it has a NUL in it). */
+const EACH = '\u0000each'
 
 export function ChartPanel({ result, onOpenSql, textNumbers, onConvert }: Props) {
   const xs = useMemo(() => xCandidates(result.columns), [result])
@@ -22,7 +24,11 @@ export function ChartPanel({ result, onOpenSql, textNumbers, onConvert }: Props)
   // A new result keeps the current choice when its columns still exist; otherwise pick a sensible default.
   const spec = useMemo(() => {
     const ok = chosen && result.columns.some((c) => c.name === chosen.x) && (!chosen.y || result.columns.some((c) => c.name === chosen.y))
-    return ok ? chosen : defaultSpec(result.columns)
+    if (!ok) return defaultSpec(result.columns, result.sql)
+    // A split by a column the new result doesn't have is left off; the rest of the choice stays.
+    // (Nor by one that is no longer a split's to pick: the column grouped by, a date, a number.)
+    const splittable = xCandidates(result.columns).some((c) => c.name === chosen.split && c.name !== chosen.x && !isTemporal(c))
+    return chosen.split && !splittable ? { ...chosen, split: null } : chosen
   }, [chosen, result])
   const [state, setState] = useState<{ for: unknown; data?: ChartData | null; error?: string } | null>(null)
   const key = useMemo(() => ({ result, spec }), [result, spec])
@@ -51,10 +57,16 @@ export function ChartPanel({ result, onOpenSql, textNumbers, onConvert }: Props)
   }
 
   const xCol = result.columns.find((c) => c.name === spec.x)
-  const isDistribution = !!xCol?.numeric
+  // A column of years is a time axis, not a distribution (its measure and split stay).
+  const isDistribution = !!xCol?.numeric && !yearName(xCol)
   const set = (patch: Partial<ChartSpec>) => setChosen({ ...spec, ...patch })
   const isTime = !!xCol && isTemporal(xCol)
   const grains = TIME_GRAINS.filter((g) => g !== 'hour' || !/^DATE$/i.test(xCol?.type ?? ''))
+  // Splits: the columns that name things (a time axis is the x, not a series).
+  const splits = xs.filter((c) => c.name !== spec.x && !isTemporal(c))
+  // Each number column as its own series: offered for sums, when there are two or more to chart.
+  const eachOk = spec.agg === 'sum' && eachColumns(result.columns, spec.x, result.sql, spec.y).length >= 2
+  const each = eachOk && !!spec.each
 
   return (
     <div className={`chart-panel${loading ? ' is-loading' : ''}`} id="results-chart">
@@ -67,9 +79,9 @@ export function ChartPanel({ result, onOpenSql, textNumbers, onConvert }: Props)
                 {c.name}
               </option>
             ))}
-            {numeric.length > 0 && (
+            {numeric.some((c) => !yearName(c)) && (
               <optgroup label="Distribution of">
-                {numeric.map((c) => (
+                {numeric.filter((c) => !yearName(c)).map((c) => (
                   <option key={c.name} value={c.name}>
                     {c.name}
                   </option>
@@ -112,8 +124,22 @@ export function ChartPanel({ result, onOpenSql, textNumbers, onConvert }: Props)
             {spec.agg !== 'count' && (
               <label>
                 <span>of</span>
-                <select value={spec.y ?? ''} onChange={(e) => set({ y: e.target.value })}>
+                <select value={each ? EACH : (spec.y ?? '')} onChange={(e) => set(e.target.value === EACH ? { each: true } : { y: e.target.value, each: false })}>
+                  {eachOk && <option value={EACH}>Each number column</option>}
                   {numeric.map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {splits.length > 0 && !each && (
+              <label>
+                <span>Split by</span>
+                <select value={spec.split ?? ''} onChange={(e) => set({ split: e.target.value || null })}>
+                  <option value="">None</option>
+                  {splits.map((c) => (
                     <option key={c.name} value={c.name}>
                       {c.name}
                     </option>
@@ -158,11 +184,27 @@ export function ChartPanel({ result, onOpenSql, textNumbers, onConvert }: Props)
                   : data.kind === 'hist'
                     ? `${nf.format(data.points.length)} equal-width bins · rows per bin`
                     : `${nf.format(data.points.length)} groups`}{' '}
+              {data.series && data.seriesGroups
+                ? data.other
+                  ? ` · ${data.series.length - 1} of ${nf.format(data.seriesGroups)} ${each ? 'columns' : `${spec.split} values`} shown, the rest as ${data.series.at(-1)}`
+                  : data.seriesGroups > data.series.length
+                    ? ` · the first ${data.series.length} of ${nf.format(data.seriesGroups)} columns`
+                    : ''
+                : ''}{' '}
               · all {nf.format(result.rowCount)} rows
             </span>
           </figcaption>
           {data.points.length ? (
-            <Chart kind={data.kind} points={data.points} label={data.title} valueName={data.kind === 'hist' ? 'rows' : 'value'} bucket={data.bucket} />
+            <Chart
+              kind={data.kind}
+              points={data.points}
+              label={data.title}
+              valueName={data.kind === 'hist' ? 'rows' : 'value'}
+              bucket={data.bucket}
+              series={data.series}
+              other={data.other}
+              stacked={data.stacked}
+            />
           ) : (
             <p className="chart-note muted">{result.rowCount ? 'No values to plot (every row is empty).' : 'No rows to chart.'}</p>
           )}

@@ -1,4 +1,4 @@
-import { getEngine, quoteIdent, quoteLiteral } from './db'
+import { background, getEngine, quoteIdent, quoteLiteral } from './db'
 import { RULES, nameSuggests, type PiiKind } from './pii-rules'
 import { colRef, type ColumnInfo, type ResultSet } from './result'
 
@@ -25,9 +25,10 @@ const TEMPORAL = /^(DATE|TIMESTAMP)/i
  * Looks for personal data in a result: each column's name, and how many of up to 5,000 sampled values
  * match each kind's pattern (all in SQL, in this tab), plus checksums for Aadhaar and card numbers.
  */
-export async function detectPii(result: ResultSet): Promise<Detection[]> {
+/** `scan`: looked over unasked (as a table opens), so it waits for the user's own work. */
+export async function detectPii(result: ResultSet, scan = false): Promise<Detection[]> {
   if (!result.table || !result.rowCount) return []
-  const { conn } = await getEngine()
+  const conn = scan ? background : (await getEngine()).conn
   const cols = result.columns.filter((c) => TEXTY.test(c.type) || TEMPORAL.test(c.type))
   if (!cols.length) return []
 
@@ -63,7 +64,7 @@ export async function detectPii(result: ResultSet): Promise<Detection[]> {
     // Checksums separate real Aadhaar/card numbers from other long numbers.
     const rule = best && RULES.find((r) => r.kind === best!.kind)
     if (best && rule?.verify) {
-      const sample = await sampleValues(result.table, c, rule.pattern!)
+      const sample = await sampleValues(result.table, c, rule.pattern!, scan)
       const pass = sample.filter(rule.verify).length
       best.verified = sample.length ? pass / sample.length : 0
       if (best.verified < 0.9 && !nameSuggests(rule, c.name)) best = null
@@ -82,8 +83,8 @@ export async function detectPii(result: ResultSet): Promise<Detection[]> {
   return out
 }
 
-async function sampleValues(table: string, c: ColumnInfo, pattern: string): Promise<string[]> {
-  const { conn } = await getEngine()
+async function sampleValues(table: string, c: ColumnInfo, pattern: string, scan: boolean): Promise<string[]> {
+  const conn = scan ? background : (await getEngine()).conn
   const v = `trim(${colRef(c)}::VARCHAR)`
   const res = await conn.query(`SELECT ${v} AS v FROM ${table} WHERE regexp_full_match(${v}, ${quoteLiteral(pattern)}) LIMIT 300`)
   return res.toArray().map((r) => String(r.toJSON().v))

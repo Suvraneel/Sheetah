@@ -1,5 +1,5 @@
 import { DataType, type Table } from 'apache-arrow'
-import { CancelledError, RESULTS_SCHEMA, ensureExtension, getEngine, isCancel, quoteIdent, quoteLiteral, restorePseudonym, sandboxPath, sendAll, unshadow, withRunLock } from './db'
+import { CancelledError, RESULTS_SCHEMA, ensureExtension, foreground, getEngine, isCancel, quoteIdent, quoteLiteral, restorePseudonym, sandboxPath, sendAll, unshadow, withRunLock } from './db'
 import { isNumericType, pasteSafe, splitStatements } from './sql'
 
 export { CancelledError, cancelRunning } from './db'
@@ -260,7 +260,7 @@ async function materialised(id: number, table: string, sql: string, started: num
     columns,
     elapsedMs,
     async fetch(start, end) {
-      const res = await conn.query(`SELECT ${select} FROM ${table} WHERE rowid >= ${start} AND rowid < ${end} ORDER BY rowid`)
+      const res = await foreground(() => conn.query(`SELECT ${select} FROM ${table} WHERE rowid >= ${start} AND rowid < ${end} ORDER BY rowid`))
       const vecs = columns.map((_, i) => res.getChildAt(i))
       const out: Row[] = new Array(res.numRows)
       for (let r = 0; r < res.numRows; r++) {

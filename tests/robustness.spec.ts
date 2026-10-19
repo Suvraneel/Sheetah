@@ -125,6 +125,17 @@ test.describe('engine robustness', () => {
     expect(dl.suggestedFilename()).toMatch(/\.csv$/)
   })
 
+  test('a table clicked while a big one is still being looked over opens without waiting for the look-over', async ({ page }) => {
+    await openApp(page)
+    const big = ['id,code,city,note', ...Array.from({ length: 200_000 }, (_, i) => `${i},INV-${String(i % 9973).padStart(5, '0')},${['Pune', 'Delhi', 'Goa'][i % 3]},`)].join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('big.csv', big), file('small.csv', 'a,b\n1,2\n')])
+    await expect(page.locator('.result-meta')).toContainText('200,000 rows', { timeout: 60_000 })
+    // The look-over of the big one starts as it shows; the small one is clicked straight away.
+    await page.waitForTimeout(500)
+    await page.locator('.side-table', { hasText: 'small' }).click()
+    await expect(page.locator('.result-meta')).toContainText('1 row', { timeout: 8_000 })
+  })
+
   test('a shared link that inflates to gigabytes is refused, not decoded', async ({ page }) => {
     const bomb = deflateRawSync(Buffer.alloc(40_000_000, 32)).toString('base64url')
     await openApp(page, `/#q=z${bomb}`)

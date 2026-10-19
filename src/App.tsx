@@ -699,6 +699,8 @@ export default function App() {
     tablesRef.current = tables
   })
   const scanned = useRef(new Set<string>())
+  // Scans under way, by the same key: a table opened twice while it's looked over is looked over once.
+  const scanning = useRef(new Set<string>())
   // Queries that stand for a table (one whose column names were on a later row): suggestions as for a table.
   const [tableLike, setTableLike] = useState<ReadonlySet<string>>(new Set())
   // Whether a result's side column (Dr / Cr) holds Dr and Cr, by result table and column: looked at once.
@@ -711,8 +713,16 @@ export default function App() {
     const key = (as ?? res.sql).trim()
     const read = plainTable(key)?.toLowerCase()
     const sig = tableSig(read ? (metas ?? tablesRef.current).find((t) => t.name.toLowerCase() === read) : undefined)
+    // (By the rows looked over too: other rows under the same query, after a step, are looked over afresh.)
+    const running = `${which}|${key}|${sig}|${res.table}`
+    if (scanning.current.has(running)) return
+    scanning.current.add(running)
     // Kept while it's scanned: two quick sorts would otherwise drop the result table from under the scans.
-    const release = holdResult(res)
+    const hold = holdResult(res)
+    const release = () => {
+      scanning.current.delete(running)
+      hold()
+    }
     window.setTimeout(() => {
       // The scans' code arrives with the first table (the first screen doesn't wait for it).
       void import('./engine/scan').then(({ ambiguousDates, emptyTextColumns, fillDownColumns, junkRows, namesRow, textFindings }) => {
@@ -734,7 +744,7 @@ export default function App() {
             })
           scans.push(
             import('./engine/pii')
-              .then((m) => m.detectPii(res))
+              .then((m) => m.detectPii(res, true))
               .then((d) => setPiiHints((m) => ({ ...m, [key]: { sig, value: d.map((x) => x.column) } }))),
             junkRows(res)
               .then((drop) => setJunkHints((m) => ({ ...m, [key]: { sig, value: drop } })))
@@ -743,10 +753,10 @@ export default function App() {
             fillDownColumns(res).then((cols) => setFillHints((m) => ({ ...m, [key]: { sig, value: cols } }))),
             // GSTINs, PANs and IFSC codes, where a column is named for one: a wrong one is said above the rows.
             import('./engine/month-end')
-              .then((m) => m.idCheck(res))
+              .then((m) => m.idCheck(res, true))
               .then((check) => check && addChecks(res.sql, [check])),
             import('./engine/month-end')
-              .then((m) => m.orientation(res.table!, res.columns))
+              .then((m) => m.orientation(res.table!, res.columns, true))
               .then(
                 (o) => setOrientHints((m) => ({ ...m, [key]: { sig, value: o ? [o] : [] } })),
                 (e: unknown) => {

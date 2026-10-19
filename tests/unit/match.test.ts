@@ -135,3 +135,44 @@ test('a ledger’s dated opening balance line isn’t matched as a deposit not y
   // Both sides read the same two transactions: matched with each other, the opening line nowhere.
   expect(rows.map((r) => r.amount).sort()).toEqual([-12000, 50000])
 })
+
+test('an amount typed wrong on one side is said beside both lines: digits swapped, or a zero more or less', async () => {
+  await q(`CREATE OR REPLACE TABLE tbank AS SELECT * FROM (VALUES
+    (DATE '2024-04-03', 'NEFT Acme', 5400.0), (DATE '2024-04-08', 'UPI Kiran', -500.0), (DATE '2024-04-20', 'Fee', -118.0)
+  ) t(d, narration, amt)`)
+  // The books: Acme's receipt written 4,500 (two digits the other way), Kiran's 5,000 (a zero more), a fee
+  // nowhere near: none is matched, the first two are said.
+  await q(`CREATE OR REPLACE TABLE tbooks AS SELECT * FROM (VALUES
+    (DATE '2024-04-04', 'Acme Ltd', 4500.0), (DATE '2024-04-08', 'Kiran', -5000.0), (DATE '2024-04-20', 'Bank fee', -181.5)
+  ) t(d, party, amt)`)
+  const spec = { ...simple('tbank', 'tbooks'), a: { table: 'tbank', date: 'd', amount: { column: 'amt' }, text: 'narration' }, b: { table: 'tbooks', date: 'd', amount: { column: 'amt' }, text: 'party' } }
+  const types = { tbank: ['amt'], tbooks: ['amt'] }
+  const rows = await q(matchSql(spec, numeric(types)))
+  expect(rows.map((r) => [r.status, r.amount, r.note])).toEqual([
+    ['only in tbank', 5400, 'amount differs: 4,500.00 in tbooks on 2024-04-04 (digits swapped?)'],
+    ['only in tbooks', 4500, 'amount differs: 5,400.00 in tbank on 2024-04-03 (digits swapped?)'],
+    ['only in tbank', -500, 'amount differs: 5,000.00 in tbooks on 2024-04-08 (a zero more or less?)'],
+    ['only in tbooks', -5000, 'amount differs: 500.00 in tbank on 2024-04-08 (a zero more or less?)'],
+    ['only in tbank', -118, null],
+    ['only in tbooks', -181.5, null],
+  ])
+  const counts = Object.fromEntries((await q(matchCountsSql(matchSql(spec, numeric(types))))).map((r) => [r.status, r.typos]))
+  expect(counts).toEqual({ 'only in tbank': 2, 'only in tbooks': 2 })
+
+  // One line, several that could be it: said once, with the nearest (each the other's); digits in any other
+  // order (4,050) aren't two swapped, and a fraction a zero away is a zero more or less.
+  await q(`CREATE OR REPLACE TABLE tbank2 AS SELECT * FROM (VALUES (DATE '2024-04-03', 'NEFT', 5400.0), (DATE '2024-04-10', 'Int', 0.3)) t(d, narration, amt)`)
+  await q(`CREATE OR REPLACE TABLE tbooks2 AS SELECT * FROM (VALUES
+    (DATE '2024-04-05', 'A', 4500.0), (DATE '2024-04-03', 'B', 4050.0), (DATE '2024-04-04', 'C', 5040.0), (DATE '2024-04-10', 'Int', 3.0)
+  ) t(d, party, amt)`)
+  const spec2 = { ...spec, a: { ...spec.a, table: 'tbank2' }, b: { ...spec.b, table: 'tbooks2' } }
+  const notes = (await q(matchSql(spec2, numeric({ tbank2: ['amt'], tbooks2: ['amt'] })))).map((r) => [r.amount, r.note])
+  expect(notes).toEqual([
+    [5400, 'amount differs: 5,040.00 in tbooks2 on 2024-04-04 (digits swapped?)'],
+    [4050, null],
+    [5040, 'amount differs: 5,400.00 in tbank2 on 2024-04-03 (digits swapped?)'],
+    [4500, null],
+    [0.3, 'amount differs: 3.00 in tbooks2 on 2024-04-10 (a zero more or less?)'],
+    [3, 'amount differs: 0.30 in tbank2 on 2024-04-10 (a zero more or less?)'],
+  ])
+})

@@ -199,28 +199,61 @@ near_b AS (
   SELECT b_row, a_date AS other, date_diff('day', a_date, b_date) AS apart FROM left_a JOIN left_b USING (amount)
   WHERE abs(date_diff('day', a_date, b_date)) <= ${NEAR}
   QUALIFY row_number() OVER (PARTITION BY b_row ORDER BY abs(date_diff('day', a_date, b_date)), a_row) = 1
-)
+),
+-- An amount typed wrong on one side: a line left over on the other side, within the days allowed, with two
+-- neighbouring digits the other way round (4,500 for 5,400) or a zero more or less (500 for 5,000). Said
+-- beside both lines (each the other's nearest such line), not matched.
+ta AS (SELECT a_row, a_date, amount, ${plainDigits('amount')} AS dg FROM left_a WHERE amount <> 0 AND a_date IS NOT NULL),
+tb AS (SELECT b_row, b_date, amount, ${plainDigits('amount')} AS dg FROM left_b WHERE amount <> 0 AND b_date IS NOT NULL),
+typo AS (
+  SELECT * FROM (
+    SELECT a_row, b_row, ta.amount AS a_amount, tb.amount AS b_amount, a_date, b_date, 1 AS rank, 'digits swapped?' AS kind
+    FROM ta JOIN tb ON ${sortedDigits('tb.dg')} = ${sortedDigits('ta.dg')} AND tb.dg <> ta.dg AND sign(tb.amount) = sign(ta.amount)
+    WHERE ${swapped('ta.dg', 'tb.dg')}
+    UNION ALL
+    SELECT a_row, b_row, ta.amount, tb.amount, a_date, b_date, 0, 'a zero more or less?' FROM ta JOIN tb ON round(ta.amount * 10, 2) = tb.amount
+    UNION ALL
+    SELECT a_row, b_row, ta.amount, tb.amount, a_date, b_date, 0, 'a zero more or less?' FROM ta JOIN tb ON round(tb.amount * 10, 2) = ta.amount
+  ) WHERE abs(date_diff('day', a_date, b_date)) <= ${n}
+  QUALIFY row_number() OVER (PARTITION BY a_row ORDER BY abs(date_diff('day', a_date, b_date)), rank, b_row) = 1
+    AND row_number() OVER (PARTITION BY b_row ORDER BY abs(date_diff('day', a_date, b_date)), rank, a_row) = 1
+),
+typo_a AS (SELECT a_row, b_amount AS amt, b_date AS other, kind FROM typo),
+typo_b AS (SELECT b_row, a_amount AS amt, a_date AS other, kind FROM typo)
 SELECT * FROM (
   SELECT ${quoteLiteral(st.matched)} AS status, a_date AS ${aDate}, b_date AS ${bDate}, a.amount, a_text AS ${aText}, b_text AS ${bText}, abs(date_diff('day', a_date, b_date)) AS "days apart",
     CASE WHEN a_ref = b_ref AND NOT abs(date_diff('day', a_date, b_date)) <= ${n} THEN 'paired by reference ' || a_ref END AS note
   FROM pairs JOIN a USING (a_row) JOIN b USING (b_row)
   UNION ALL
   SELECT ${quoteLiteral(st.a)}, a_date, NULL, amount, a_text, NULL, NULL,
-    CASE WHEN a_date IS NULL THEN 'no date, so not matched' WHEN other IS NOT NULL THEN 'same amount in ' || ${quoteLiteral(spec.b.table)} || ' on ' || other::VARCHAR || ' (' || abs(apart) || CASE WHEN abs(apart) = 1 THEN ' day ' ELSE ' days ' END || CASE WHEN apart > 0 THEN 'later' ELSE 'earlier' END || ')' END
-  FROM left_a LEFT JOIN near_a USING (a_row)
+    CASE WHEN a_date IS NULL THEN 'no date, so not matched' WHEN near_a.other IS NOT NULL THEN 'same amount in ' || ${quoteLiteral(spec.b.table)} || ' on ' || near_a.other::VARCHAR || ' (' || abs(apart) || CASE WHEN abs(apart) = 1 THEN ' day ' ELSE ' days ' END || CASE WHEN apart > 0 THEN 'later' ELSE 'earlier' END || ')'
+      WHEN typo_a.amt IS NOT NULL THEN ${typoNote('typo_a', spec.b.table)} END
+  FROM left_a LEFT JOIN near_a USING (a_row) LEFT JOIN typo_a USING (a_row)
   UNION ALL
   SELECT ${quoteLiteral(st.b)}, NULL, b_date, amount, NULL, b_text, NULL,
-    CASE WHEN b_date IS NULL THEN 'no date, so not matched' WHEN other IS NOT NULL THEN 'same amount in ' || ${quoteLiteral(spec.a.table)} || ' on ' || other::VARCHAR || ' (' || abs(apart) || CASE WHEN abs(apart) = 1 THEN ' day ' ELSE ' days ' END || CASE WHEN apart > 0 THEN 'earlier' ELSE 'later' END || ')' END
-  FROM left_b LEFT JOIN near_b USING (b_row)
+    CASE WHEN b_date IS NULL THEN 'no date, so not matched' WHEN near_b.other IS NOT NULL THEN 'same amount in ' || ${quoteLiteral(spec.a.table)} || ' on ' || near_b.other::VARCHAR || ' (' || abs(apart) || CASE WHEN abs(apart) = 1 THEN ' day ' ELSE ' days ' END || CASE WHEN apart > 0 THEN 'earlier' ELSE 'later' END || ')'
+      WHEN typo_b.amt IS NOT NULL THEN ${typoNote('typo_b', spec.a.table)} END
+  FROM left_b LEFT JOIN near_b USING (b_row) LEFT JOIN typo_b USING (b_row)
 )
 ORDER BY coalesce(${aDate}, ${bDate}), status`
 }
+
+/** An amount's digits as written to the paisa (5,400.00 is 540000). */
+const plainDigits = (e: string) => `replace(printf('%.2f', abs(${e})), '.', '')`
+/** The same digits in order (540000 and 450000 are both 000045): the pairs worth a closer look. */
+const sortedDigits = (d: string) => `array_to_string(list_sort(string_split(${d}, '')), '')`
+/** Whether two digit strings differ by two neighbouring digits the other way round (540000, 450000). */
+const swapped = (a: string, b: string) =>
+  `length(${a}) = length(${b}) AND EXISTS (SELECT 1 FROM range(1, length(${a})) AS t(i) WHERE ${b} = substr(${a}, 1, i - 1) || substr(${a}, i + 1, 1) || substr(${a}, i, 1) || substr(${a}, i + 2))`
+/** The note beside a line whose amount may be the other side's typed wrong: the amount there, its day, and why. */
+const typoNote = (t: string, other: string) =>
+  `'amount differs: ' || format('{:,.2f}', abs(${t}.amt)) || ' in ' || ${quoteLiteral(other)} || ' on ' || ${t}.other::VARCHAR || ' (' || ${t}.kind || ')'`
 
 /** How many lines, and how much, each status gets: for the dialog's preview. */
 export const matchCountsSql = (sql: string) =>
   `SELECT status, count(*)::DOUBLE AS n, sum(amount)::DOUBLE AS total, coalesce(sum(amount) FILTER (WHERE amount > 0), 0)::DOUBLE AS money_in,
   coalesce(-sum(amount) FILTER (WHERE amount < 0), 0)::DOUBLE AS money_out, count(*) FILTER (WHERE note LIKE 'same amount%')::DOUBLE AS near,
-  count(*) FILTER (WHERE note LIKE 'no date%')::DOUBLE AS undated
+  count(*) FILTER (WHERE note LIKE 'no date%')::DOUBLE AS undated, count(*) FILTER (WHERE note LIKE 'amount differs%')::DOUBLE AS typos
 FROM (\n${sql}\n) GROUP BY status`
 
 /**

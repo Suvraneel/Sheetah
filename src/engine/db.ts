@@ -18,6 +18,11 @@ export interface Engine {
    * (the grid scrolling, a background snapshot…). Use it only inside withRunLock().
    */
   runConn: duckdb.AsyncDuckDBConnection
+  /**
+   * For the look-over scans (background()): with send(), whose steps the engine takes in turn with
+   * other connections' queries, so a scan never holds up what the user asked for. Only background() uses it.
+   */
+  bgConn: duckdb.AsyncDuckDBConnection
   /** Extensions that loaded from this site before the sandbox was sealed. */
   extensions: { parquet: boolean; json: boolean }
   /** True once SQL can no longer reach the network or anything outside SANDBOX_DIR. */
@@ -77,16 +82,17 @@ export function getEngine(): Promise<Engine> {
     await conn.query(`SET lock_configuration = true`)
     // Opened after sealing: the settings above are global, so this connection is sealed too.
     const runConn = await db.connect()
+    const bgConn = await db.connect()
     // pseudonym(v): a keyed hash for "Anonymize". Macros and variables belong to a connection.
     sessionKey = pseudonymKey()
-    for (const c of [conn, runConn]) await definePseudonym(c, sessionKey)
+    for (const c of [conn, runConn, bgConn]) await definePseudonym(c, sessionKey)
     // number_from_text(), date_from_text()…: what clean-up steps write, so their SQL stays readable.
-    for (const c of [conn, runConn]) for (const m of CLEAN_MACROS) await c.query(m)
+    for (const c of [conn, runConn, bgConn]) for (const m of CLEAN_MACROS) await c.query(m)
     // How Sheetah's own macros read, to know them again after any script (see unshadow).
     for (const r of (await runConn.query(`SELECT function_name AS f, macro_definition AS d FROM system.main.duckdb_functions() WHERE database_name = 'temp' AND function_name IN (${[...OWN_MACROS].map((n) => `'${n}'`).join(', ')})`)).toArray())
       ownDefinitions.set(String(r.toJSON().f), String(r.toJSON().d))
 
-    return { db, conn, runConn, extensions: { parquet, json }, sealed: true }
+    return { db, conn, runConn, bgConn, extensions: { parquet, json }, sealed: true }
   })()
   return enginePromise
 }
@@ -225,10 +231,98 @@ export function withRunLock<T>(fn: () => Promise<T>, kind: RunKind = 'load'): Pr
       holder = null
     }
   }
-  const next = runTail.then(run, run)
+  // Waiting for the lock counts too: the look-over scans hold back from the moment a query is asked for.
+  const next = foreground(() => runTail.then(run, run))
   runTail = next.catch(() => {})
   return next
 }
+
+/* ------------------------------ Work nobody waits on ------------------------------ */
+
+/*
+ * The engine answers one query at a time, in the order they arrive. The look-over scans of a table just
+ * opened (a dozen queries over every row) would otherwise sit in front of the next thing the user asks
+ * for: a table clicked in the list waited for all of them, seconds on a big file. Scans go through
+ * background(): one query at a time, and none while the user's own query, file or rows on screen are in
+ * hand, so what the user asked for waits for one scan query at most.
+ */
+let busy = 0
+let idle: (() => void)[] = []
+
+/** Work the user is waiting on (a query, a file, the rows on screen): background reads wait for it. */
+export async function foreground<T>(fn: () => Promise<T>): Promise<T> {
+  busy++
+  try {
+    return await fn()
+  } finally {
+    if (--busy === 0) {
+      const waiting = idle
+      idle = []
+      for (const go of waiting) go()
+    }
+  }
+}
+
+/** Resolves once nothing the user waits on is in hand (or after `most` ms: a long query never stops a scan for good). */
+function whenIdle(most: number): Promise<void> {
+  if (!busy) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, most)
+    idle.push(() => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
+interface Job {
+  sql: string
+  resolve: (t: Table) => void
+  reject: (e: unknown) => void
+}
+/** Scans' queries waiting their turn: the quick ones (a sample's patterns, a count) first, then the slow ones. */
+const lanes: [Job[], Job[]] = [[], []]
+let pumping = false
+
+async function pump() {
+  if (pumping) return
+  pumping = true
+  try {
+    for (;;) {
+      await whenIdle(10_000)
+      const job = lanes[0].shift() ?? lanes[1].shift()
+      if (!job) break
+      const { bgConn } = await getEngine()
+      try {
+        const reader = await bgConn.send(job.sql)
+        const batches: RecordBatch[] = []
+        for await (const batch of reader) batches.push(batch)
+        job.resolve(batches.length ? new Table(batches) : new Table(reader.schema ?? new Schema([])))
+      } catch (e) {
+        job.reject(normaliseError(e))
+      }
+    }
+  } finally {
+    pumping = false
+  }
+}
+
+const lane = (i: 0 | 1) => ({
+  query(sql: string): Promise<Table> {
+    return new Promise<Table>((resolve, reject) => {
+      lanes[i].push({ sql, resolve, reject })
+      void pump()
+    })
+  },
+})
+
+/**
+ * A connection's query() for scans: one at a time, after the user's own work, and in steps (send()) that
+ * the engine takes in turn with anything asked meanwhile.
+ */
+export const background = lane(0)
+/** The same, for a scan's long run of costly queries (a wide table's columns, ten at a time): after the others. */
+export const backgroundSlow = lane(1)
 
 /**
  * send() reports errors as JSON ({"exception_type":"Parser","exception_message":"…"}), query() as

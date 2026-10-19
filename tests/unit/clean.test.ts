@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { addClean, percentColumns, cleanExpr, describeClean, cleanSql, type Clean } from '../../src/engine/clean'
-import { dataSumsSql, fillDownSql, looksFilledDown, labelSumsSql, totalsAgree, eitherJunk, junkPredicates, confidentConversion, readStats, statsSql, suggestCleaning, decimalsSql, fileDecimalComma } from '../../src/engine/clean-scan'
+import { dataSumsSql, fillDownSql, looksFilledDown, labelSumsSql, totalsAgree, eitherJunk, junkPredicates, confidentConversion, readStats, statsSql, maybeNumbersSql, suggestCleaning, decimalsSql, fileDecimalComma } from '../../src/engine/clean-scan'
 import { compose, emptyOps } from '../../src/engine/compose'
 import { q } from './duck'
 
@@ -378,4 +378,40 @@ test('a conversion is checked over the whole column: values written another way 
   // Not a currency, not a minus: a part number, a year or a range written with a dash.
   const not = await q(`SELECT number_from_text('RS-485') AS a, number_from_text('RS232') AS b, number_from_text('2024-') AS c, number_from_text('60-') AS d, number_from_text_comma('1.500,00-') AS e`)
   expect(not[0]).toEqual({ a: null, b: null, c: null, d: null, e: -1500 })
+})
+
+test('a column’s counts are the same when only values that could be a number or a date are worked out as one', async () => {
+  const values = [
+    '₹ 1,234.50', '$99', ' 12 ', '1,00,000', '(1,200)', 'n/a', '92,338[note 3]', '108,021 (p)', '56*', '1 234 567', 'x', '..',
+    'Rs. 25,000.00', 'INR 7,500', 'USD 99.95', '1,200/-', '1,500.00-', '50,000.00 Cr', '1,200.00 Dr', '18%', '7,5 %', '1.2E-05',
+    '2024-04-01', '01/04/2024', '04-01-2024', '01.04.2024', '2024/04/01', '01 Apr 2024', '01-Apr-2024', 'Apr 01, 2024',
+    '1 April 2024', 'September 30, 2024', '01/04/24', '01-Apr-24', 'Apr-24', 'Apr-2024', 'Apr 2024', 'April 2024', '2024-04',
+    '007', '0456', 'user_42', 'a@b.c', '10:30', 'INV-0042', 'Pune', '', '  two  spaces ', 'Total', '1,234', '1.234', '12,5', '0,750',
+    // What the engine alone would read as a figure (NaN, 1_000), notes with odd characters, and a tab.
+    'NaN', 'nan', 'inf', '-Infinity', 'Infinity%', '1_000', '1,234 [note: 3]', '1,234 [a&b]', '1,234 [x?]', 'Rs. 1,200 (provisional)',
+    '12,345 [note 12] (estimated)', '(see note) Dr', '01\tApr\t2024',
+  ]
+  await q(`CREATE OR REPLACE TABLE gates AS SELECT unnest([${values.map((v) => `'${v.replace(/'/g, "''")}'`).join(', ')}]) AS v`)
+  const sql = statsSql('gates', ['v'], 1000)
+  const [gated] = await q(sql)
+  const [every] = await q(sql.replace(/CASE WHEN __(num|date) THEN/g, 'CASE WHEN true THEN'))
+  expect(gated).toEqual(every)
+  expect(Number(gated.c0_numbers)).toBeGreaterThan(10)
+  expect(Number(gated.c0_d0)).toBe(1)
+  // A column none of whose values could be a number is counted the quick way, to the same counts; the first
+  // look says which columns those are.
+  await q(`CREATE OR REPLACE TABLE mails AS SELECT 'p' || range || '@example.com' AS m, ' Pune ' AS city, v FROM range(30), (SELECT v FROM gates LIMIT 1)`)
+  const [looks] = await q(maybeNumbersSql('mails', ['m', 'city', 'v']))
+  expect(looks).toEqual({ m0: false, m1: false, m2: true })
+  expect((await q(statsSql('mails', ['m', 'city'], 5000, [true, true])))[0]).toEqual((await q(statsSql('mails', ['m', 'city'])))[0])
+  // A column called __n, __num or __date is counted like any other.
+  await q(`CREATE OR REPLACE TABLE odd AS SELECT v AS __n, v AS __num, v AS __date FROM gates`)
+  const [odd] = await q(statsSql('odd', ['"__n"', '"__num"', '"__date"'], 1000))
+  expect([odd.c0_numbers, odd.c1_numbers, odd.c2_numbers]).toEqual([gated.c0_numbers, gated.c0_numbers, gated.c0_numbers])
+})
+
+test('NaN, inf and 1_000 aren’t figures; -Infinity isn’t a date', async () => {
+  expect(await clean({ kind: 'number' }, ['NaN', 'inf', '-Infinity', '1_000', '1,234 [note: 3]', '12'])).toEqual([null, null, null, null, '1234.0', '12.0'])
+  expect(await clean({ kind: 'percent' }, ['Infinity%', '18%'])).toEqual([null, '0.18'])
+  expect(await clean({ kind: 'date', format: '%d/%m/%y' }, ['-Infinity', '01/04/24'])).toEqual([null, '2024-04-01'])
 })

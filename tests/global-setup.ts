@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, writeFileSync as write, existsSync, readFileSync } from 'node:fs'
 import { gzipSync } from 'node:zlib'
 import { join } from 'node:path'
 
@@ -10,6 +10,16 @@ function seeded(seed: number) {
     seed = (seed * 1664525 + 1013904223) % 4294967296
     return seed / 4294967296
   }
+}
+
+/**
+ * Writes a fixture only when it isn't there as it should be: a run (the unit tests, say) never rewrites a file
+ * another run is reading at that moment.
+ */
+function writeFileSync(path: string, data: string | Buffer) {
+  const want = typeof data === 'string' ? Buffer.from(data) : data
+  if (existsSync(path) && readFileSync(path).equals(want)) return
+  write(path, want)
 }
 
 export default function globalSetup() {

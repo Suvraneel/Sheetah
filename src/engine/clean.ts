@@ -87,7 +87,10 @@ export function numberText(t: string, comma: boolean, drcr = false): string {
   // before another comma: Indian grouping, 1,00,000).
   const badGroup = comma ? `'\\.([0-9]{0,2}([^0-9]|$)|[0-9]{4})'` : `',([0-9]?([^0-9]|$)|[0-9]{2}([^0-9,]|$)|[0-9]{4})'`
   const plain = comma ? `replace(replace(${negative}, '.', ''), ',', '.')` : `replace(${negative}, ',', '')`
-  return drcr ? `CASE WHEN NOT regexp_matches(${negative}, ${badGroup}) THEN (CASE WHEN ${debit} THEN '-' ELSE '' END) || ${plain} END` : `CASE WHEN NOT regexp_matches(${negative}, ${badGroup}) THEN ${plain} END`
+  // A figure has a digit in it: NaN, inf and Infinity (which the engine would read as numbers) are no
+  // figure, and 1_000 (which it reads as a thousand) isn't how anyone writes one.
+  const ok = `regexp_matches(${negative}, '[0-9]') AND NOT contains(${negative}, '_') AND NOT regexp_matches(${negative}, ${badGroup})`
+  return drcr ? `CASE WHEN ${ok} THEN (CASE WHEN ${debit} THEN '-' ELSE '' END) || ${plain} END` : `CASE WHEN ${ok} THEN ${plain} END`
 }
 
 /*
@@ -108,7 +111,9 @@ export const CLEAN_MACROS: string[] = [
   `CREATE OR REPLACE TEMP MACRO percent_from_text_comma(x) AS TRY_CAST(${numberText(`rtrim(trim(${marksOff(T)}), '%')`, true)} AS DOUBLE) / 100`,
   // %Y also reads "24" as the year 24: only values with a four-digit year qualify. Two-digit years are
   // read as spreadsheets read them: 30–99 are 1930–1999, 00–29 are 2000–2029.
+  // (A date has a digit in it: "-Infinity" reads as one to the engine, and isn't.)
   `CREATE OR REPLACE TEMP MACRO date_from_text(x, fmt) AS CASE
+    WHEN NOT regexp_matches(${T}, '[0-9]') THEN NULL
     WHEN contains(fmt, '%Y') THEN CASE WHEN regexp_matches(${T}, '[0-9]{4}') THEN try_strptime(${T}, fmt)::DATE END
     WHEN year(try_strptime(${T}, fmt)) >= 2030 THEN (try_strptime(${T}, fmt) - INTERVAL 100 YEAR)::DATE
     ELSE try_strptime(${T}, fmt)::DATE END`,
