@@ -134,6 +134,9 @@ test.describe('opening and exporting files', () => {
     const dl = await exportAs(page, 'CSV')
     const lines = readFileSync((await dl.path())!, 'utf8').trim().split('\n')
     expect(lines).toHaveLength(300_001)
+    // Written in pieces of rows: the header once, and the rows in order across the joins.
+    expect(lines.filter((l) => l === lines[0])).toHaveLength(1)
+    expect(lines.slice(249_999, 250_003).map((l) => Number(l.split(',')[0]))).toEqual([249_998, 249_999, 250_000, 250_001].map((n) => n + Number(lines[1].split(',')[0])))
     expect(await metaText(page)).toContain('5 columns')
   })
 })

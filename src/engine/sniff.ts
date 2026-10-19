@@ -99,6 +99,33 @@ function fields(line: string, sep: string): number {
   return n
 }
 
+/** Whether a line's first field has something in it. */
+function firstFilled(line: string, sep: string): boolean {
+  let quoted = false
+  let cur = ''
+  for (const ch of line) {
+    if (ch === '"') quoted = !quoted
+    else if (ch === sep && !quoted) break
+    else cur += ch
+  }
+  return cur.trim() !== ''
+}
+
+/** How many of a line's fields have something in them ("HDFC BANK Ltd.,,,,,," has one). */
+function filled(line: string, sep: string): number {
+  let n = 0
+  let quoted = false
+  let cur = ''
+  for (const ch of `${line}${sep}`) {
+    if (ch === '"') quoted = !quoted
+    else if (ch === sep && !quoted) {
+      if (cur.trim()) n++
+      cur = ''
+    } else cur += ch
+  }
+  return n
+}
+
 /**
  * A report's title lines above its table, written without separators ("Sales by Customer Detail", "Acme
  * Inc", "January 2024"): the file reader takes the first as the only column. The separator and how many
@@ -115,6 +142,12 @@ export function titleLines(text: string, headerFirst = false): { sep: string; sk
     // Title lines have no separator at all; the column names are the first line with them, as many as most.
     const skip = counts.findIndex((c) => c > 1)
     if (skip > 0 && counts[skip] === common && counts.slice(0, skip).every((c) => c <= 1)) return { sep, skip, fields: common }
+    // Or they have them, all empty but the first: a title saved from Excel is padded to the table's width
+    // ("HDFC BANK Ltd.,,,,,,"). The names are the first line with two or more filled, as wide as most.
+    const named = counts.findIndex((c, i) => c === common && filled(lines[i], sep) >= 2)
+    // (The title in the first field: ",amount" or "","x" — a one-column frame's header as pandas or R writes
+    // it — is names, not a title.)
+    if (named > 0 && lines.slice(0, named).every((l) => filled(l, sep) <= 1 && (filled(l, sep) === 0 || firstFilled(l, sep)))) return { sep, skip: named, fields: common }
     // (Or, asked for when the file reader gave up on a file whose names are its first line: group names
     // without separators between its rows, a QuickBooks report exported without its titles.)
     if (headerFirst && skip === 0 && counts[0] === common) return { sep, skip: 0, fields: common }

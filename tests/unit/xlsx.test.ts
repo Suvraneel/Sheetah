@@ -157,3 +157,14 @@ test('a sum’s float noise is written to the 15 digits Excel keeps', async () =
   const { rows } = await readBack(Buffer.from(await blob.arrayBuffer()))
   expect(rows.slice(1).map((r) => r[0])).toEqual([98.45, 519314.16, 0.3])
 })
+
+test('a workbook’s sheet sizes are read from its zip directory, nothing unpacked', async () => {
+  const { zipSync, strToU8 } = await import('fflate')
+  const { sheetSizes } = await import('../../src/engine/xlsx-zip')
+  const zip = zipSync({ 'xl/workbook.xml': strToU8('<workbook/>'), 'xl/worksheets/sheet1.xml': strToU8('x'.repeat(5000)), 'xl/worksheets/sheet2.xml': strToU8('y'.repeat(123)) })
+  expect(await sheetSizes(new Blob([zip]))).toEqual([
+    { name: 'xl/worksheets/sheet1.xml', size: 5000 },
+    { name: 'xl/worksheets/sheet2.xml', size: 123 },
+  ])
+  expect(await sheetSizes(new Blob([strToU8('not a zip')]))).toEqual([])
+})

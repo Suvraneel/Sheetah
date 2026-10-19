@@ -16,12 +16,16 @@ interface Props {
    * way round a register's Debit and Credit go (its running balance is being read): said once it is.
    */
   amount?: { credit: string; debit: string; way?: boolean } | null
+  /** One Amount and a Dr / Cr column: split into money in and out. */
+  sided?: { amount: string; side: string } | null
+  onSided?: () => void
   onAmount?: () => void
   /** A statement's narration column, to group into categories by its words. */
   categorize?: string | null
   onCategorize?: (column: string) => void
   /** A statement with dates: its money in and out by month, as a summary. */
-  monthly?: boolean
+  /** A monthly summary to offer: a statement's money in and out, or a ledger's debit and credit. */
+  monthly?: 'statement' | 'books'
   onMonthly?: () => void
   /** The payments matched are on screen: the bank reconciliation statement from them. */
   reconcile?: boolean
@@ -64,9 +68,9 @@ const listed = (xs: string[]) => (xs.length < 3 ? xs.join(' and ') : `${xs.slice
  * Suggestions from looking the table over, outlined so they never read as applied steps (filled chips),
  * in the order they're best taken: rows that aren't data first, then the layout, then the types.
  */
-export function HintChips({ namesRow, onNames, junk, checkingTotals, empty, onHideEmpty, amount, onAmount, categorize, onCategorize, monthly, onMonthly, reconcile, onReconcile, ageing, onAgeing, ledgers, onLedgers, dates, onSwapDates, spaces, onTrim, fill, onFill, series, text, personal, compact, onDrop, onUnpivot, onConvert, onAnonymize }: Props) {
+export function HintChips({ namesRow, onNames, junk, checkingTotals, empty, onHideEmpty, amount, onAmount, sided, onSided, categorize, onCategorize, monthly, onMonthly, reconcile, onReconcile, ageing, onAgeing, ledgers, onLedgers, dates, onSwapDates, spaces, onTrim, fill, onFill, series, text, personal, compact, onDrop, onUnpivot, onConvert, onAnonymize }: Props) {
   const names = typeof namesRow === 'number'
-  if (!names && !junk && !checkingTotals && !empty && !fill && !series && !text && !amount && !categorize && !monthly && !reconcile && !ageing && !ledgers && !dates && !spaces && !personal) return null
+  if (!names && !junk && !checkingTotals && !empty && !fill && !series && !text && !amount && !sided && !categorize && !monthly && !reconcile && !ageing && !ledgers && !dates && !spaces && !personal) return null
   const into = (t: Clean[]) => (t.every((c) => c.kind === 'date') ? 'dates' : t.some((c) => c.kind === 'date') ? 'numbers and dates' : 'numbers')
   return (
     <span className="hint-chips">
@@ -118,6 +122,15 @@ export function HintChips({ namesRow, onNames, junk, checkingTotals, empty, onHi
           <Icon name="spark" size={13} /> Convert {compact ? '' : `${text.length} text ${text.length === 1 ? 'column' : 'columns'} `}to {into(text)}
         </button>
       )}
+      {sided && (
+        <button
+          className="pii-chip"
+          onClick={(e) => thenKeepFocus(e, '.hint-chips', () => onSided?.())}
+          title={`${sided.amount} with ${sided.side} saying Dr or Cr: money in (Cr) and money out (Dr) as two columns, so it sums, matches and reconciles like any statement.`}
+        >
+          <Icon name="spark" size={13} /> Split {sided.amount} into money in and out (by {sided.side})
+        </button>
+      )}
       {amount && (
         <button
           className="pii-chip"
@@ -137,8 +150,12 @@ export function HintChips({ namesRow, onNames, junk, checkingTotals, empty, onHi
         </button>
       )}
       {monthly && (
-        <button className="pii-chip" onClick={(e) => thenKeepFocus(e, '.hint-chips', () => onMonthly?.())} title="A summary: each month's money in, money out, the net and how many lines, as a new result (Undo comes back here).">
-          <Icon name="calendar" size={13} /> Money in and out by month
+        <button
+          className="pii-chip"
+          onClick={(e) => thenKeepFocus(e, '.hint-chips', () => onMonthly?.())}
+          title={`A summary: each month's ${monthly === 'books' ? 'debits, credits, the net (Dr − Cr)' : 'money in, money out, the net'} and how many lines, as a new result (Undo comes back here).`}
+        >
+          <Icon name="calendar" size={13} /> {monthly === 'books' ? 'Debit and credit by month' : 'Money in and out by month'}
         </button>
       )}
       {ageing && (

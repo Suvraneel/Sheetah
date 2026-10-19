@@ -2,13 +2,15 @@ import { expect, test } from './fixtures'
 import type { Page } from './fixtures'
 import { openApp, openDemo, runSql } from './helpers'
 
-/** Whether a snapshot file exists in OPFS (false while the folder doesn't exist yet). */
+/**
+ * Whether a snapshot file exists in OPFS, written (false while the folder doesn't exist yet, and while it's
+ * still being written: its bytes land when the write is closed).
+ */
 const hasSnapshot = (page: Page, file: string) =>
   page.evaluate(async (f) => {
     try {
       const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('sheetah-tables')
-      await dir.getFileHandle(f)
-      return true
+      return (await (await dir.getFileHandle(f)).getFile()).size > 0
     } catch {
       return false
     }
@@ -96,10 +98,15 @@ test('kept tables come back with the work as it was: the query on screen, run ag
   await expect(page.locator('.result-meta')).toContainText('3 rows')
   await page.getByLabel('Keep my tables in this browser').check()
   await expect.poll(() => hasSnapshot(page, 'sales.arrow')).toBe(true)
+  // A column of fixed choices (an ENUM) keeps its values.
+  await runSql(page, "CREATE TABLE graded AS SELECT 'high'::ENUM('low', 'high') AS level")
+  await expect.poll(() => hasSnapshot(page, 'graded.arrow')).toBe(true)
   await runSql(page, 'SELECT city, sum(amount) AS total FROM sales GROUP BY city ORDER BY total DESC')
   await expect(page.locator('.result-meta')).toContainText('2 rows')
   await page.reload()
   await expect(page.locator('.toast', { hasText: 'and the work as you left it' })).toBeVisible({ timeout: 90_000 })
   await expect(page.locator('.result-meta')).toContainText('2 rows')
   await expect(page.locator('.cm-content')).toContainText('GROUP BY city')
+  await runSql(page, "SELECT * FROM graded WHERE level = 'high'")
+  await expect(page.locator('.result-meta')).toContainText('1 row')
 })

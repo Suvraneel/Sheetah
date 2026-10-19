@@ -5,11 +5,13 @@ import { q } from './duck'
 const col = (name: string, type = 'VARCHAR') => ({ name, type })
 
 test('a table’s side of a match is guessed from its columns', () => {
-  expect(sideFor({ name: 'bank', columns: [col('Date', 'DATE'), col('Narration'), col('Withdrawal Amt.'), col('Deposit Amt.'), col('Closing Balance')] })).toEqual({
+  // A statement's side leaves out its balance lines (opening, closing), found in its text columns.
+  expect(sideFor({ name: 'bank', columns: [col('Date', 'DATE'), col('Narration'), col('Withdrawal Amt.'), col('Deposit Amt.'), col('Closing Balance')] })).toMatchObject({
     table: 'bank',
     date: 'Date',
     amount: { credit: 'Deposit Amt.', debit: 'Withdrawal Amt.' },
     text: 'Narration',
+    skip: expect.stringContaining('opening|closing'),
   })
   expect(sideFor({ name: 'books', columns: [col('Voucher No'), col('Posted', 'TIMESTAMP'), col('Party'), col('Amount', 'DOUBLE')] })).toEqual({ table: 'books', date: 'Posted', amount: { column: 'Amount' }, text: 'Party' })
   // "Value Date" isn't an amount, however it's stored.
@@ -119,4 +121,17 @@ test('a cheque presented late pairs by its number, not with a nearer cheque of t
   // Without the numbers, the nearer cheque would have been taken.
   const plain = await q(matchSql({ a: { ...a, ref: undefined }, b: { ...b, ref: undefined }, days: 3, flip: false }, numeric({ chqbank: ['amt'], chqbooks: ['amt'] })))
   expect(plain.find((r) => r.status === 'matched')?.['chqbooks: party']).toBe('Rent store')
+})
+
+test('a ledger’s dated opening balance line isn’t matched as a deposit not yet credited', async () => {
+  await q(`CREATE OR REPLACE TABLE led AS SELECT * FROM (VALUES
+    (DATE '2024-04-01', 'Opening Balance', 'Opening', '245310.50', NULL),
+    (DATE '2024-04-02', 'Acme Ltd', 'Receipt', '50000.00', NULL),
+    (DATE '2024-04-05', 'Rent', 'Payment', NULL, '12000.00')
+  ) t("Date", "Particulars", "Vch Type", "Debit", "Credit")`)
+  const side = sideFor({ name: 'led', columns: [col('Date', 'DATE'), col('Particulars'), col('Vch Type'), col('Debit'), col('Credit')] })!
+  expect(side.amount).toEqual({ credit: 'Debit', debit: 'Credit' })
+  const rows = await q(`${matchSql({ a: side, b: side, days: 0, flip: false }, () => false)}`)
+  // Both sides read the same two transactions: matched with each other, the opening line nowhere.
+  expect(rows.map((r) => r.amount).sort()).toEqual([-12000, 50000])
 })

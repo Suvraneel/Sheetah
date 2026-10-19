@@ -21,9 +21,11 @@ interface SavedProps {
   onImport: (file: File) => void
   /** The open table a view would run on in place of its own (next month's file), if any. */
   fitsOn?: (view: SavedView) => string | null
+  /** Runs a view on that table instead of its own, while its own is open too (September's and October's). */
+  onRunOn?: (view: SavedView, table: string) => void
 }
 
-export function SavedPanel({ views, tableNames, onRun, onCopy, onDelete, onExport, onImport, fitsOn }: SavedProps) {
+export function SavedPanel({ views, tableNames, onRun, onCopy, onDelete, onExport, onImport, fitsOn, onRunOn }: SavedProps) {
   const picker = useRef<HTMLInputElement>(null)
   return (
     <ul className="side-list">
@@ -34,7 +36,9 @@ export function SavedPanel({ views, tableNames, onRun, onCopy, onDelete, onExpor
       )}
       {views.map((v) => {
         const missing = v.tables.some((t) => !tableNames.some((n) => n.toLowerCase() === t.toLowerCase()))
-        const fits = missing ? fitsOn?.(v) : null
+        const fits = fitsOn?.(v) ?? null
+        // Its own table is open, and so is one it fits (next month's file): offered beside it, not guessed.
+        const also = !missing && fits && onRunOn ? fits : null
         return (
           <li key={v.id} className="view-item">
             <button className="side-view" onClick={() => onRun(v)} title={v.sql}>
@@ -43,10 +47,15 @@ export function SavedPanel({ views, tableNames, onRun, onCopy, onDelete, onExpor
               </span>
               <span className="side-type">
                 {v.tables.length ? v.tables.join(', ') : 'no tables'}
-                {fits ? ` · fits ${fits}` : missing ? ' · pick a table' : ''}
+                {missing && fits ? ` · fits ${fits}` : missing ? ' · pick a table' : also ? ` · also fits ${also}` : ''}
               </span>
             </button>
             <span className="view-actions">
+              {also && (
+                <button className="link-btn view-on" title={`Run ${v.name} on ${also} instead of ${v.tables.join(', ')}`} onClick={() => onRunOn!(v, also)}>
+                  Run on {also}
+                </button>
+              )}
               <button className="icon-btn" title="Copy SQL" aria-label={`Copy SQL of ${v.name}`} onClick={() => onCopy(v)}>
                 <Icon name="copy" size={14} />
               </button>

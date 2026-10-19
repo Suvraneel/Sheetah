@@ -37,6 +37,44 @@ export function statementColumns(columns: { name: string; type: string }[]): Sta
   return { credit: credit.name, debit: debit.name, ...(balance ? { balance: balance.name } : {}) }
 }
 
+/** A column saying which side each amount is on: "Dr / Cr", "Debit/Credit", "Txn Type", "D/C". */
+const SIDE = /^(dr_?cr|cr_?dr|d_?c|c_?d|debit_?credit|credit_?debit|dr_?cr_?indicator|txn_?type|transaction_?type|type|indicator)$/
+
+/**
+ * A statement written with one Amount column and a column saying Dr or Cr for each line (Kotak's, many card
+ * statements): its amount and side, by their names. Whether the side column really holds Dr and Cr is
+ * checked on its values (sideValuesSql) before anything is offered.
+ */
+export function sidedAmount(columns: { name: string; type: string }[]): { amount: string; side: string } | null {
+  if (statementColumns(columns)) return null
+  const amount = columns.find(
+    (c) =>
+      !isIdLike(c.name) &&
+      !BALANCE.test(nameKey(c.name)) &&
+      !/date|day/i.test(c.name) &&
+      (isNumericType(c.type) || /^VARCHAR/i.test(c.type)) &&
+      /(^|_)(amount|amt|transaction_amount|txn_amount|txn_amt|value)(_|$)/.test(nameKey(c.name)),
+  )
+  const side = columns.find((c) => /^VARCHAR/i.test(c.type) && SIDE.test(nameKey(c.name)))
+  return amount && side ? { amount: amount.name, side: side.name } : null
+}
+
+/** SQL whose one row says whether the side column holds Dr and Cr (true when nearly all its values do). */
+export function sideValuesSql(table: string, side: string): string {
+  const v = `upper(trim(${sqlName(side)}::VARCHAR))`
+  return `SELECT (count(*) FILTER (WHERE regexp_full_match(${v}, '(DR|CR|D|C|DEBIT|CREDIT)\\.?')) >= 0.9 * count(nullif(${v}, '')) AND count(nullif(${v}, '')) > 0) AS ok FROM ${table}`
+}
+
+/** Money in (Cr) and money out (Dr) as two formula columns, from the amount and its side. */
+export function splitBySide(s: { amount: string; side: string }, numeric: boolean): { name: string; expr: string; note: string }[] {
+  const amt = num(s.amount, numeric)
+  const side = `upper(trim(${sqlName(s.side)}::VARCHAR))`
+  return [
+    { name: 'money_in', expr: `CASE WHEN regexp_full_match(${side}, '(CR|C|CREDIT)\\.?') THEN abs(${amt}) END`, note: `${s.amount} where ${s.side} is Cr` },
+    { name: 'money_out', expr: `CASE WHEN regexp_full_match(${side}, '(DR|D|DEBIT)\\.?') THEN abs(${amt}) END`, note: `${s.amount} where ${s.side} is Dr` },
+  ]
+}
+
 /**
  * The books' ledger column (a day book: each voucher's lines, each to its ledger): text named for the
  * account a line goes to. A single ledger's own export names the other account "Particulars": not this.
@@ -88,10 +126,12 @@ export function signedAmount(s: StatementColumns, numeric: (name: string) => boo
  */
 export function monthlySql(rows: string, s: StatementColumns, date: string, numeric: (name: string) => boolean): string {
   const v = (name: string) => `coalesce(${num(name, numeric(name))}, 0)`
+  // The books' ledger says it in its own words: a debtor's Debit is what was billed, not money in.
+  const [inName, outName, netName] = s.books ? ['debit', 'credit', 'net_dr'] : ['money_in', 'money_out', 'net']
   return `SELECT date_trunc('month', ${sqlName(date)})::DATE AS month,
-  sum(${v(s.credit)}) AS money_in,
-  sum(${v(s.debit)}) AS money_out,
-  sum(${v(s.credit)}) - sum(${v(s.debit)}) AS net,
+  sum(${v(s.credit)}) AS ${inName},
+  sum(${v(s.debit)}) AS ${outName},
+  sum(${v(s.credit)}) - sum(${v(s.debit)}) AS ${netName},
   count(*) AS lines
 FROM (
 ${rows}

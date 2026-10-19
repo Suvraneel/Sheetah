@@ -40,6 +40,14 @@ test('a report’s title lines without separators are found above its table', as
   expect(titleLines('just one line of text\nand another\n')).toBe(null)
 })
 
+test('a one-column frame’s header (",amount", "","x") is names, not a title line above them', async () => {
+  const { titleLines } = await import('../../src/engine/sniff')
+  expect(titleLines(',amount\n0,10\n1,20\n2,30\n')).toBe(null)
+  expect(titleLines('"","x"\n"1",5\n"2",6\n"3",7\n')).toBe(null)
+  // A bank's name in the first field, the names after it: a title.
+  expect(titleLines('HDFC BANK Ltd.,,\nDate,Narration,Amount\n2024-01-01,Rent,100\n2024-01-02,Fee,5\n')).toMatchObject({ sep: ',', skip: 1 })
+})
+
 test('rows ending in a trailing separator aren’t a header with title lines above it', async () => {
   const { titleLines } = await import('../../src/engine/sniff')
   const trailing = ['Date,Narration,Amount', '2024-01-01,Item 0,0,', '2024-01-02,Item 1,1,', '2024-01-03,Item 2,2,'].join('\n')

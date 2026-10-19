@@ -75,6 +75,8 @@ const alive: string[] = []
 const held = new Map<string, number>()
 
 async function dropResult(table: string) {
+  // Only Sheetah's own copies: never a table of the user's (shown as it is).
+  if (!table.startsWith(`${RESULTS_SCHEMA}.`)) return
   const { conn } = await getEngine()
   await conn.query(`DROP TABLE IF EXISTS ${table}`).catch(() => {})
 }
@@ -144,6 +146,10 @@ async function runLocked(sql: string): Promise<ResultSet> {
   for (const s of statements.slice(0, -1)) await sendAll(s)
   const last = statements[statements.length - 1]
   const id = ++counter
+  // A table read whole (SELECT * FROM sales) is shown from the table itself, not a copy of it: a file of a
+  // gigabyte would take twice the memory on screen, and the next sort would run out.
+  const direct = await ownTable(last)
+  if (direct) return materialised(id, direct, last, started, false)
   const table = `${RESULTS_SCHEMA}.result_${id}`
 
   try {
@@ -179,8 +185,39 @@ async function runLocked(sql: string): Promise<ResultSet> {
   return materialised(id, table, last, started)
 }
 
+/**
+ * The table a plain "SELECT * FROM t" reads, when the grid can show it as it is: a table (not a view), its
+ * row positions 0, 1, 2… with none missing (rows deleted leave gaps), and no column of its own called rowid.
+ */
+async function ownTable(sql: string): Promise<string | null> {
+  const m = /^\s*SELECT\s+\*\s+FROM\s+("(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*)\s*;?\s*$/i.exec(sql)
+  if (!m) return null
+  const name = m[1].startsWith('"') ? m[1].slice(1, -1).replace(/""/g, '"') : m[1]
+  try {
+    // Only where the name means that table: the default database and schema (not after a USE), and no temporary
+    // table of the same name in front of it.
+    const t = (
+      await sendAll(
+        `SELECT table_name AS n FROM information_schema.tables WHERE table_catalog = 'memory' AND table_schema = 'main' AND table_type = 'BASE TABLE' AND lower(table_name) = lower(${quoteLiteral(name)})
+           AND current_database() = 'memory' AND current_schema() = 'main'
+           AND NOT EXISTS (SELECT 1 FROM duckdb_tables() WHERE temporary AND lower(table_name) = lower(${quoteLiteral(name)}))
+           AND NOT EXISTS (SELECT 1 FROM duckdb_views() WHERE temporary AND lower(view_name) = lower(${quoteLiteral(name)}))`,
+      )
+    ).toArray()[0]?.toJSON() as { n: string } | undefined
+    if (!t) return null
+    const table = `memory.main.${quoteIdent(t.n)}`
+    const cols = (await sendAll(`SELECT count(*) FILTER (WHERE lower(column_name) = 'rowid')::INTEGER AS r FROM information_schema.columns WHERE table_schema = 'main' AND table_name = ${quoteLiteral(t.n)}`)).toArray()[0]?.toJSON() as { r: number }
+    if (Number(cols.r)) return null
+    const ok = (await sendAll(`SELECT (count(*) = coalesce(max(rowid) + 1, 0))::INTEGER AS ok FROM ${table}`)).toArray()[0]?.toJSON() as { ok: number }
+    return Number(ok.ok) ? table : null
+  } catch (e) {
+    if (isCancel(e)) throw new CancelledError()
+    return null
+  }
+}
+
 /** Called inside the run lock: the result table is inspected on runConn, after everything queued before it. */
-async function materialised(id: number, table: string, sql: string, started: number): Promise<ResultSet> {
+async function materialised(id: number, table: string, sql: string, started: number, own = true): Promise<ResultSet> {
   const { conn } = await getEngine()
   let columns: ColumnInfo[]
   let rowCount: number
@@ -200,13 +237,14 @@ async function materialised(id: number, table: string, sql: string, started: num
     rowCount = Number(countRes.toArray()[0]?.toJSON().n ?? 0)
   } catch (e) {
     // Cancelled (or failed) after the table was made: don't leave a full copy of the rows behind.
-    void dropResult(table)
+    if (own) void dropResult(table)
     throw isCancel(e) ? new CancelledError() : e
   }
   const elapsedMs = performance.now() - started
 
   // Free older results' memory (the one on screen stays until this one replaces it; held ones until released).
-  alive.push(table)
+  // A table shown as it is isn't a result's to drop.
+  if (own) alive.push(table)
   while (alive.length > 2) {
     const old = alive.shift()!
     if (!held.has(old)) void dropResult(old)
@@ -296,7 +334,14 @@ export async function rowOf(sql: string, n: number): Promise<{ columns: string[]
  */
 const FORMULA_START = `'^[=+\\-@\\t\\r]'`
 
-export async function exportResult(result: ResultSet, format: 'csv' | 'parquet', opts: { excelSafe?: boolean } = {}): Promise<Blob> {
+/** Rows a CSV export writes at a time: each piece goes into the file (a Blob) before the next is made. */
+const CSV_PIECE = 250_000
+
+export async function exportResult(
+  result: ResultSet,
+  format: 'csv' | 'parquet',
+  opts: { excelSafe?: boolean; onProgress?: (done: number) => void; cancelled?: () => boolean } = {},
+): Promise<Blob> {
   if (!result.table) throw new Error('This result can’t be exported.')
   const { db, conn } = await getEngine()
   if (format === 'parquet') await ensureExtension('parquet')
@@ -325,14 +370,25 @@ export async function exportResult(result: ResultSet, format: 'csv' | 'parquet',
       return ref === out ? ref : `${ref} AS ${out}`
     })
     .join(', ')
-  let buf: Uint8Array
-  try {
-    await conn.query(`COPY (SELECT ${cols || '*'} FROM ${result.table} ORDER BY rowid) TO ${quoteLiteral(file)} ${copyOpts}`)
-    buf = await db.copyFileToBuffer(file)
-  } finally {
-    await db.dropFile(file).catch(() => {})
-  }
+  const type = format === 'csv' ? 'text/csv' : 'application/vnd.apache.parquet'
   // A byte-order mark, so Excel reads the file as UTF-8 (René, £12.50) rather than its own code page.
-  const parts: BlobPart[] = safe ? [new Uint8Array([0xef, 0xbb, 0xbf]), buf as Uint8Array<ArrayBuffer>] : [buf as Uint8Array<ArrayBuffer>]
-  return new Blob(parts, { type: format === 'csv' ? 'text/csv' : 'application/vnd.apache.parquet' })
+  let out = new Blob(safe ? [new Uint8Array([0xef, 0xbb, 0xbf])] : [], { type })
+  // A CSV in pieces of rows, each added to the file and let go before the next is written: a 9-million-row
+  // export never holds the whole text in the engine and the page at once (it ran out of memory doing so).
+  // Parquet is one piece: its file is compressed, and can't be cut into separately written parts.
+  const pieces = format === 'csv' ? Math.max(1, Math.ceil(result.rowCount / CSV_PIECE)) : 1
+  for (let i = 0; i < pieces; i++) {
+    if (opts.cancelled?.()) throw new DOMException('Export cancelled', 'AbortError')
+    const rows = pieces > 1 ? ` WHERE rowid >= ${i * CSV_PIECE} AND rowid < ${(i + 1) * CSV_PIECE}` : ''
+    const header = format === 'csv' ? `(HEADER ${i === 0 ? 'true' : 'false'}, DELIMITER ',')` : copyOpts
+    try {
+      await conn.query(`COPY (SELECT ${cols || '*'} FROM ${result.table}${rows} ORDER BY rowid) TO ${quoteLiteral(file)} ${header}`)
+      const buf = await db.copyFileToBuffer(file)
+      out = new Blob([out, buf as Uint8Array<ArrayBuffer>], { type })
+    } finally {
+      await db.dropFile(file).catch(() => {})
+    }
+    opts.onProgress?.(Math.min(result.rowCount, (i + 1) * CSV_PIECE))
+  }
+  return out
 }

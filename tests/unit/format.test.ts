@@ -13,6 +13,9 @@ test.describe('grid number formatting', () => {
     expect(makeFormatter(col('Amount', 'BIGINT'), [])('1200')).toBe('1,200.00')
     expect(makeFormatter(col('Taxable Value', 'INTEGER'), [])('-450')).toBe('-450.00')
     expect(makeFormatter(col('Total Units', 'BIGINT'), [])('1200')).toBe('1,200')
+    // A pivot's count of rows, named Total: a count; Invoice Total, an amount.
+    expect(makeFormatter(col('Total', 'BIGINT'), [])('42')).toBe('42')
+    expect(makeFormatter(col('Invoice Total', 'BIGINT'), [])('42')).toBe('42.00')
     expect(makeFormatter(col('GST %', 'BIGINT'), [])('18')).toBe('18')
     expect(makeFormatter(col('Credit Period', 'INTEGER'), [])('30')).toBe('30')
     expect(makeFormatter(col('Tax Rate', 'DOUBLE'), ['18.0'])('18.0')).toBe('18')

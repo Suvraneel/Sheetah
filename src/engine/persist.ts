@@ -1,4 +1,5 @@
-import { tableToIPC } from 'apache-arrow'
+import type { AsyncDuckDBConnection } from '@duckdb/duckdb-wasm'
+import { RecordBatchStreamWriter } from 'apache-arrow'
 import { getEngine, quoteIdent, quoteLiteral, withRunLock } from './db'
 
 /*
@@ -52,15 +53,69 @@ async function folder(create = true) {
 const fileName = (table: string) => `${encodeURIComponent(table)}.arrow`
 const tableName = (file: string) => decodeURIComponent(file.replace(/\.arrow$/, ''))
 
+/**
+ * Writes a table's snapshot batch by batch, from the engine to the file: it never sits whole in the page's
+ * memory (a 2.5M-row table read in at once, then copied to bytes, took the tab past its memory). The file's
+ * writer replaces the old snapshot only when it closes, so a reload part-way through keeps the one before; a
+ * new snapshot that didn't finish is removed (an empty file isn't restored either).
+ */
 export async function saveTable(name: string): Promise<void> {
-  const { conn } = await getEngine()
-  const arrow = await conn.query(`SELECT * FROM ${quoteIdent(name)}`)
-  const bytes = tableToIPC(arrow, 'stream')
+  const { db } = await getEngine()
+  // A connection of its own: a streamed read is abandoned if another query arrives on its connection.
+  const conn = await db.connect()
+  try {
+    await stream(conn, name)
+  } finally {
+    await conn.close().catch(() => {})
+  }
+}
+
+async function stream(conn: AsyncDuckDBConnection, name: string): Promise<void> {
   const dir = await folder()
-  const handle = await dir.getFileHandle(fileName(name), { create: true })
-  const writable = await handle.createWritable()
-  await writable.write(bytes as Uint8Array<ArrayBuffer>)
-  await writable.close()
+  const file = fileName(name)
+  const existed = await dir.getFileHandle(file).then(() => true, () => false)
+  const out = await (await dir.getFileHandle(file, { create: true })).createWritable()
+  try {
+    // ENUM columns as text: streamed, their dictionaries come through empty (and the snapshot wouldn't restore).
+    const types = (await conn.query(`DESCRIBE ${quoteIdent(name)}`)).toArray().map((r) => r.toJSON() as { column_name: string; column_type: string })
+    const enums = types.filter((t) => /^ENUM\(/i.test(t.column_type)).map((t) => `${quoteIdent(t.column_name)}::VARCHAR AS ${quoteIdent(t.column_name)}`)
+    const reader = await conn.send(`SELECT *${enums.length ? ` REPLACE (${enums.join(', ')})` : ''} FROM ${quoteIdent(name)}`, true)
+    const writer = new RecordBatchStreamWriter()
+    let written = 0
+    // A write that fails (the disk full) stops everything: never a wait for bytes that will never be written.
+    let failed: unknown = null
+    const pump = (async () => {
+      for await (const chunk of writer) {
+        await out.write(chunk as Uint8Array<ArrayBuffer>)
+        written += chunk.byteLength
+      }
+    })().catch((e: unknown) => {
+      failed = e ?? new Error('Writing the snapshot failed')
+    })
+    // How far the writer has got (its own count of bytes queued): the engine waits while the disk catches up.
+    const queued = () => (writer as unknown as { _position: number })._position
+    let batches = 0
+    for await (const batch of reader) {
+      if (failed) break
+      writer.write(batch)
+      batches++
+      while (!failed && queued() - written > 32 * 1024 ** 2) await new Promise((r) => setTimeout(r, 5))
+    }
+    if (failed) {
+      await reader.cancel?.().catch(() => {})
+      throw failed
+    }
+    // No rows: the columns alone, so it comes back as the empty table it is.
+    if (!batches) writer.reset(undefined, reader.schema)
+    writer.close()
+    await pump
+    if (failed) throw failed
+    await out.close()
+  } catch (e) {
+    await out.abort().catch(() => {})
+    if (!existed) await dir.removeEntry(file).catch(() => {})
+    throw e
+  }
 }
 
 export async function removeTable(name: string): Promise<void> {
@@ -102,7 +157,13 @@ async function restoreLocked(): Promise<string[]> {
     if (!file.endsWith('.arrow')) continue
     const name = tableName(file)
     try {
-      const bytes = new Uint8Array(await (await handle.getFile()).arrayBuffer())
+      const snapshot = await handle.getFile()
+      // An empty file is a save that never finished (the tab closed first): nothing to restore, and removed.
+      if (!snapshot.size) {
+        await dir.removeEntry(file).catch(() => {})
+        continue
+      }
+      const bytes = new Uint8Array(await snapshot.arrayBuffer())
       // Never replace a table that already exists (the user may have opened a file with that name).
       const exists = (await conn.query(`SELECT 1 FROM information_schema.tables WHERE table_schema = 'main' AND lower(table_name) = lower(${quoteLiteral(name)})`)).numRows > 0
       if (exists) continue

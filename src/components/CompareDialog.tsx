@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { compareSql, defaultCompare, keyHealth, schemaDiff, type CompareSpec, type KeyHealth, type TableColumns } from '../engine/compare'
+import { onTidiedRows } from '../engine/compose'
 import { getEngine } from '../engine/db'
 import { isNumericType, LOCALE } from '../engine/sql'
 import { sideFor } from '../engine/match'
@@ -37,8 +38,38 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onMat
   // The key picked before switching to whole rows, restored when switching back.
   const [savedKeys, setSavedKeys] = useState<string[]>([])
 
-  const A = tables.find((t) => t.name === pair.before)
-  const B = tables.find((t) => t.name === pair.after)
+  const rawA = tables.find((t) => t.name === pair.before)
+  const rawB = tables.find((t) => t.name === pair.after)
+  // A tidied table's columns as tidied (its dates converted by a step): what the match would read.
+  // (null: the tidied rows couldn't be read, so the table as it is.)
+  const [tidied, setTidied] = useState<Record<string, TableColumns['columns'] | null>>({})
+  useEffect(() => {
+    let live = true
+    for (const name of [pair.before, pair.after]) {
+      if (!sources[name] || tidied[name] !== undefined) continue
+      void getEngine()
+        .then(({ conn }) => conn.query(`DESCRIBE SELECT * FROM (\n${sources[name]}\n)`))
+        .then((res) => {
+          const columns = res.toArray().map((r) => ({ name: String(r.toJSON().column_name), type: String(r.toJSON().column_type) }))
+          if (live) setTidied((t) => ({ ...t, [name]: columns }))
+        })
+        .catch(() => live && setTidied((t) => ({ ...t, [name]: null })))
+    }
+    return () => {
+      live = false
+    }
+    // The two tables' tidied SQL is what's looked at (a new object each time the app draws isn't).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pair.before, pair.after, sources[pair.before], sources[pair.after]])
+  // A table tidied by steps is compared as tidied (its total lines left out, its text converted): not its file
+  // as it is, where every converted value would read as changed.
+  const asMatched = (t: TableColumns): TableColumns => {
+    const cols = tidied[t.name]
+    return cols ? { ...t, columns: cols, source: sources[t.name] } : t
+  }
+  const waiting = (t?: TableColumns) => !!t && !!sources[t.name] && tidied[t.name] === undefined
+  const A = useMemo(() => (rawA && !waiting(rawA) ? asMatched(rawA) : undefined), [rawA, tidied]) // eslint-disable-line react-hooks/exhaustive-deps
+  const B = useMemo(() => (rawB && !waiting(rawB) ? asMatched(rawB) : undefined), [rawB, tidied]) // eslint-disable-line react-hooks/exhaustive-deps
   const pairKey = `${pair.before}\u0000${pair.after}`
   const diff = useMemo(() => (A && B ? schemaDiff(A, B) : null), [A, B])
 
@@ -61,7 +92,7 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onMat
   useEffect(() => {
     if (!spec || spec.mode !== 'key' || !spec.keys.length) return
     let live = true
-    keyHealth(spec)
+    keyHealth(spec, sources)
       .then((rows) => live && setHealth({ for: healthKey, rows }))
       .catch(() => {})
     return () => {
@@ -86,30 +117,9 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onMat
     update({ mode: 'key', keys, columns: spec.columns.filter((c) => !keys.includes(c)) })
   }
   const ready = !!spec && !same && (spec.mode === 'key' ? spec.keys.length > 0 : spec.columns.length > 0)
-  // A tidied table's columns as tidied (its dates converted by a step): what the match would read.
-  const [tidied, setTidied] = useState<Record<string, TableColumns['columns']>>({})
-  useEffect(() => {
-    let live = true
-    for (const name of [pair.before, pair.after]) {
-      if (!sources[name] || tidied[name]) continue
-      void getEngine()
-        .then(({ conn }) => conn.query(`DESCRIBE SELECT * FROM (\n${sources[name]}\n)`))
-        .then((res) => {
-          const columns = res.toArray().map((r) => ({ name: String(r.toJSON().column_name), type: String(r.toJSON().column_type) }))
-          if (live) setTidied((t) => ({ ...t, [name]: columns }))
-        })
-        .catch(() => {})
-    }
-    return () => {
-      live = false
-    }
-    // The two tables' tidied SQL is what's looked at (a new object each time the app draws isn't).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pair.before, pair.after, sources[pair.before], sources[pair.after]])
-  const asMatched = (t: TableColumns) => (tidied[t.name] ? { ...t, columns: tidied[t.name] } : t)
   // A bank statement and books (or two statements): their lines are matched by amount and date, not compared.
   const payments =
-    !!onMatch && !same && !!A && !!B && !!sideFor(asMatched(A)) && !!sideFor(asMatched(B)) && (!!statementColumns(asMatched(A).columns) || !!statementColumns(asMatched(B).columns))
+    !!onMatch && !same && !!A && !!B && !!sideFor(A) && !!sideFor(B) && (!!statementColumns(A.columns) || !!statementColumns(B.columns))
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -118,7 +128,7 @@ export function CompareDialog({ tables, before, after, initial, onCompare, onMat
           className="shell modal modal-wide"
           onSubmit={(e) => {
             e.preventDefault()
-            if (spec && A && B && ready) onCompare(compareSql(spec, A, B), spec)
+            if (spec && A && B && ready) onCompare([B, A].reduce((sql, t) => (t.source ? onTidiedRows(sql, t.name, t.source, 0) : sql), compareSql(spec, A, B)), spec)
           }}
         >
           <div className="core">

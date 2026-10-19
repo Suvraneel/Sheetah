@@ -463,8 +463,9 @@ test.describe('unpivot', () => {
 test.describe('column names on a later row', () => {
   test('a row picked by its number becomes the column names, and Undo brings the file back', async ({ page }) => {
     await openApp(page)
-    // Title lines padded to the full width: the file reader takes them for data.
-    await page.locator('input[type=file]').setInputFiles([file('padded.csv', 'Sales report,,\nApril 2024,,\nInvoice,Customer,Amount\nINV-1,Asha,"1,200"\nINV-2,Ravi,800\nTotal,,"2,000"\n')])
+    // Title lines with more than one thing in them (a report's name and its month): the file reader takes them
+    // for data. (Lines padded to the width with only a title in them are left out as the file opens.)
+    await page.locator('input[type=file]').setInputFiles([file('padded.csv', 'Sales report,April 2024,\nRegion: North,,\nInvoice,Customer,Amount\nINV-1,Asha,"1,200"\nINV-2,Ravi,800\nTotal,,"2,000"\n')])
     await expect(page.locator('.result-meta')).toContainText('5 rows')
     // Most columns got made-up names, and row 2 is all words: offered.
     await page.locator('.hint-chips').getByRole('button', { name: 'Use row 2 as column names' }).click()
@@ -768,5 +769,47 @@ test.describe('a register from the books', () => {
     await page.getByRole('button', { name: 'Add signed amount (Debit − Credit)' }).click()
     await expect(page.locator('.checks .is-ok', { hasText: 'Every Balance follows from the row above (3 rows checked)' })).toBeVisible()
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('1,723.10')
+  })
+})
+
+test.describe('statements as banks write them', () => {
+  test('one Amount and a Dr / Cr column is split into money in and out, then summed by month', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      'Txn Date,Description,Amount,Dr / Cr,Balance',
+      '13/09/2026,Salary,"50,000.00",CR,"60,000.00"',
+      '15/09/2026,Rent,"20,000.00",DR,"40,000.00"',
+      '20/09/2026,Charges,118.00,DR,"39,882.00"',
+      '14/10/2026,Refund,500.00,CR,"40,382.00"',
+    ].join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('kotak.csv', `${csv}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('4 rows')
+    await page.getByRole('button', { name: 'Split Amount into money in and out (by Dr / Cr)' }).click()
+    await expect(page.locator('.op-chip', { hasText: 'money_in' })).toBeVisible()
+    // A statement now: its signed amount, and then the summary, as for any statement.
+    await page.getByRole('button', { name: /^Add signed amount/ }).click()
+    await page.getByRole('button', { name: 'Money in and out by month' }).click()
+    const sept = page.locator('.sr-grid [role=row]').nth(1)
+    await expect(sept).toContainText('2026-09-01')
+    await expect(sept).toContainText('50,000.00')
+    await expect(sept).toContainText('20,118.00')
+  })
+
+  test('title lines Excel padded to the table’s width are left out; the statement reads as one', async ({ page }) => {
+    await openApp(page)
+    const csv = [
+      'HDFC BANK Ltd.,,,,',
+      'Statement of account,,,,',
+      'Account No: 50100012345678,,,,',
+      ',,,,',
+      'Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance',
+      '01/09/26,Salary,,"50,000.00","60,000.00"',
+      '03/09/26,Rent,"20,000.00",,"40,000.00"',
+      '04/09/26,UPI-Swiggy,450.00,,"39,550.00"',
+    ].join('\n')
+    await page.locator('input[type=file]').setInputFiles([file('hdfc.csv', `${csv}\n`)])
+    await expect(page.locator('.toast', { hasText: 'title lines above the column names in hdfc.csv' })).toBeVisible()
+    await expect(page.locator('.result-meta')).toContainText('3 rows · 5 columns')
+    await expect(page.getByRole('button', { name: /^Add signed amount/ })).toBeVisible()
   })
 })

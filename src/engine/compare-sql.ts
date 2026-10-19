@@ -11,6 +11,8 @@ import { commentText, isNumericType, quoteLiteral, sqlName } from './sql'
 export interface TableColumns {
   name: string
   columns: { name: string; type: string }[]
+  /** The table's rows as tidied by its steps (total lines left out, text converted), when it has them. */
+  source?: string
 }
 
 export interface CompareSpec {

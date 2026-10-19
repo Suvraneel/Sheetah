@@ -165,6 +165,23 @@ async function readDates(name: string, path: string, read: (opts: string) => str
   if (order) dateOrders.set(name.toLowerCase(), order)
 }
 
+/** What the engine says when it runs out of room. */
+const OUT_OF_MEMORY = /out of memory|Allocation failure|failed to allocate/i
+const mb = (bytes: number) => `${Math.round(bytes / 1024 ** 2).toLocaleString(LOCALE)} MB`
+
+/** Room left in the engine's memory (its limit less what it holds now), or null if it can't say. */
+async function memoryLeft(): Promise<number | null> {
+  try {
+    const r = (await sendAll(`SELECT current_setting('memory_limit') AS l, (SELECT sum(memory_usage_bytes) FROM duckdb_memory())::DOUBLE AS u`)).toArray()[0]?.toJSON() as { l: string; u: number }
+    const m = /([\d.]+)\s*([KMGT])(i?)B/i.exec(String(r.l))
+    if (!m) return null
+    const limit = Number(m[1]) * (m[3] ? 1024 : 1000) ** ('KMGT'.indexOf(m[2].toUpperCase()) + 1)
+    return limit - Number(r.u ?? 0)
+  } catch {
+    return null
+  }
+}
+
 /** Codes by their names: ZIP and FIPS codes, area codes, IDs (Zipcode and Pincode written as one word too). */
 const CODE_COLUMN = /(^|_)(fips|geoid|geo_id|zcta|ags|ars|nuts\d?|lsoa\w*|msoa\w*|lad\w*|area_code|ons_code|code|zip|zipcode|pin|pincode|postcode|postalcode|postal)(_|$)/
 
@@ -381,6 +398,16 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
     const withTypes = (opts: string) => [typesOpt(), opts].filter(Boolean).join(', ')
     const fromNames = (t: { sep: string; skip: number }, opts = '') =>
       `read_csv(${quoteLiteral(virtualPath)}, delim = ${quoteLiteral(t.sep)}, header = true, skip = ${t.skip}, null_padding = true, strict_mode = false${withTypes(opts) ? `, ${withTypes(opts)}` : ''})`
+    // A big file into a tab whose engine is nearly full would come out empty (or not at all): said first.
+    if (materialize && !/\.(gz|gzip|zst)$/i.test(file.name)) {
+      const left = await memoryLeft()
+      if (left !== null && file.size > 100 * 1024 ** 2 && file.size * 1.3 > left) {
+        await db.dropFile(virtualPath).catch(() => {})
+        throw new FileKindError(
+          `${file.name} is ${mb(file.size)}, and this tab has room for about ${mb(Math.max(0, left))} more. Remove tables you don’t need (the × beside each), or reload the page, then open it again.`,
+        )
+      }
+    }
     try {
       for (;;) {
         const from = fn === 'read_csv_auto' && typesOpt() ? `read_csv_auto(${quoteLiteral(virtualPath)}, ${typesOpt()})` : source
@@ -422,6 +449,17 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
         throw isCancel(why) ? new CancelledError() : why
       }
     }
+    // Nothing read from a file with something in it (the engine out of room says so this way at times):
+    // a failure, not an empty table.
+    if (materialize && file.size > 4096) {
+      const shape = (await sendAll(`SELECT count(*)::DOUBLE AS n FROM ${quoteIdent(name)}`)).toArray()[0]?.toJSON() as { n: number } | undefined
+      const cols = await columnTypes(name)
+      if (Number(shape?.n ?? 0) === 0 && cols.length === 1 && /^column0?$/i.test(cols[0].name)) {
+        await sendAll(`DROP TABLE IF EXISTS ${quoteIdent(name)}`).catch(() => {})
+        await db.dropFile(virtualPath).catch(() => {})
+        throw new Error(`Out of Memory Error: nothing could be read from ${file.name}`)
+      }
+    }
     // Rows with more or fewer fields than the header make the sniffer give up and read each line as
     // one text column ("name,city,amount"). Read it again with that separator, padding short rows.
     if (fn === 'read_csv_auto') {
@@ -449,18 +487,27 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
           // column. Fewer columns than most of the lines have: read again by the lines' own separator.
           const t = (await import('./sniff')).titleLines(await file.slice(0, 64 * 1024).text(), true)
           const rows = t ? Number((await sendAll(`SELECT count(*)::DOUBLE AS n FROM ${quoteIdent(name)}`)).toArray()[0]?.toJSON().n ?? 0) : 0
-          if (t && t.fields >= 2 && (rows === 0 || cols.length < t.fields)) {
+          // Title lines saved from Excel, padded to the table's width ("HDFC BANK Ltd.,,,,,,"): the file reader
+          // took the first for the names (one name, the rest made up). Read from the real names instead.
+          const madeUp = cols.filter((c) => /^column\d+$/i.test(c)).length >= Math.max(1, (cols.length - 1) / 2)
+          // (The reader names the first column after the title: "HDFC BANK Ltd.", never a made-up name there.)
+          const padded = !!t && t.skip > 0 && madeUp && !/^column\d+$/i.test(cols[0] ?? '')
+          if (t && t.fields >= 2 && (rows === 0 || cols.length < t.fields || padded)) {
             const again = (opts: string) => fromNames(t, opts)
             const fits = await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(`__fit_${name}`)} AS SELECT * FROM ${again('')}`).then(
               () => true,
-              (e: unknown) => (isCancel(e) ? Promise.reject(e) : false),
+              (e: unknown) => (isCancel(e) || OUT_OF_MEMORY.test(String(e)) ? Promise.reject(e) : false),
             )
             const better = fits && (await columnTypes(`__fit_${name}`)).length === t.fields
             if (better) {
               await sendAll(`DROP TABLE ${quoteIdent(name)}`)
               await sendAll(`ALTER TABLE ${quoteIdent(`__fit_${name}`)} RENAME TO ${quoteIdent(name)}`)
               read = again
-              onNote?.(`Some lines of ${file.name} don’t fit its columns (a note below the table, say): read by its columns, they’re rows you can leave out.`)
+              onNote?.(
+                padded
+                  ? `Left out ${t.skip === 1 ? 'a title line' : `${t.skip} title lines`} above the column names in ${file.name}.`
+                  : `Some lines of ${file.name} don’t fit its columns (a note below the table, say): read by its columns, they’re rows you can leave out.`,
+              )
             } else await sendAll(`DROP TABLE IF EXISTS ${quoteIdent(`__fit_${name}`)}`).catch(() => {})
           }
         }
@@ -470,6 +517,9 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
         await twoDigitYears(name, read, file.name, onNote)
       } catch (e) {
         if (isCancel(e)) {
+          // Stopped part-way through putting it right (codes read again as text, dates turned round): the
+          // table as first read would be wrong without a word, so it goes, as the message says.
+          await sendAll(`DROP TABLE IF EXISTS ${quoteIdent(name)}`).catch(() => {})
           await db.dropFile(virtualPath).catch(() => {})
           throw new CancelledError()
         }

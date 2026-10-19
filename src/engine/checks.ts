@@ -134,11 +134,16 @@ export function tieOutSql(table: string, cols: { name: string; numeric: boolean 
   if (!totals.length || !cols.length) return null
   const all = (ds: DropRows[]) => `(${ds.map((d) => `(${d.keep})`).join(' AND ')})`
   const n = (c: { name: string; numeric: boolean }) => (c.numeric ? `TRY_CAST(${sqlName(c.name)} AS DOUBLE)` : `number_from_text(${sqlName(c.name)}::VARCHAR)`)
-  // The rows a total adds up: the books' total (Tally's Current Total) includes the opening balance written in
-  // Debit or Credit, never the closing one below it. A statement's balance lines have nothing in or out anyway.
+  // The rows a total adds up, never the closing balance line below it. Whether the opening balance (written in
+  // Debit or Credit) is in the total depends on the report: some books' totals count it, Tally's Current Total
+  // doesn't. Both are summed (d with it, e without), and the total is right if either comes to it.
   const balance = drop.filter((d) => d.kind === 'balance' || (!d.kind && /balance line/.test(d.label)))
-  const rows = `${all(drop.filter((d) => !balance.includes(d)))} AND NOT ${closingLineSql(cols.filter((c) => !c.numeric).map((c) => sqlName(c.name)))}`
-  return `SELECT ${cols.map((c, i) => `sum(${n(c)}) FILTER (WHERE NOT ${all(totals)})::DOUBLE AS t${i}, sum(${n(c)}) FILTER (WHERE ${rows})::DOUBLE AS d${i}`).join(', ')} FROM ${sqlName(table)}`
+  const closing = closingLineSql(cols.filter((c) => !c.numeric).map((c) => sqlName(c.name)))
+  const rows = `${all(drop.filter((d) => !balance.includes(d)))} AND NOT ${closing}`
+  const txns = balance.length ? `${all(drop)} AND NOT ${closing}` : null
+  return `SELECT ${cols
+    .map((c, i) => `sum(${n(c)}) FILTER (WHERE NOT ${all(totals)})::DOUBLE AS t${i}, sum(${n(c)}) FILTER (WHERE ${rows})::DOUBLE AS d${i}${txns ? `, sum(${n(c)}) FILTER (WHERE ${txns})::DOUBLE AS e${i}` : ''}`)
+    .join(', ')} FROM ${sqlName(table)}`
 }
 
 /** SQL true for a closing balance line ("Closing Balance", "Balance c/f", "Carried forward"), by its text columns. */
@@ -147,8 +152,15 @@ export function closingLineSql(texts: string[]): string {
 }
 
 /** The tie-out query's row, read column by column. */
-export const readTieOutRow = (cols: { name: string }[], row: Record<string, unknown>): TieOut | null =>
-  readTieOut(cols.map((c, i) => ({ column: c.name, t: row[`t${i}`] as number | null, d: row[`d${i}`] as number | null })))
+export function readTieOutRow(cols: { name: string }[], row: Record<string, unknown>): TieOut | null {
+  // Each column against its rows with the opening balance, else without it (whichever the total counts).
+  const pairs = cols.map((c, i) => {
+    const [t, d, e] = [row[`t${i}`] as number | null, row[`d${i}`] as number | null, row[`e${i}`] as number | null | undefined]
+    const tied = (x: number | null | undefined) => typeof x === 'number' && !!readTieOut([{ column: c.name, t, d: x }])?.ok.length
+    return { column: c.name, t, d: !tied(d) && tied(e) ? (e as number) : d }
+  })
+  return readTieOut(pairs)
+}
 
 /** What the tie-out found, in words: the first column that's short or over, by how much; else the figure that matched. */
 export function tieOutText(t: TieOut | null | undefined, nf: (n: number) => string): Check | null {

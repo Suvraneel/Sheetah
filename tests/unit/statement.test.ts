@@ -124,6 +124,10 @@ test('next month’s tie-out adds up the total lines only: not the balance lines
   const tcols = ['Date', 'Particulars', 'Debit', 'Credit'].map((name) => ({ name, numeric: false }))
   const trow = (await q(tieOutSql('tly', tcols, tally)!))[0] as Record<string, unknown>
   expect(readTieOutRow(tcols, trow)?.off).toEqual([])
+  // And a Current Total of the period's lines alone (the opening balance not in it): right too, not "over".
+  await q(`UPDATE tly SET "Debit" = '50,000.00' WHERE "Particulars" = 'Current Total'`)
+  const prow = (await q(tieOutSql('tly', tcols, tally)!))[0] as Record<string, unknown>
+  expect(readTieOutRow(tcols, prow)).toEqual({ ok: [{ column: 'Debit', sum: 50000 }, { column: 'Credit', sum: 25000 }], off: [] })
 })
 
 test('a statement’s ends: where it opened and closed, either way round, and whether next month carries on from there', async () => {
@@ -175,4 +179,32 @@ test('balances written with Cr (in credit) or Dr (overdrawn) are checked as the 
     order: 'oldest first',
     firstBad: { row: 4, off: 10000 },
   })
+})
+
+test('one Amount and a Dr / Cr column: checked, then split into money in and out that read as a statement', async () => {
+  const { sidedAmount, sideValuesSql, splitBySide, statementColumns } = await import('../../src/engine/statement')
+  const cols = [{ name: 'Txn Date', type: 'DATE' }, { name: 'Description', type: 'VARCHAR' }, { name: 'Amount', type: 'VARCHAR' }, { name: 'Dr / Cr', type: 'VARCHAR' }, { name: 'Balance', type: 'VARCHAR' }]
+  const s = sidedAmount(cols)!
+  expect(s).toEqual({ amount: 'Amount', side: 'Dr / Cr' })
+  await q(`CREATE OR REPLACE TABLE kotak AS SELECT * FROM (VALUES
+    (DATE '2026-09-01', 'Salary', '50,000.00', 'CR', '60,000.00'), (DATE '2026-09-03', 'Rent', '20,000.00', 'DR', '40,000.00'), (DATE '2026-09-04', 'Charges', '118.00', 'Dr.', '39,882.00')
+  ) t("Txn Date", "Description", "Amount", "Dr / Cr", "Balance")`)
+  expect((await q(sideValuesSql('kotak', s.side)))[0].ok).toBe(true)
+  // Not a Dr / Cr column when its values say something else (a "Type" of UPI, NEFT).
+  expect((await q(sideValuesSql('kotak', 'Description')))[0].ok).toBe(false)
+  const split = splitBySide(s, false)
+  const rows = await q(`SELECT ${split.map((c) => `${c.expr} AS ${c.name}`).join(', ')} FROM kotak ORDER BY "Txn Date"`)
+  expect(rows).toEqual([{ money_in: 50000, money_out: null }, { money_in: null, money_out: 20000 }, { money_in: null, money_out: 118 }])
+  // Spelt out, the same; a value that only starts with C or D (Deposit, Cheque) is neither.
+  await q(`CREATE OR REPLACE TABLE spelt AS SELECT * FROM (VALUES ('10', 'Credit'), ('4', 'debit'), ('7', 'Deposit'), ('3', 'Cheque')) t("Amount", "Dr / Cr")`)
+  expect(await q(`SELECT ${split.map((c) => `${c.expr} AS ${c.name}`).join(', ')} FROM spelt`)).toEqual([
+    { money_in: 10, money_out: null },
+    { money_in: null, money_out: 4 },
+    { money_in: null, money_out: null },
+    { money_in: null, money_out: null },
+  ])
+  // A Value Date is never the amount.
+  expect(sidedAmount([{ name: 'Value Date', type: 'VARCHAR' }, { name: 'Amount', type: 'VARCHAR' }, { name: 'Dr/Cr', type: 'VARCHAR' }])).toEqual({ amount: 'Amount', side: 'Dr/Cr' })
+  // With them added, it's a statement: money in and out, and the balance.
+  expect(statementColumns([...cols, { name: 'money_in', type: 'DOUBLE' }, { name: 'money_out', type: 'DOUBLE' }])).toEqual({ credit: 'money_in', debit: 'money_out', balance: 'Balance' })
 })

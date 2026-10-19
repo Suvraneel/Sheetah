@@ -4,6 +4,7 @@
 import readXlsxFile from 'read-excel-file/web-worker'
 import { Unzip, UnzipInflate } from 'fflate'
 import { sheetToCsv } from './sheet-csv'
+import { sheetSizes } from './xlsx-zip'
 
 export interface XlsxSheet {
   name: string
@@ -60,8 +61,21 @@ async function blanksIn(file: File): Promise<XlsxBlanks> {
   return found
 }
 
+/** The largest sheet the reader can take in (its text, unpacked), with room to spare under the browser's limit. */
+const SHEET_LIMIT = 400 * 1024 ** 2
+
 self.onmessage = async (e: MessageEvent<File>) => {
   try {
+    const big = (await sheetSizes(e.data).catch(() => [])).filter((s) => s.size > SHEET_LIMIT)
+    if (big.length) {
+      const mb = (n: number) => (Number.isFinite(n) ? `${Math.round(n / 1024 ** 2).toLocaleString()} MB` : 'over 4 GB')
+      self.postMessage({
+        ok: false,
+        plain: true,
+        error: `${e.data.name} has a sheet with ${mb(big[0].size)} of data inside the workbook, more than this browser can read as one piece. In Excel, save that sheet as CSV (CSV UTF-8) and open the CSV: it reads at any size.`,
+      } satisfies XlsxReply)
+      return
+    }
     const sheets = await readXlsxFile(e.data)
     const out: XlsxSheet[] = []
     for (const s of sheets) {

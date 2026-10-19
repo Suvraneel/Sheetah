@@ -5,7 +5,7 @@
  * bank and not in the books, or the other way round. The whole match is one readable query.
  */
 import { commentText, isNumericType, quoteLiteral, sqlName } from './sql'
-import { statementColumns } from './statement'
+import { balanceLineSql, statementColumns } from './statement'
 
 export interface MatchSide {
   table: string
@@ -19,6 +19,8 @@ export interface MatchSide {
   text?: string
   /** A cheque or reference number: lines with the same one on both sides (and the same amount) pair first. */
   ref?: string
+  /** SQL true for lines that aren't transactions (an opening or closing balance line): left out of the match. */
+  skip?: string
 }
 
 export interface MatchSpec {
@@ -59,7 +61,10 @@ export function sideFor(table: { name: string; columns: Col[] }): MatchSide | nu
   if (!amount) return null
   const ref = cols.find((c) => REF.test(c.name) && (isText(c) || /INT/i.test(c.type)))
   const text = cols.find((c) => isText(c) && TEXT.test(c.name) && c !== ref) ?? cols.find((c) => isText(c) && c !== ref)
-  return { table: table.name, date: date.name, amount, ...(text ? { text: text.name } : {}), ...(ref ? { ref: ref.name } : {}) }
+  // A statement's or ledger's balance lines (Tally's dated "Opening Balance" in Debit) aren't money in or out:
+  // matched, they'd be a deposit not yet credited. Read as text, so they're found however the steps typed them.
+  const skip = st ? balanceLineSql(st, cols.filter(isText).map((c) => c.name), () => false, (n) => `${sqlName(n)}::VARCHAR`) : null
+  return { table: table.name, date: date.name, amount, ...(text ? { text: text.name } : {}), ...(ref ? { ref: ref.name } : {}), ...(skip ? { skip } : {}) }
 }
 
 /** The rows a side reads, as SQL. */
@@ -93,10 +98,11 @@ function sides(spec: MatchSpec, numeric: (side: MatchSide, column: string) => bo
     return `${k} AS MATERIALIZED (
   SELECT * FROM (
     SELECT row_number() OVER () AS ${k}_row, ${sqlName(s.date)}::DATE AS ${k}_date, ${sign}${amt.value} AS amount, ${amt.written} AS written,
-      ${s.text ? `${sqlName(s.text)}::VARCHAR` : 'NULL'} AS ${k}_text, ${s.ref ? refSql(sqlName(s.ref)) : 'NULL'} AS ${k}_ref
+      ${s.text ? `${sqlName(s.text)}::VARCHAR` : 'NULL'} AS ${k}_text, ${s.ref ? refSql(sqlName(s.ref)) : 'NULL'} AS ${k}_ref,
+      ${s.skip ? `coalesce(${s.skip}, false)` : 'false'} AS balance_line
     FROM ${from(s)}
   )
-  WHERE amount <> 0 OR (amount IS NULL AND written)
+  WHERE (amount <> 0 OR (amount IS NULL AND written)) AND NOT balance_line
 )`
   }
   return `WITH ${side('a', spec.a, '')},\n${side('b', spec.b, spec.flip ? '-' : '')}`

@@ -1,6 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getEngine, sqlName } from './engine/db'
-import { ageingColumns, ledgerColumn, type AgeingColumns, monthlySql, signedAmount, signedNote, statementColumns } from './engine/statement'
+import { ageingColumns, ledgerColumn, type AgeingColumns, monthlySql, sidedAmount, sideValuesSql, signedAmount, signedNote, splitBySide, statementColumns } from './engine/statement'
 import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent, quoteLiteral, stackLabel, WORDS } from './engine/sql'
 import { ACCEPTED, dateOrders, datesGuessed, listTables, type TableMeta } from './engine/tables'
 import { FileKindError } from './engine/load-errors'
@@ -446,6 +446,9 @@ export default function App() {
   const [offlineReady, setOfflineReady] = useState(false)
   const [keepTables, setKeepTables] = useState(() => persistSupported() && store.get(KEEP_KEY) === 'on')
   const snapshots = useRef(new Map<string, string>()) // table → signature of its snapshot on disk
+  const snapshotting = useRef(new Set<string>()) // tables whose snapshot is being written now
+  const keepRef = useRef(keepTables)
+  keepRef.current = keepTables
   const demoTables = useRef(new Set<string>()) // sample data is regenerated, never kept
   const warned = useRef(new Set<string>())
   const syncQueue = useRef(Promise.resolve())
@@ -613,6 +616,12 @@ export default function App() {
             // With the table's shape then: made again under its name (other columns or rows), it starts afresh.
             if (hasOps(opts.ops)) stepsByTable.current.set(t.toLowerCase(), { ops: opts.ops, sig: tableSig(tablesRef.current.find((x) => x.name.toLowerCase() === t.toLowerCase())) })
             else stepsByTable.current.delete(t.toLowerCase())
+          } else if (tableLikeRef.current.has(shownBase.trim())) {
+            // Rows that stand for a table (its names found on a later row): the table as tidied is these rows,
+            // with their steps; a match, a compare or SQL typed on the table reads them.
+            const u = referencedTables(shownBase, tablesRef.current.map((x) => x.name))[0]
+            const tidy = tidySteps(opts.ops)
+            if (u) tidiedRef.current.set(u.toLowerCase(), { table: u, sql: compose(shownBase, tidy.ops), steps: tidy.count + 1, marks: [...stepMarks(tidy.ops), shownBase.trim()] })
           }
         }
         if (opts.remember !== false) {
@@ -692,6 +701,10 @@ export default function App() {
   const scanned = useRef(new Set<string>())
   // Queries that stand for a table (one whose column names were on a later row): suggestions as for a table.
   const [tableLike, setTableLike] = useState<ReadonlySet<string>>(new Set())
+  // Whether a result's side column (Dr / Cr) holds Dr and Cr, by result table and column: looked at once.
+  const [sidesSeen, setSidesSeen] = useState<Record<string, boolean>>({})
+  const tableLikeRef = useRef(tableLike)
+  tableLikeRef.current = tableLike
   const scanHints = useCallback((res: ResultSet, which: 'all' | 'text', metas?: TableMeta[], as?: string) => {
     if (!res.table) return
     // `as`: the rows looked over are a table's with steps, the hints the table's own (by its query).
@@ -853,7 +866,9 @@ export default function App() {
             ? { heading, text: msg }
             : plain !== msg
               ? { heading, text: plain }
-              : /\.xls[xm]$/i.test(current)
+              : /Maximum line size|max_line_size/i.test(msg)
+                ? { heading, text: `A line of ${current} is longer than the file reader takes (2 MB in one row: a cell holding a whole document, say). Shorten or remove that cell and save the file again.`, detail: msg }
+                : /\.xls[xm]$/i.test(current)
                 ? { heading, text: `It may be a damaged Excel workbook: opening it in Excel and saving it again usually fixes that.`, detail: msg }
                 : { heading, text: `Sheetah reads CSV, TSV, JSON, Parquet and Excel files, and this one didn’t read as any of them.`, detail: msg },
         )
@@ -994,12 +1009,19 @@ export default function App() {
           warned.current.add(t.name)
           continue
         }
+        snapshotting.current.add(t.name)
         try {
           await saveTable(t.name)
           snapshots.current.set(t.name, sig)
         } catch {
-          if (!warned.current.has(t.name)) say(`Couldn’t keep ${t.name}: the browser’s storage is full or unavailable.`)
+          // The snapshot from before is out of date now: removed, so a reload doesn't bring back the old table
+          // as if it were this one.
+          await removeTable(t.name)
+          snapshots.current.delete(t.name)
+          if (!warned.current.has(t.name)) say(`Couldn’t keep ${t.name}: the browser’s storage is full or unavailable. It isn’t kept, so keep the file to open it again.`)
           warned.current.add(t.name)
+        } finally {
+          snapshotting.current.delete(t.name)
         }
       }
       for (const name of [...snapshots.current.keys()]) {
@@ -1011,18 +1033,42 @@ export default function App() {
   }, [tables, keepTables, say])
 
   // Tables live in this tab: leaving (a reload, closing it) loses the ones not kept in this browser, so the
-  // browser asks first. Not for the sample data, nor when Sheetah reloads for a new version itself.
+  // browser asks first. Not for the sample data, nor when Sheetah reloads for a new version itself. Kept ones
+  // count as lost too while their snapshot is still being written, or couldn't be: asked when leaving, as
+  // things are then.
   useEffect(() => {
-    const lost = tables.some((t) => !demoTables.current.has(t.name) && (!keepTables || t.kind !== 'table' || (t.rows ?? 0) > MAX_PERSIST_ROWS))
-    if (!lost) return
+    if (!tables.some((t) => !demoTables.current.has(t.name))) return
     const ask = (e: BeforeUnloadEvent) => {
       if (leaving.now) return
+      const lost = tablesRef.current.some(
+        (t) =>
+          !demoTables.current.has(t.name) &&
+          (!keepRef.current || t.kind !== 'table' || (t.rows ?? 0) > MAX_PERSIST_ROWS || snapshotting.current.has(t.name) || snapshots.current.get(t.name) !== signature(t)),
+      )
+      if (!lost) return
       e.preventDefault()
       e.returnValue = '' // older browsers ask only when this is set
     }
     window.addEventListener('beforeunload', ask)
     return () => window.removeEventListener('beforeunload', ask)
-  }, [tables, keepTables])
+  }, [tables])
+
+  // Kept tables are one folder for every tab of this site: turned off (or on) in another tab, this one follows,
+  // and says so (its own tables were deleted from the browser with the rest).
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== KEEP_KEY) return
+      const on = e.newValue === 'on' && persistSupported()
+      if (on === keepRef.current) return
+      setKeepTables(on)
+      if (!on) {
+        snapshots.current.clear()
+        say('Keeping tables was turned off in another tab: this tab’s tables aren’t kept in this browser any more.')
+      } else say('Keeping tables was turned on in another tab: this tab’s tables are kept too.')
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [say])
 
   const toggleKeep = async (on: boolean) => {
     setKeepTables(on)
@@ -1075,13 +1121,13 @@ export default function App() {
       const onlyTidy = !next.filters.length && !next.search && !next.dedupe && !next.hidden?.length && !next.lookups?.length && !next.computed.length
       const dropped = onlyTidy && !!next.drop?.length && JSON.stringify(next.drop) !== JSON.stringify(ops.drop ?? [])
       void execute(sql, { ops: next, remember: false, history: 'keep' }).then((res) => {
-        if (res && dropped && plainTable(base)) scanHints(res, 'text', undefined, base)
+        if (res && dropped && (plainTable(base) || tableLike.has(base.trim()))) scanHints(res, 'text', undefined, base)
         if (res !== null || wantedOps.current !== null) return
         if (shownRef.current.base === base) setOps(shownRef.current.ops)
         if (record === 'new') setPast((p) => (p.at(-1)?.id === now.id ? p.slice(0, -1) : p))
       })
     },
-    [base, ops, execute, editor, scanHints, expire],
+    [base, ops, execute, editor, scanHints, expire, tableLike],
   )
 
   /** Goes to an earlier (or later) step, which may be another query (after "Count rows by"). */
@@ -1160,6 +1206,16 @@ export default function App() {
    * The signed amount (money in less money out) as a column; and, when there's a running balance and
    * the rows are in their own order, a check that each balance follows from the one before.
    */
+  /** Money in and out from an Amount and its Dr / Cr column: two formula columns, after which it reads as a statement. */
+  const splitSided = (s: { amount: string; side: string }) => {
+    const taken = new Set([...(result?.columns ?? []).map((c) => c.name.toLowerCase()), ...ops.computed.map((c) => c.name.toLowerCase())])
+    const cols = splitBySide(s, !!result?.columns.find((c) => c.name === s.amount)?.numeric).filter((c) => !taken.has(c.name))
+    if (!cols.length) return
+    reveal.current = cols[0].name
+    applyOps({ ...ops, computed: [...ops.computed, ...cols] })
+    say(`Added money_in and money_out: ${s.amount} by ${s.side} (Cr in, Dr out)`)
+  }
+
   const addSignedAmount = async () => {
     if (!result || !named || !statement || !amountExpr) return
     const taken = new Set(result.columns.map((c) => c.name.toLowerCase()))
@@ -1837,14 +1893,26 @@ export default function App() {
           releaseBehind()
         }
       } else {
-        blob = await exportResult(result, format, { excelSafe })
+        setBusyCancel(() => () => {
+          stopped = true
+        })
+        const release = holdResult(result)
+        try {
+          blob = await exportResult(result, format, {
+            excelSafe,
+            onProgress: (done) => rows > 500_000 && setBusy(`Exporting ${format.toUpperCase()}… ${Math.floor((100 * done) / Math.max(rows, 1))}%`),
+            cancelled: () => stopped,
+          })
+        } finally {
+          release()
+        }
       }
       const a = document.createElement('a')
       a.href = URL.createObjectURL(blob)
       a.download = exportName(format)
       a.click()
       setTimeout(() => URL.revokeObjectURL(a.href), 2000)
-      const cut = rows < result.rowCount ? ` (the first ${nf.format(rows)}: Excel's limit; use CSV or Parquet for all ${nf.format(result.rowCount)})` : ''
+      const cut = rows < result.rowCount ? ` (the first ${nf.format(rows)}: Excel's limit; use CSV for all ${nf.format(result.rowCount)})` : ''
       say(`Downloaded ${a.download} · ${nf.format(rows)} rows${cut}${format === 'csv' && !excelSafe ? ' (exact values)' : ''}`)
     } catch (e) {
       if (stopped || (e instanceof DOMException && e.name === 'AbortError')) say('Export cancelled')
@@ -1878,6 +1946,22 @@ export default function App() {
       </div>
     </div>
   )
+
+  // A statement with one Amount and a Dr / Cr column: whether that column holds Dr and Cr, looked at once.
+  useEffect(() => {
+    const sided = result?.table && !result.message ? sidedAmount(result.columns) : null
+    if (!sided || !result?.table) return
+    const key = `${result.id}\u0000${sided.side}`
+    if (key in sidesSeen) return
+    let live = true
+    void getEngine()
+      .then(({ conn }) => conn.query(sideValuesSql(result.table!, sided.side)))
+      .then((t) => live && setSidesSeen((m) => ({ ...m, [key]: !!t.toArray()[0]?.toJSON().ok })))
+      .catch(() => live && setSidesSeen((m) => ({ ...m, [key]: false })))
+    return () => {
+      live = false
+    }
+  }, [result, sidesSeen])
 
   if (!tables.length && !result) {
     return (
@@ -1964,7 +2048,9 @@ export default function App() {
   // A bank statement (money in and out in two columns): offered a signed amount, until it's added.
   // A statement's suggestions are for its own rows (with their steps, or stacked month on month), not a
   // summary made from them (by month, a match, a pivot).
-  const named = result && !result.message && !origins[base.trim()] ? statementColumns(result.columns) : null
+  // (Rows that stand for the table itself, its real names found on a row, count as the table.)
+  const ownRows = !origins[base.trim()] || tableLike.has(base.trim())
+  const named = result && !result.message && ownRows ? statementColumns(result.columns) : null
   // A register (QuickBooks, Xero) whose balance follows Debit as money in: its columns turned round.
   const inOut = named && !named.books && hintFor(orientHints)?.[0] === 'books' ? { ...named, credit: named.debit, debit: named.credit, books: true } : named
   // A day book (each voucher's lines, each to its ledger) isn't one account's money in and out: it's summed
@@ -1972,8 +2058,13 @@ export default function App() {
   const ledgerHere = named?.books && result ? ledgerColumn(result.columns) : null
   const statement = ledgerHere ? null : inOut
   // Open bills (an amount still owed, by party): their ageing.
-  const ageingHere = result && !result.message && !origins[base.trim()] && !inOut ? ageingColumns(result.columns) : null
+  const ageingHere = result && !result.message && ownRows && !inOut ? ageingColumns(result.columns) : null
   const isNum = (name: string) => !!result?.columns.find((c) => c.name === name)?.numeric
+  // One Amount column and a Dr / Cr column (Kotak's statement): split into money in and out first, once its
+  // side column is seen to hold Dr and Cr.
+  const sided = result && !result.message && ownRows && !named ? sidedAmount(result.columns) : null
+  const sidedKey = sided && result?.table ? `${result.id}\u0000${sided.side}` : ''
+  const sidedHere = sided && sidesSeen[sidedKey] === true ? sided : null
   const amountExpr = statement ? signedAmount(statement, isNum) : null
   // Added already, even if its formula has changed since (the columns were converted after): not offered twice.
   // (Either way round: a register turned round once the look-over said so has its amount already.)
@@ -2008,6 +2099,10 @@ export default function App() {
   /** customers-anonymized-2026-10-17.csv, orders-pivot-filtered-….parquet */
   function exportName(ext: string) {
     const parts = [resultLabel()]
+    // What these rows are, as their origin says it: an ageing "as on 30 Sep 2026", a bank reconciliation, a
+    // month's summary (not the date it was downloaded, alone).
+    const made = origins[base.trim()]?.label
+    if (made && !tableLike.has(base.trim()) && !editingPivot && !editingCompare) parts.push(made.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''))
     if (editingCompare) parts.push('changes')
     else if (editingPivot) parts.push('pivot')
     if (isAnonymized) parts.push('anonymized')
@@ -2173,6 +2268,13 @@ export default function App() {
               fitsOn={(v) => {
                 const open = tables.find((t) => t.name.toLowerCase() === openName)
                 return open && viewsThatFit([v], open, tableNames).length ? open.name : null
+              }}
+              onRunOn={(v, table) => {
+                const open = tables.find((t) => t.name === table)
+                const fit = open ? viewsThatFit([v], open, tableNames)[0] : undefined
+                if (!fit) return
+                if (sheet) pickFromSheet()
+                runViewOn.current(fit.view, fit.from, table)
               }}
               onExport={async () => {
                 const { exportViews } = await import('./engine/views-file')
@@ -2445,9 +2547,11 @@ export default function App() {
                 onFill={(cols) => applyOps(withCleans(cols.map((column): Clean => ({ column, kind: 'filldown' })).reduce(addClean, ops.clean ?? [])))}
                 amount={amountHere && { ...amountHere, way: wayKnown }}
                 onAmount={() => void addSignedAmount()}
+                sided={sidedHere}
+                onSided={() => sidedHere && splitSided(sidedHere)}
                 categorize={narrationHere}
                 onCategorize={(column) => setCategorizing({ column })}
-                monthly={!!monthlyHere}
+                monthly={monthlyHere ? (statement?.books ? 'books' : 'statement') : undefined}
                 reconcile={!!reconcileHere}
                 onReconcile={() => void reconcile()}
                 ageing={ageingHere?.party ?? null}
@@ -2463,7 +2567,7 @@ export default function App() {
                 onMonthly={() => {
                   if (!statement || !monthlyHere) return
                   const rows = compose(base, { ...ops, sort: undefined, hidden: undefined })
-                  runDerived(monthlySql(rows, statement, monthlyHere, isNum), { label: 'Money in and out by month' })
+                  runDerived(monthlySql(rows, statement, monthlyHere, isNum), { label: statement.books ? 'Debit and credit by month' : 'Money in and out by month' })
                 }}
                 series={seriesHere}
                 text={textHere}

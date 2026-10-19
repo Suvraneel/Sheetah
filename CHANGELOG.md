@@ -5,6 +5,11 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 ## Unreleased
 
 ### Added
+- **A statement with one Amount and a Dr / Cr column** (Kotak's, card statements) is offered *Split Amount into
+  money in and out*: two columns, after which it sums, summarises by month, matches and reconciles like any
+  statement.
+- **Saved views and next month's file, both open**: the Saved tab says a view *also fits* the newer table and
+  offers *Run on* it, rather than running on last month's without a word.
 - **Amounts written with the currency in letters** convert too: `Rs. 25,000.00`, `INR 7,500`, `USD 99.95`,
   `1,200/-`, and a trailing minus as SAP writes it (`1,500.00-` is −1,500).
 - **A workbook's cells Excel couldn't give a value** are said as it opens: error cells (#DIV/0!, #N/A) and formulas
@@ -315,6 +320,34 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   says to tap for exact values.
 
 ### Fixed
+- **Big files and long sessions** (from a scale audit up to 1 GB):
+  - A table read whole (`SELECT * FROM t`) is shown from the table itself, not a copy: half the memory, so a
+    sort of an 18-million-row file no longer runs out.
+  - CSV exports are written in pieces of rows (cancellable, with progress), not as one block: 9 million rows
+    export instead of running out of memory.
+  - Keeping tables in this browser writes each snapshot batch by batch from the engine to the disk (a 2.5M-row
+    table crashed the tab), columns of fixed choices (ENUM) as their text; a write the disk refuses stops the save
+    at once rather than leaving it waiting; a snapshot that didn't finish is never restored; one that can't be updated is
+    removed rather than coming back out of date; leaving asks while a snapshot is still being written; turning
+    Keep off in one tab is followed (and said) in the others.
+  - A file too big for the memory left is said before reading it, and a read the engine couldn't do is a
+    failure, never an empty table. Cancelling while a file is being put right (codes re-read as text) no longer
+    leaves the table half-done.
+  - A workbook with a sheet too big for the browser to read as one piece says so and what to do; a line over the
+    file reader's 2 MB is explained; a table of thousands of columns lists its first 200 in the sidebar.
+- **Month-end, as an accountant does it**:
+  - A match leaves out balance lines (Tally's dated Opening Balance in Debit was a "deposit not yet credited").
+  - Compare reads tables tidied by steps as tidied (no total lines, text converted), and never picks an amount
+    (Gross Total) as the key (a GSTIN or a Corporate ID still can be).
+  - A statement saved from Excel, its title lines padded with commas, opens from its real column names (a
+    one-column frame's `,amount` header is still names), and a
+    table whose names were found on a row gets every statement feature (signed amount, match, summary).
+  - The total check accepts Tally's Current Total either way (with the opening balance or without it).
+  - A ledger from the books is summarised as debit and credit by month, not money in and out.
+  - Exports carry what the rows are in their name (an ageing as on its date, a reconciliation).
+  - Money columns (money_in, gross, sales, Invoice Total) show to the paisa; a pivot's count named Total doesn't.
+  - Splitting by Dr / Cr reads the side the way the check does (CR, C, Credit; DR, D, Debit), never a Deposit or a
+    Cheque by its first letter, and never takes a Value Date for the amount.
 - **Numbers no longer change on the way in**: a code longer than a number keeps (an ICCID, 20 digits) stays text,
   in a CSV and in a workbook that holds it as text, as do codes like `1E5` and `00123` there; in a file that writes
   decimals with a comma (2,50), whole numbers grouped with points (1.500) are read as text, to convert as fifteen

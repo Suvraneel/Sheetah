@@ -61,8 +61,10 @@ export function moneyName(name: string): boolean {
   const key = nameKey(name)
   // Not a rate or a period either: "GST %", "Tax Rate", "Credit Period" (days), "Payment Terms".
   if (/%/.test(name) || /(^|_)(rate|percent|percentage|pct|period|terms|tenure|months?|years?|weeks?)(_|$)/.test(key)) return false
+  // "Total" alone is a pivot's count as often as an amount: Gross Total and Invoice Total are amounts.
+  if (key === 'total') return false
   return (
-    /(^|_)(amount|amt|balance|bal|debit|credit|dr|cr|withdrawals?|deposits?|price|tax|gst|igst|cgst|sgst|tds|net|paid|received|pending|outstanding|due|value|cost|revenue|fees?|charges|salary|income|expenses?|profit|spend)(_|$)/.test(key) &&
+    /(^|_)(amount|amt|balance|bal|debit|credit|dr|cr|withdrawals?|deposits?|price|tax|gst|igst|cgst|sgst|tds|net|paid|received|pending|outstanding|due|value|cost|revenue|fees?|charges|salary|income|expenses?|profit|spend|money_in|money_out|total|gross|subtotal|sales|purchases?|receivables?|payables?)(_|$)/.test(key) &&
     !/(^|_)(units?|qty|quantity|count|pcs|nos|items|orders|rows|days|hours)(_|$)/.test(key)
   )
 }

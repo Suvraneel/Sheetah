@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { TableMeta } from '../engine/tables'
 import { LOCALE, sqlName } from '../engine/sql'
 import { friendlyType } from '../grid/format'
@@ -33,7 +34,11 @@ interface TablesProps {
   converted?: Record<string, string>
 }
 
+/** Columns listed for a table before "Show all": a 5,000-column file listed whole made the sidebar crawl. */
+const COLS_SHOWN = 200
+
 export function TablesPanel({ tables, openName, onOpen, onInsert, onCompare, onStack, keep, colsOpen, onToggleCols, converted }: TablesProps) {
+  const [allCols, setAllCols] = useState<Set<string>>(() => new Set())
   return (
     <ul className="side-list">
       {tables.map((t) => {
@@ -58,7 +63,8 @@ export function TablesPanel({ tables, openName, onOpen, onInsert, onCompare, onS
             </span>
             {open && (
               <ul className="side-cols">
-                {t.columns.map((c) => (
+                {/* A wide table's first 200, then the rest on request: thousands of rows here would slow every scroll. */}
+                {(t.columns.length > COLS_SHOWN && !allCols.has(t.name) ? t.columns.slice(0, COLS_SHOWN) : t.columns).map((c) => (
                   <li key={c.name}>
                     <button onClick={() => onInsert(sqlName(c.name))} title="Insert into SQL">
                       <span>{c.name}</span>
@@ -71,6 +77,13 @@ export function TablesPanel({ tables, openName, onOpen, onInsert, onCompare, onS
                     </button>
                   </li>
                 ))}
+                {t.columns.length > COLS_SHOWN && !allCols.has(t.name) && (
+                  <li>
+                    <button className="link-btn" onClick={() => setAllCols((m) => new Set(m).add(t.name))}>
+                      Show all {t.columns.length.toLocaleString(LOCALE)} columns
+                    </button>
+                  </li>
+                )}
               </ul>
             )}
           </li>

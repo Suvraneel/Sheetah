@@ -382,7 +382,7 @@ export function onTidiedRows(sql: string, table: string, tidied: string, steps: 
   const lead = /^(\s*(--[^\n]*\n|\/\*[\s\S]*?\*\/))*\s*/.exec(sql)?.[0] ?? ''
   const body = sql.slice(lead.length)
   const cte = `${sqlName(table)} AS (\n${tidied}\n)`
-  const note = `-- ${table} with its ${steps} tidy-up ${steps === 1 ? 'step' : 'steps'}\n`
+  const note = steps ? `-- ${table} with its ${steps} tidy-up ${steps === 1 ? 'step' : 'steps'}\n` : `-- ${table} as tidied by its steps\n`
   const own = /^WITH(\s+RECURSIVE)?\s+/i.exec(body)
   return own ? `${lead}${note}${own[0]}${cte},\n${body.slice(own[0].length)}` : `${lead}${note}WITH ${cte}\n${body}`
 }
