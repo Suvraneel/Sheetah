@@ -323,8 +323,31 @@ h1, h2, h3 { margin: 0; }
 :root[data-theme='dark'] .hl { color: var(--hl); }
 :root[data-theme='dark'] .hl::before { background: rgb(212 255 79 / 0.14); }
 @keyframes mark { to { transform: skewX(-6deg) scaleX(1); } }
-.hero .reveal.hero-copy { max-width: 1100px; }
+.hero h1 { max-width: 1100px; }
 .lede { max-width: 46ch; margin: 28px 0 0; color: var(--muted); font-size: 1.15rem; line-height: 1.6; text-wrap: pretty; }
+/* Desktop: the headline in two set lines and the lede on the left, the figure filling the column beside both. */
+@media (min-width: 961px) {
+  .hero { padding-top: 56px; }
+  .hero .reveal.hero-copy { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, min(520px, 44%)); grid-template-rows: auto auto auto; column-gap: 40px; align-items: end; }
+  .hero-copy > .eyebrow { grid-column: 1 / -1; justify-self: start; }
+  .hero-copy > h1, .hero-copy > .lede { grid-column: 1; }
+  .h1-line { display: block; }
+  .hero-figure { position: relative; grid-column: 2; grid-row: 2 / span 2; align-self: center; }
+  .hero-figure .hfig-read { position: absolute; right: 0; bottom: 0; }
+  .hero-copy + .hero-drop { margin-top: 32px; }
+}
+
+/* ---------- Hairline figures: line drawings that answer the pointer (HairlineFigure.tsx) ---------- */
+.hfig { display: flex; flex-direction: column; align-items: flex-end; }
+/* the band of the figure's 400 × 320 box its poses stay in: x 16..384, y 76..254 */
+.hfig-band { position: relative; width: 100%; aspect-ratio: 368 / 178; overflow: hidden; }
+.hfig-stage { position: absolute; top: -42.6966%; left: -4.3478%; width: 108.6957%; cursor: crosshair; }
+/* The engine's palette hooks: the bright stroke is the accent, plates are the ground, and the greys a step stronger than its defaults so the drawing holds up at hero size. */
+.hfig { --hairline-hi: var(--accent); --hairline-plate: var(--bg); --hairline-edge: #9a9aa4; --hairline-mid: #b6b6c0; --hairline-lo: #d8d8de; --hairline-stroke: 1; }
+:root[data-theme='dark'] .hfig { --hairline-edge: #80838c; --hairline-mid: #5a5d66; --hairline-lo: #34363c; }
+.hfig-read { min-height: 18px; color: var(--faint); font: 500 12px/18px var(--mono); white-space: nowrap; opacity: 0; transition: opacity 300ms var(--ease); }
+.hfig-read::before { content: '›'; margin-right: 8px; color: var(--accent); }
+.hfig-read.is-on { opacity: 1; }
 
 .hero-drop { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 28px; align-items: end; margin-top: 40px; }
 .drop { display: block; width: 100%; padding: 6px; cursor: pointer; text-align: center; color: inherit; transition: transform 700ms var(--ease), box-shadow 500ms var(--ease); }
@@ -527,6 +550,12 @@ h1, h2, h3 { margin: 0; }
 }
 
 .features { padding-bottom: 128px; }
+.tidy-band { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 56px; align-items: center; padding-bottom: 128px; }
+.tidy-copy { display: flex; flex-direction: column; align-items: flex-start; }
+.tidy-copy h2 { font-size: clamp(2rem, 3.8vw, 3.2rem); font-weight: 800; line-height: 0.98; letter-spacing: -0.05em; text-wrap: balance; }
+.tidy-copy p { max-width: 44ch; margin: 18px 0 26px; color: var(--muted); font-size: 1.05rem; text-wrap: pretty; }
+.tidy-core { padding: 20px 24px 12px; }
+.tidy-core .hfig { --hairline-plate: var(--surface); }
 .section-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 34ch);
@@ -1380,6 +1409,8 @@ body:has(.modal-backdrop) .toast-stack { z-index: 29; }
 /* ---------- Responsive ---------- */
 @media (max-width: 960px) {
   .hero-drop { grid-template-columns: minmax(0, 1fr); }
+  .hero-figure { display: none; }
+  .tidy-band { grid-template-columns: minmax(0, 1fr); gap: 32px; padding-bottom: 96px; }
   .hero-ctas { order: -1; }
   .stat { flex-direction: row; align-items: baseline; gap: 12px; margin-bottom: 6px; }
   .stat-num { font-size: 1.6rem; text-decoration-thickness: 2px; }

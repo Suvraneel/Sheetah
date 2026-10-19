@@ -26,3 +26,4 @@ public/duckdb-extensions/
 tests/.fixtures/
 test-results/
 playwright-report/
+Claude outputs/
