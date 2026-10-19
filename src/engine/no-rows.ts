@@ -42,8 +42,12 @@ function replaceAt(sql: string, mask: string, re: RegExp, to: (m: RegExpExecArra
 /** Where the next thing after `at` starts (past spaces): the mask has text blanked into spaces too. */
 const after = (sql: string, at: number) => at + (/^\s*/.exec(sql.slice(at))?.[0].length ?? 0)
 
-/** A column's name as it may be written in the query: bare (any case) or in double quotes. */
-const nameIn = (c: string) => `(?:"${esc(c.replace(/"/g, '""'))}"|(?<![\\w"$.])${/^[A-Za-z_]\w*$/.test(c) ? esc(c) : '(?!)'}(?![\\w"$]))`
+/**
+ * A column's name as it may be written in the query: bare (any case) or in double quotes, after a table's
+ * alias or name or not (o.city, "sales apr"."City").
+ */
+const nameIn = (c: string) =>
+  `(?<![\\w"$.])(?:(?:[A-Za-z_]\\w*|"(?:[^"]|"")+")\\.)?(?:"${esc(c.replace(/"/g, '""'))}"|${/^[A-Za-z_]\w*$/.test(c) ? esc(c) : '(?!)'}(?![\\w"$]))`
 
 /** The reasons that need no look-up, from the query alone. */
 export function noRowsReasons(sql: string, columns: Column[]): NoRowsReason[] {
@@ -55,7 +59,20 @@ export function noRowsReasons(sql: string, columns: Column[]): NoRowsReason[] {
   const EQ_NULL = /(?<![<>=!])(<>|!=|==?)\s*NULL\b/i
   if (EQ_NULL.test(blank(sql))) {
     const fixed = replaceAt(sql, blank(sql), EQ_NULL, (m) => (m[1].startsWith('=') ? 'IS NULL' : 'IS NOT NULL'))
-    out.push({ text: 'Nothing equals NULL, not even an empty cell: = NULL is never true. Empty cells are found with IS NULL (and the rest with IS NOT NULL).', fixed, label: 'Use IS NULL' })
+    const ops = [...blank(sql).matchAll(new RegExp(EQ_NULL.source, 'gi'))].map((m) => (m[1].startsWith('=') ? 'IS NULL' : 'IS NOT NULL'))
+    const label = [...new Set(ops)].join(' and ')
+    out.push({ text: 'Nothing equals NULL, not even an empty cell: = NULL is never true. Empty cells are found with IS NULL (and the rest with IS NOT NULL).', fixed, label: `Use ${label}` })
+  }
+
+  // Party = '': an empty cell here is NULL (nothing in it), not text with no letters.
+  for (const c of columns.filter((x) => /^(VARCHAR|TEXT|STRING)/i.test(x.type))) {
+    const re = new RegExp(`(${nameIn(c.name)})\\s*=\\s*''(?!')`, 'gi')
+    const hits = [...sql.matchAll(re)].filter((x) => mask.slice(x.index, x.index + x[1].length).trim())
+    if (!hits.length) continue
+    let fixed = sql
+    for (const h of [...hits].reverse()) fixed = `${fixed.slice(0, h.index)}(${h[1]} IS NULL OR ${h[1]} = '')${fixed.slice(h.index + h[0].length)}`
+    out.push({ text: `An empty cell is NULL here (nothing in it), so = '' finds none. Empty ${c.name} is ${sqlName(c.name)} IS NULL.`, fixed, label: 'Find empty cells' })
+    break
   }
 
   // LIKE 'Pu*': in LIKE, % stands for any text and _ for one letter; * and ? are only themselves.
@@ -142,7 +159,10 @@ export function probeReason(sql: string, p: Probe, rows: { v: string; exact: boo
     return { text: `LIKE tells capitals apart: ${quoted} misses ${quoteLiteral(found[0])}. ILIKE doesn’t.`, fixed, label: 'Use ILIKE' }
   }
   const spelling = found[0]
-  const how = spelling.trim() !== spelling ? 'with spaces around it' : 'with other capitals'
+  // What differs, between the value typed and the table's: spaces (around either), capitals, or both.
+  const spaces = spelling.trim() !== spelling || p.value.trim() !== p.value
+  const capitals = spelling.trim() !== p.value.trim()
+  const how = spaces && capitals ? 'with other capitals and spaces' : spaces ? `with ${spelling.trim() !== spelling ? 'spaces around it' : 'no spaces around it'}` : 'with other capitals'
   if (found.length > 1)
     return { text: `No row has ${p.column} exactly ${quoted}: the table writes it ${found.map(quoteLiteral).join(' or ')}. ${sqlName(p.column)} ILIKE ${quoted} finds them all.` }
   const fixed = `${sql.slice(0, p.at)}${quoteLiteral(spelling)}${sql.slice(p.at + quoteLiteral(p.value).length)}`

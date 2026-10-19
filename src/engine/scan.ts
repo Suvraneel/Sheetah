@@ -4,8 +4,8 @@
  * so the first screen doesn't wait for it.
  */
 import { getEngine, quoteIdent, quoteLiteral } from './db'
-import type { Clean, DropRows } from './clean'
-import { confidentConversion, dataSumsSql, eitherJunk, fillDownSql, isTextColumn, looksFilledDown, junkPredicates, labelSumsSql, readTieOut, totalsAgree, readStats, statsSql, suggestCleaning, decimalsSql, fileDecimalComma, type CleanStats, type CleanSuggestion } from './clean-scan'
+import { cleanExpr, isConversion, type Clean, type DropRows } from './clean'
+import { confidentConversion, lossesSql, dataSumsSql, eitherJunk, fillDownSql, isTextColumn, looksFilledDown, junkPredicates, labelSumsSql, readTieOut, totalsAgree, readStats, statsSql, suggestCleaning, decimalsSql, fileDecimalComma, type CleanStats, type CleanSuggestion } from './clean-scan'
 import { LOCALE, nameKey } from './sql'
 import { balanceLineSql, isBalanceName, statementColumns } from './statement'
 import { closingLineSql } from './checks'
@@ -198,6 +198,7 @@ export async function junkRows(result: ResultSet): Promise<DropRows[]> {
     // Tie-out: the total lines' numbers against the rows they'd leave (sub-totals and a grand total
     // come to twice them). Said on the suggestion, so leaving them out is a checked step, not a guess.
     let checked: DropRows['checked']
+    let measured = 0 // columns with numbers on both sides, to check the lines against
     const here = weakOk ? totalsHere : p.strong
     if (here && p.first) {
       const sums = labelSumsSql(result.table, refs, here, p.first)
@@ -212,10 +213,16 @@ export async function junkRows(result: ResultSet): Promise<DropRows[]> {
         const pairs = which.filter((i) => typeof d?.[`d${i}`] === 'number').map((i) => ({ i, t: t[`t${i}`] as number, d: d![`d${i}`] as number }))
         const others = columns.filter((_, k) => refs[k].ref !== p.first)
         // A running balance isn't something total lines add up.
-        checked = readTieOut(pairs.filter((x) => others[x.i] && !isBalanceName(others[x.i].name)).map((x) => ({ column: others[x.i].name, t: x.t, d: x.d }))) ?? undefined
+        const sums = pairs.filter((x) => others[x.i] && !isBalanceName(others[x.i].name))
+        measured = sums.filter((x) => typeof x.t === 'number' && typeof x.d === 'number' && x.d !== 0).length
+        checked = readTieOut(sums.map((x) => ({ column: others[x.i].name, t: x.t, d: x.d }))) ?? undefined
       }
     }
-    out.push({ label: n(weakOk ? total : strong, 'total line'), keep: (weakOk ? totals : named.strong).keep, kind: 'totals', ...(checked ? { checked } : {}) })
+    // Lines only called "Total" (no Grand or Sub-), with numbers that add up to nothing the other rows come to:
+    // a value named Total (a fuel brand, a vendor), not a total line. Left alone.
+    // (Nowhere near: not even half or one and a half times the other rows, in any column.)
+    const named0 = !verified && strong === 0 && measured > 0 && !checked
+    if (!named0) out.push({ label: n(weakOk ? total : strong, 'total line'), keep: (weakOk ? totals : named.strong).keep, kind: 'totals', ...(checked ? { checked } : {}) })
   }
   // A statement's opening and closing balance lines: not transactions (an empty month in a pivot).
   const st = statementColumns(columns)
@@ -277,7 +284,8 @@ export async function junkRows(result: ResultSet): Promise<DropRows[]> {
 const NOTE_LINE = `'^\\s*(notes?(\\s*\\d+)?\\s*([:.)\\]]|$)|\\[note|\\[x\\]|sources?\\s*:|©|\\(c\\)\\s|copyright\\s*(:|©|\\(c\\)|\\d{4})|licen[cs]e\\s*:|footnotes?\\s*([:.]|$)|symbols?\\s*:|zeichenerkl|quelle\\s*:|stand\\s*:|legend\\s*:|key\\s*:|accrual basis|cash basis|\\*+\\s|\\d\\)\\s|(data|figures?|this table|these figures)\\s+(are|is|have|were|was|may|do|does)\\b)'`
 
 /** A date as statements write one (01/04/24, 2024-04-01, 1-Apr-26, 01 Apr 2026, Apr 1, 2026), a time after it or not. */
-const DATE_LIKE = `'^(\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}|\\d{4}[/.-]\\d{1,2}[/.-]\\d{1,2}|\\d{1,2}[ -]?[A-Za-z]{3,9}[ -]?\\d{2,4}|[A-Za-z]{3,9} \\d{1,2},? \\d{4})([ T].*)?$'`
+// However a date is written: 15/08/2024, 2024-08-15, 15-Aug-24, 1st April 2024, Apr-15-2024, April 15th, 2024.
+const DATE_LIKE = `'^(\\d{1,2}(st|nd|rd|th)?[/.,\\- ]*([A-Za-z]{3,9}\\.?|\\d{1,2})[/.,\\- ]*\\d{2,4}|\\d{4}[/.-]\\d{1,2}[/.-]\\d{1,2}|[A-Za-z]{3,9}\\.?[/.,\\- ]*\\d{1,2}(st|nd|rd|th)?[/.,\\- ]+\\d{2,4})([ T].*)?$'`
 
 /**
  * Columns to fill down: a report's group names, written once at the top of each group. Only the first
@@ -357,7 +365,24 @@ export async function cleaningFor(result: ResultSet, column: ColumnInfo, locale 
     ? ((await conn.query(decimalsSql(result.table, others.map(colRef)))).toArray()[0]?.toJSON() as Record<string, unknown> | undefined)
     : undefined
   const fileComma = decimals ? fileDecimalComma(others.map((c, i) => ({ name: c.name, s: readStats(decimals, i) }))) : undefined
-  return suggestCleaning(column.name, readStats(row, 0), locale, result.rowCount <= 5000, fileComma)
+  const list = suggestCleaning(column.name, readStats(row, 0), locale, result.rowCount <= 5000, fileComma)
+  // A big table's sample found nothing a conversion would lose: checked whole, so one written another way
+  // further down is said, not quietly emptied.
+  const unsaid = list.filter((x) => isConversion(x.clean) && (!x.note || x.quiet))
+  if (result.rowCount > 5000 && unsaid.length) {
+    const ref = colRef(column)
+    const lost = (await conn.query(lossesSql(result.table, unsaid.map((x) => ({ ref, expr: cleanExpr({ ...x.clean, column: column.ident ?? column.name }) }))))).toArray()[0]?.toJSON() as
+      | Record<string, unknown>
+      | undefined
+    unsaid.forEach((x, i) => {
+      const n = Number(lost?.[`l${i}`] ?? 0)
+      if (n > 0) {
+        x.note = `${n.toLocaleString(LOCALE)} ${n === 1 ? 'value doesn’t' : 'values don’t'} read this way and ${n === 1 ? 'becomes' : 'become'} empty`
+        delete x.quiet
+      }
+    })
+  }
+  return list
 }
 
 /**
@@ -380,7 +405,18 @@ export async function textFindings(result: ResultSet, locale = LOCALE): Promise<
   }
   // A column of 1,500 and 0,750 beside a price of 2,49: read the way the file writes decimals.
   const fileComma = fileDecimalComma(stats.map(({ c, s }) => ({ name: c.name, s })))
-  const convert = stats.map(({ c, s }) => confidentConversion(suggestCleaning(c.name, s, locale, true, fileComma))).filter((c): c is Clean => !!c)
+  let convert = stats.map(({ c, s }) => confidentConversion(suggestCleaning(c.name, s, locale, true, fileComma))).filter((c): c is Clean => !!c)
+  // The counts are a sample's past 5,000 rows: before a chip converts in one click (as if every value reads),
+  // the whole column is checked. A value written another way further down ("Rs. 25,000.00" among "₹…")
+  // would quietly become empty; such a column is left to its menu, which says what doesn't convert.
+  if (convert.length && result.rowCount > 5000) {
+    const items = convert.map((cl) => {
+      const c = cols.find((x) => x.name === cl.column)!
+      return { ref: colRef(c), expr: cleanExpr({ ...cl, column: c.ident ?? c.name }) }
+    })
+    const lost = (await conn.query(lossesSql(result.table, items))).toArray()[0]?.toJSON() as Record<string, unknown> | undefined
+    convert = convert.filter((_, i) => lost && Number(lost[`l${i}`]) === 0)
+  }
   const converted = new Set(convert.map((c) => c.column))
   const spaces = stats.filter(({ c, s }) => s.untrimmed > 0 && !converted.has(c.name)).map(({ c }) => c.name)
   return { convert, spaces }

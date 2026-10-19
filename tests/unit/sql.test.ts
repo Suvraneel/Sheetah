@@ -81,8 +81,9 @@ test.describe('errors in plain words', () => {
     const msg = (v: string, sql = typed) => `Conversion Error: invalid date field format: "${v}", expected format is (YYYY-MM-DD)${at(sql)}`
     const d = explainError(msg('01-04-2024'))
     expect(d.text).toBe("Dates in SQL are written year-month-day: '2024-04-01' is 1 April 2024.")
-    // Month first where the reader writes it so, unless a part over 12 settles it.
-    expect(explainError(msg('01-04-2024'), { monthFirst: true }).fix).toMatchObject({ label: "Use '2024-01-04'" })
+    // Month first where the reader writes it so, unless a part over 12 settles it (here or elsewhere in the query).
+    expect(explainError(msg('01-04-2024', "SELECT * FROM t WHERE d = '01-04-2024'"), { monthFirst: true }).fix).toMatchObject({ label: "Use '2024-01-04'" })
+    expect(explainError(msg('01-04-2024'), { monthFirst: true }).fix).toMatchObject({ label: "Use '2024-04-01'", order: 'dmy' })
     expect(explainError(msg('30-04-2024'), { monthFirst: true }).fix).toMatchObject({ order: 'dmy' })
     expect(applyFix(typed, d.fix!)).toBe("SELECT * FROM t WHERE d BETWEEN '2024-04-01' AND '2024-04-30' AND note = 'x'")
     // A value in the data (CAST(col AS DATE)), not one typed: no fix, and it says so.

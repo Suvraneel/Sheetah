@@ -1299,9 +1299,14 @@ export default function App() {
       setNoRows(null)
       setError(null)
       const back = stepBack(fixed.trim())
+      // The button pressed goes with the error (or the note) it was in: focus moves on, not to the page.
+      const from = document.activeElement as HTMLElement | null
+      const pressed = !!from?.closest('.error-banner, .grid-none, .toast-stack')
       void execute(fixed.trim(), { base: fixed.trim(), ops: emptyOps(), history: back.history }).then((res) => {
         if (!res && wantedOps.current === null) back.undo()
         then?.(res)
+        if (pressed && (!from?.isConnected || document.activeElement === document.body))
+          requestAnimationFrame(() => (res ? gridRef.current : document.querySelector<HTMLElement>('.error-banner button, .cm-content'))?.focus())
       })
     },
     [stepBack, execute],
@@ -1369,7 +1374,7 @@ export default function App() {
           const label = `${named.clause} '${named.literal}' ${named.clause === 'GROUP BY' ? 'groups' : 'sorts'} by the text '${named.literal}', the same on every row: single quotes are text. The column is ${sqlName(named.column)}.`
           setNudge({
             label,
-            action: `Use ${sqlName(named.column)}`,
+            action: named.count > 1 ? 'Use the column names' : `Use ${sqlName(named.column)}`,
             run: () => {
               if (editorNow.current.trim() !== sql) return say('The query has changed since: run it again to check it.')
               runRewriteRef.current(named.fixed)
@@ -1403,10 +1408,13 @@ export default function App() {
       const columns = own.flatMap((t) => t.columns)
       void import('./engine/no-rows').then(async (m) => {
         const reasons = m.noRowsReasons(sql, columns)
-        if (!reasons.length && own.length === 1) {
+        if (!reasons.length && own.length) {
           for (const p of m.probes(sql, columns)) {
+            // The table that has the column (in a join, only when one of them does).
+            const holders = own.filter((t) => t.columns.some((c) => c.name.toLowerCase() === p.column.toLowerCase()))
+            if (holders.length !== 1) continue
             const found = await getEngine()
-              .then(({ conn }) => conn.query(m.probeSql(own[0].name, p)))
+              .then(({ conn }) => conn.query(m.probeSql(holders[0].name, p)))
               .then((t) => t.toArray().map((r) => r.toJSON() as { v: unknown; exact: unknown }).map((r) => ({ v: String(r.v), exact: r.exact === true })))
               .catch(() => [] as { v: string; exact: boolean }[])
             const reason = m.probeReason(sql, p, found)
@@ -2025,8 +2033,16 @@ export default function App() {
   // change (text where a number belongs: a total line, an amount as text), running it on the tidied rows is
   // the fix, said instead of the error; otherwise it's offered beside the error's own explanation.
   const tidyHere = typeof error === 'string' && tidyFix && tidyFix.sql === editor.trim() ? tidyFix : null
+  // (A value of the data, that is: not one typed in the query, like an unquoted date; and not a misspelling.)
+  const dataValue = typeof error === 'string' ? /Could not convert string '([^']*)'/.exec(error)?.[1] : undefined
   const tidyCures =
-    !!tidyHere && /Could not convert|Conversion Error|No function matches the given name and argument types '\w+\(VARCHAR|Cannot compare values of type VARCHAR|Cannot mix values of type VARCHAR/i.test(error as string)
+    !!tidyHere &&
+    !fixHere &&
+    ((dataValue !== undefined && !editor.includes(`'${dataValue}'`)) ||
+      /No function matches the given name and argument types '\w+\(VARCHAR|Cannot compare values of type VARCHAR|Cannot mix values of type VARCHAR/i.test(error as string))
+  // Offered beside an error only when the tidied rows could change it: not a query SQL can't read, a name
+  // that isn't there, or a spreadsheet function.
+  const tidyHelps = !!tidyHere && !/Parser Error|syntax error|Catalog Error|does not exist|not found in FROM clause|Ambiguous reference|zero-length/i.test(error as string)
 
   return (
     <div className="app">
@@ -2386,7 +2402,7 @@ export default function App() {
                 {fixHere.label}
               </button>
             )}
-            {tidyHere && !tidyCures && (
+            {tidyHere && tidyHelps && !tidyCures && (
               <button className="btn btn-ghost btn-sm" onClick={tidyHere.run} title={tidyHere.label}>
                 Run on the tidied rows
               </button>
@@ -2679,7 +2695,7 @@ export default function App() {
                     </p>
                   ) : ops.search ? (
                     <p>No rows contain “{ops.search}”.</p>
-                  ) : noRows && noRows.sql === base.trim() && lastStatement(editor) === base.trim() ? (
+                  ) : noRows && !error && noRows.sql === base.trim() && lastStatement(editor) === base.trim() ? (
                     <>
                       <p>This query returned no rows. {noRows.reasons[0].text}</p>
                       {noRows.reasons[0].fixed && (

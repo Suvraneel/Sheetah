@@ -5,7 +5,7 @@
  */
 
 import { OWN_FUNCTIONS } from './own-functions'
-import { isNumericType, quoteLiteral, sqlName } from './sql'
+import { isNumericType, isReserved, quoteLiteral, sqlName } from './sql'
 
 /** A one-click repair: text in double quotes made text, or a misspelt name made the real one. */
 export type Fix = (
@@ -79,6 +79,20 @@ const spreadsheetWords = (monthFirst: boolean): Record<string, string> => ({
   isblank: 'x IS NULL',
   average: 'avg(x)',
   counta: 'count(x)',
+  roundup: 'ceil(x), or ceil(x * 100) / 100 for two decimals',
+  rounddown: 'floor(x), or floor(x * 100) / 100 for two decimals',
+  datedif: "date_diff('day', start, finish) (or 'month', 'year')",
+  sumproduct: 'sum(a * b)',
+  eomonth: 'last_day(d), or last_day(d + INTERVAL 1 MONTH) for the next month’s end',
+  networkdays: "count of days between, without weekends: a query over range(start, finish, INTERVAL 1 DAY)",
+  index: 'a join (Lookup, in a column’s menu, writes one)',
+  match: 'a join (Lookup, in a column’s menu, writes one)',
+  edate: 'd + INTERVAL 1 MONTH',
+  weekday: 'dayofweek(d) (0 is Sunday)',
+  textjoin: "string_agg(x, ', ')",
+  maxifs: 'max(x) FILTER (WHERE …)',
+  minifs: 'min(x) FILTER (WHERE …)',
+  averageifs: 'avg(x) FILTER (WHERE … AND …)',
 })
 
 
@@ -183,6 +197,8 @@ export interface ErrorContext {
 
 /** Where a value goes (after =, in an IN list, after THEN): what's written there is a value, not a name. */
 const VALUE_BEFORE = String.raw`(=|<>|!=|<=|>=|<|>|\bI?LIKE|\bTHEN|\bELSE|\bIN\s*\([^)]*?)\s*`
+/** Where a value goes that's text as often as not: = and <>, LIKE, THEN, ELSE, an IN list (not > or <). */
+const VALUE_EQ = String.raw`((?<![<>])=|<>|!=|\bI?LIKE|\bTHEN|\bELSE|\bIN\s*\([^)]*?)\s*`
 /** Totals: a name in one is a column's, even when it isn't found (sum("Revenue") is a misspelt column, not text). */
 const TOTALS = /^(sum|avg|min|max|count|median|mode|stddev|variance|first|last|any_value|string_agg|list)$/i
 /** Dates typed without quotes: 2024-04-01 (a subtraction), 01/04/2024 (a division). */
@@ -219,19 +235,23 @@ export function explainError(message: string, ctx: ErrorContext = {}): Explained
   const quoteIt = (s: { typed: string; column: string }) =>
     plain(`Column names with spaces go in double quotes: ${sqlName(s.column)}.`, { label: `Use ${sqlName(s.column)}`, kind: 'rename', from: s.typed, to: s.column })
   // & between texts, a spreadsheet's way of joining them: SQL's is ||.
-  const ampersand: Fix = { label: 'Use ||', kind: 'swap', find: String.raw`\s*(?<!&)&(?!&)\s*`, to: ' || ', outside: true }
+  const ampersand: Fix = { label: 'Join with ||', kind: 'swap', find: String.raw`\s*(?<!&)&(?!&)\s*`, to: ' || ', outside: true }
 
   const dateText = /invalid (date|timestamp) field format: "([^"]*)"/.exec(raw)
   if (dateText) {
-    // Typed in the query ('01/04/2024' on the line DuckDB quotes), or a value in the data being cast.
-    if (!line.includes(`'${dateText[2]}'`))
+    // Typed in the query ('01/04/2024' in it: DuckDB doesn't always quote the line), or a value in the data being cast.
+    const typed = stripComments(sql)
+    if (!typed.includes(`'${dateText[2]}'`) && !line.includes(`'${dateText[2]}'`))
       return plain(`“${dateText[2]}” in the data isn’t a date SQL can read as it is. Convert the column from its menu (Convert to date) first.`)
-    const order = orderOf(dateText[2], !!ctx.monthFirst)
+    // Which way round, from every date typed in the query (BETWEEN '01/04/2024' AND '30/04/2024': the 30 says
+    // day first), not this one alone: all of them read the same way, in one click.
+    const quoted = [...typed.matchAll(/'([^']*)'/g)].map((x) => x[1]).filter((v) => DMY.test(v.trim()))
+    const settled = quoted.map((v) => DMY.exec(v.trim())!).find((m) => Number(m[1]) > 12 || Number(m[2]) > 12)
+    const order = settled ? (Number(settled[1]) > 12 ? 'dmy' : 'mdy') : orderOf(dateText[2], !!ctx.monthFirst)
     const iso = isoDate(dateText[2], order)
     if (!iso) return plain(`“${dateText[2]}” isn’t a date SQL can read. Dates are written year-month-day: '2024-04-01'.`)
     const [y, m, d] = iso.split('-').map(Number)
-    // Every date written this way on that line (BETWEEN '01/04/2024' AND '30/04/2024'), not text elsewhere.
-    const values = [...line.matchAll(/'([^']*)'/g)].map((x) => x[1]).filter((v) => isoDate(v, order))
+    const values = [...new Set([...quoted, ...[...line.matchAll(/'([^']*)'/g)].map((x) => x[1])])].filter((v) => isoDate(v, order))
     return plain(`Dates in SQL are written year-month-day: '${iso}' is ${d} ${MONTHS[m - 1]} ${y}.`, { label: `Use '${iso}'`, kind: 'dates', order, values })
   }
 
@@ -247,7 +267,7 @@ export function explainError(message: string, ctx: ErrorContext = {}): Explained
   }
 
   const fn = /No function matches the given name and argument types '([^'(]+)\(([^)]*)\)'/.exec(raw)
-  if (fn && fn[1] === '&' && /VARCHAR|STRING_LITERAL/.test(fn[2])) return plain('& joins text in a spreadsheet. In SQL it’s ||: city || \' - \' || state.', ampersand)
+  if (fn && fn[1] === '&' && /VARCHAR|STRING_LITERAL/.test(fn[2])) return plain('& joins text in a spreadsheet. In SQL it’s ||: first_name || \' \' || last_name.', ampersand)
   // countif exists in DuckDB, for a condition: countif(city, 'Pune') is the spreadsheet's.
   if (fn && spreadsheet(fn[1])) return plain(`${fn[1]}() works differently in SQL. Use ${spreadsheet(fn[1])}.`)
   if (fn && /VARCHAR/.test(fn[2]))
@@ -262,7 +282,7 @@ export function explainError(message: string, ctx: ErrorContext = {}): Explained
   }
 
   const zeroLength = /zero-length delimited identifier/.test(raw)
-  if (zeroLength) return plain('Empty text is two single quotes in SQL: \'\'. Double quotes are for column names.', { label: "Use ''", kind: 'quote', values: [''] })
+  if (zeroLength) return plain('Empty text is two single quotes in SQL: \'\'. Double quotes are for column names.', { label: "Use '' (empty text)", kind: 'quote', values: [''] })
 
   const col = /Referenced column "([^"]+)" not found/.exec(raw)
   if (col && spaced && spaced.typed.toLowerCase().startsWith(col[1].toLowerCase())) return quoteIt(spaced)
@@ -294,8 +314,16 @@ export function explainError(message: string, ctx: ErrorContext = {}): Explained
         amp ? { ...quote, then: ampersand } : quote,
       )
     }
-    // city = Pune: a bare word where a value goes is read as a column's name.
-    if (!quoted && new RegExp(`${VALUE_BEFORE}${q}\\b`, 'i').test(line)) {
+    // total > ₹1000: an amount with its currency sign, which SQL reads as a name.
+    const money = /^[₹$€£]\s*(\d{1,3}(?:,\d{3})+|\d{1,3}(?:,\d{2})+,\d{3}|\d+)(\.\d+)?$/.exec(col[1])
+    if (!quoted && money) {
+      const n = `${money[1].replace(/,/g, '')}${money[2] ?? ''}`
+      return plain(`Amounts go without the currency sign (or separators) in SQL: ${n}.`, { label: `Use ${n}`, kind: 'swap', find: `(?<![\\w"'$.])${esc(col[1])}(?![\\w"'$(])`, to: n, outside: true })
+    }
+    // city = Pune: a bare word where a value goes is read as a column's name. Not after > or < (total > price
+    // is a column that isn't there), not in a join's ON (l.Party = Name), and not a name some table has.
+    const clause = [...stripStrings(line.slice(0, Math.max(0, line.search(new RegExp(`\\b${q}\\b`))))).matchAll(/\b(ON|WHERE|HAVING|WHEN|SELECT|SET|USING)\b/gi)].at(-1)?.[1]?.toUpperCase()
+    if (!quoted && clause !== 'ON' && !known.has(col[1].toLowerCase()) && new RegExp(`${VALUE_EQ}${q}\\b`, 'i').test(line)) {
       const list = new RegExp(String.raw`\bIN\s*\(([^)]*\b${q}\b[^)]*)\)`, 'i').exec(line)?.[1] ?? ''
       const values = [col[1], ...[...list.matchAll(/(?<!['"\w])([A-Za-z_][\w ]*?)(?=\s*[,)]|\s*$)/g)].map((m) => m[1].trim()).filter((v) => v && v !== col[1] && !known.has(v.toLowerCase()) && !/^null$/i.test(v))]
       return plain(`${col[1]} isn’t a column, and text goes in single quotes: ${quoteLiteral(col[1])}.`, {
@@ -306,7 +334,9 @@ export function explainError(message: string, ctx: ErrorContext = {}): Explained
         outside: true,
       })
     }
-    return plain(`There’s no column called “${col[1]}”. If it’s text, put it in single quotes: ${quoteLiteral(col[1])}.`)
+    // Text only where a value goes as text (after =, in an IN list); after > or < it's a column that isn't there.
+    const textual = !quoted && clause !== 'ON' && new RegExp(`${VALUE_EQ}${q}\\b`, 'i').test(line)
+    return plain(`There’s no column called “${col[1]}”.${textual ? ` If it’s text, put it in single quotes: ${quoteLiteral(col[1])}.` : ''}`)
   }
 
   const table = /Table with name (\S+?) does not exist/.exec(raw)
@@ -330,21 +360,23 @@ export function explainError(message: string, ctx: ErrorContext = {}): Explained
   const group = /column "([^"]+)" must appear in the GROUP BY clause/.exec(raw)
   if (group) {
     // GROUP BY 'city': the text 'city', the same on every row, so nothing is grouped by the column.
-    const literal = new RegExp(String.raw`GROUP\s+BY\s+(?:[^;]*?,\s*)?'(${esc(group[1])})'`, 'i').exec(stripComments(sql))
-    if (literal)
-      return plain(`GROUP BY '${literal[1]}' groups by the text '${literal[1]}' (single quotes are text), the same on every row. A column’s name goes without them: GROUP BY ${sqlName(group[1])}.`, {
-        label: `Use GROUP BY ${sqlName(group[1])}`,
-        kind: 'swap',
-        find: String.raw`(GROUP\s+BY\s+(?:[^;]*?,\s*)?)'${esc(literal[1])}'`,
-        to: `$1${sqlName(group[1]).replace(/\$/g, '$$$$')}`,
-      })
+    const named = quotedNames(sql, [...new Set([group[1], ...(ctx.columns ?? [])])])
+    if (named && named.clause === 'GROUP BY')
+      return plain(
+        `GROUP BY '${named.literal}' groups by the text '${named.literal}' (single quotes are text), the same on every row. A column’s name goes without them: GROUP BY ${sqlName(named.column)}.${named.count > 1 ? ' The other names in single quotes are put right too.' : ''}`,
+        { label: named.count > 1 ? 'Use the column names' : `Use GROUP BY ${sqlName(named.column)}`, kind: 'sql', from: sql, to: named.fixed },
+      )
     return plain(`“${group[1]}” is neither grouped nor totalled. Add it to GROUP BY, or wrap it in sum(), count(), max() or another total.`)
   }
 
   // ORDER BY 'amount': DuckDB won't sort by a text that's the same on every row.
   if (/ORDER BY non-integer literal has no effect/.test(raw)) {
     const named = quotedNames(sql, ctx.columns ?? [])
-    if (named) return plain(`ORDER BY '${named.literal}' sorts by the text '${named.literal}', the same on every row: single quotes are text. The column is ${sqlName(named.column)}.`, { label: `Use ${sqlName(named.column)}`, kind: 'sql', from: sql, to: named.fixed })
+    if (named)
+      return plain(
+        `${named.clause} '${named.literal}' ${named.clause === 'GROUP BY' ? 'groups' : 'sorts'} by the text '${named.literal}', the same on every row: single quotes are text. The column is ${sqlName(named.column)}.${named.count > 1 ? ' The other names in single quotes are put right too.' : ''}`,
+        { label: named.count > 1 ? 'Use the column names' : `Use ${sqlName(named.column)}`, kind: 'sql', from: sql, to: named.fixed },
+      )
     return plain('ORDER BY takes a column’s name (or its number in the list): text in single quotes is the same on every row, so sorts nothing.')
   }
 
@@ -353,6 +385,20 @@ export function explainError(message: string, ctx: ErrorContext = {}): Explained
 
   if (/WHERE clause cannot contain aggregates/.test(raw))
     return plain('Totals like count() and sum() can’t go in WHERE, which picks rows before they’re totalled. Filter totals with HAVING, after GROUP BY.')
+
+  // '2024-04-31': a date the calendar doesn't have.
+  const range = /date field value out of range: "([^"]*)"/.exec(raw)
+  if (range) return plain(`“${range[1]}” isn’t a day on the calendar (check the day for that month).`)
+  // LIMIT 1,000: LIMIT takes one number (and "LIMIT 10, 20" is another database's way of skipping rows).
+  const limitPair = /\bLIMIT\s+(\d+)\s*,\s*(\d+)/i.exec(stripStrings(sql))
+  if (/LIMIT #,# syntax is not supported/i.test(raw) || (/errhint NOT IMPLEMENTED/i.test(raw) && limitPair)) {
+    // A one-click only for 1,000 or 10,000 (round thousands): LIMIT 100,200 is another database's "200 rows after 100".
+    const m = /\bLIMIT\s+(\d{1,3}),(000)\b(?!\s*,)/i.exec(stripStrings(sql))
+    return plain(
+      `LIMIT takes one number${m ? `, written without a separator: LIMIT ${m[1]}${m[2]}` : ''}. To skip rows first, add OFFSET${limitPair && !m ? `: LIMIT ${limitPair[2]} OFFSET ${limitPair[1]} is ${limitPair[2]} rows after the first ${limitPair[1]}` : ': LIMIT 10 OFFSET 20'}.`,
+      m ? { label: `Use LIMIT ${m[1]}${m[2]}`, kind: 'swap', find: String.raw`\bLIMIT\s+${m[1]},${m[2]}\b`, to: `LIMIT ${m[1]}${m[2]}`, outside: true } : undefined,
+    )
+  }
 
   const conv = /Could not convert string '([^']*)' to (\w+)/.exec(raw)
   if (conv) return plain(`“${conv[1]}” can’t be read as ${/INT|DOUBLE|DECIMAL|FLOAT/.test(conv[2]) ? 'a number' : /DATE|TIME/.test(conv[2]) ? 'a date' : conv[2].toLowerCase()}.`)
@@ -369,9 +415,15 @@ export function explainError(message: string, ctx: ErrorContext = {}): Explained
     const bare = stripStrings(sql)
     // SELECT TOP 10 *: SQL Server's way. Here the number of rows goes in LIMIT, at the end.
     // (Found where it's SQL, not in text or a comment; the query rewritten there, LIMIT put after its last word.)
-    const top = /\b(SELECT\s+(?:DISTINCT\s+)?)(TOP\s+(\d+)\s*)/i.exec(bare)
+    const top = /\b(SELECT\s+(?:DISTINCT\s+)?)(TOP\s+(\d+)\s*)(PERCENT\b)?/i.exec(bare)
     if (top && near[1] === top[3]) {
       const at = top.index + top[1].length
+      // Inside brackets (a WITH, a subquery) LIMIT belongs to that SELECT, not the query's end; TOP 5 PERCENT
+      // and a query with its own LIMIT are said, not rewritten.
+      const depth = [...bare.slice(0, at)].reduce((n, ch) => n + (ch === '(' ? 1 : ch === ')' ? -1 : 0), 0)
+      const own = /\bLIMIT\b/i.test(bare.slice(at))
+      if (depth > 0 || top[4] || own)
+        return plain(`TOP ${top[3]}${top[4] ? ' PERCENT' : ''} is SQL Server’s way. Here the number of rows goes in LIMIT ${top[3]}, at the end of ${depth > 0 ? 'the SELECT it’s in (inside its brackets)' : 'the query'}${top[4] ? ': a share of the rows is USING SAMPLE 5 PERCENT' : ''}.`)
       return plain(`TOP ${top[3]} is SQL Server’s way. Here it’s LIMIT ${top[3]}, at the end of the query.`, {
         label: `Use LIMIT ${top[3]}`,
         kind: 'sql',
@@ -381,7 +433,8 @@ export function explainError(message: string, ctx: ErrorContext = {}): Explained
     }
     // amount > 1,000: SQL reads 1 and then a comma.
     // (Not in an IN list, where 101,102 is two numbers.)
-    const grouped = [...bare.matchAll(/(?:=|<>|!=|<=|>=|<|>|\bBETWEEN|\bAND)\s*(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?)(?![\d,])/gi)].map((m) => m[1])
+    // (10,00,000 too, as India writes a million.)
+    const grouped = [...bare.matchAll(/(?:=|<>|!=|<=|>=|<|>|\bBETWEEN|\bAND)\s*(-?(?:\d{1,3}(?:,\d{3})+|\d{1,3}(?:,\d{2})+,\d{3})(?:\.\d+)?)(?![\d,])/gi)].map((m) => m[1])
     if (near[1] === ',' && grouped.length)
       return plain(`Numbers in SQL are written without thousands separators: ${grouped[0].replace(/,/g, '')}.`, chain(grouped.map((g) => ({ label: `Use ${grouped[0].replace(/,/g, '')}`, kind: 'swap', find: `(?<![\\w.,])${esc(g)}(?![\\d,])`, to: g.replace(/,/g, ''), outside: true }))))
     // city = 'Pune' && state = 'MH': conditions are joined with AND.
@@ -389,7 +442,33 @@ export function explainError(message: string, ctx: ErrorContext = {}): Explained
     // A column called Order or Group: a SQL word, so its name needs double quotes.
     const word = ctx.columns?.find((c) => c.toLowerCase() === near[1].toLowerCase())
     if (word && /^[A-Za-z]+$/.test(word)) return plain(`${word} is a SQL word, so as a column’s name it goes in double quotes: "${word}".`)
-    if (/^(ORDER|GROUP|WHERE|HAVING|LIMIT)$/i.test(near[1])) {
+    const afterFrom = new RegExp(String.raw`\b(FROM|JOIN)\s+${esc(near[1])}\b`, 'i').test(bare)
+    const mine = (ctx.tables ?? []).filter((t) => !internal(t))
+    const w = near[1].toLowerCase()
+    // orders before order_items: the plural, else the shortest name that starts with the word.
+    const like = afterFrom ? (mine.find((t) => t.toLowerCase() === `${w}s`) ?? mine.filter((t) => t.toLowerCase().startsWith(w)).sort((a, b) => a.length - b.length)[0]) : undefined
+    // FROM WHERE …: the table's name is missing (unless a table's name starts with the word: FROM order).
+    if (afterFrom && !like && /^(WHERE|GROUP|ORDER|HAVING|LIMIT|ON|JOIN|SELECT|UNION)$/i.test(near[1]))
+      return plain(`A table’s name goes after FROM (and JOIN), before ${near[1].toUpperCase()}.${mine.length ? ` Your tables: ${mine.slice(0, 8).join(', ')}.` : ''}`)
+    // FROM order: a SQL word where a table's name goes (orders was meant).
+    const asTable = afterFrom && isReserved(near[1])
+    if (asTable) {
+      return plain(
+        `${near[1]} is a SQL word, so it can’t be a table’s name as it is.${like ? ` Did you mean “${like}”?` : mine.length ? ` Your tables: ${mine.slice(0, 8).join(', ')}.` : ''}`,
+        like ? { label: `Use ${like}`, kind: 'swap', find: String.raw`(\b(?:FROM|JOIN)\s+)${esc(near[1])}\b`, to: `$1${sqlName(like).replace(/\$/g, '$$$$')}`, outside: true } : undefined,
+      )
+    }
+    // … FROM after an open bracket (sum(amount FROM t): the bracket is what's missing, not FROM's place.
+    if (/^FROM$/i.test(near[1])) {
+      const at = bare.search(/\bFROM\b/i)
+      const before = bare.slice(0, at < 0 ? bare.length : at)
+      const open = [...before].reduce((n, ch) => n + (ch === '(' ? 1 : ch === ')' ? -1 : 0), 0)
+      const clauseFirst = /\b(WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT)\b/i.test(before)
+      if (open > 0) return plain('A bracket is left open before FROM: each ( needs its ) — sum(amount), round(amount, 2).')
+      if (!clauseFirst && /\bCASE\b/i.test(before) && !/\bEND\b/i.test(before)) return plain('A CASE is left open before FROM: it ends with END (CASE WHEN … THEN … ELSE … END).')
+      if (!clauseFirst) return plain(`SQL couldn’t be read at “FROM”. Look just before it: a misspelt word, a comma too many, or a bracket left open.`)
+    }
+    if (/^(ORDER|GROUP|WHERE|HAVING|LIMIT|FROM)$/i.test(near[1])) {
       // … LIMIT 10 WHERE …: the LIMIT goes last.
       const limit = new RegExp(String.raw`\bLIMIT\s+(\d+)\s+(?=${near[1]}\b)`, 'i').exec(bare)
       const order = `The parts of a query go in this order: SELECT, FROM, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT.`
@@ -476,18 +555,40 @@ export function missingCommas(sql: string, columns: string[]): { first: string; 
 
 /**
  * "GROUP BY 'city'", "ORDER BY 'amount'": it runs, but groups or sorts by the text 'city', the same on
- * every row (single quotes are text). Found where the text is a column's name; returned with the name put back.
+ * every row (single quotes are text). Found where a whole item of the list is text that's a column's name
+ * (not 'total' inside a CASE); returned with every such name put back, and how many there were.
  */
-export function quotedNames(sql: string, columns: string[]): { literal: string; column: string; clause: string; fixed: string } | null {
+export function quotedNames(sql: string, columns: string[]): { literal: string; column: string; clause: string; fixed: string; count: number } | null {
   const code = sql.replace(/--[^\n]*|\/\*[\s\S]*?\*\//g, (m) => ' '.repeat(m.length))
+  const found: { at: number; length: number; literal: string; column: string; clause: string }[] = []
   for (const m of code.matchAll(/\b(GROUP|ORDER)\s+BY\s+((?:[^;()]|\([^()]*\))*?)(?=\bHAVING\b|\bORDER\b|\bLIMIT\b|\bQUALIFY\b|\bWINDOW\b|\bUNION\b|\bINTERSECT\b|\bEXCEPT\b|\bSELECT\b|\bFROM\b|\bWHERE\b|\)|;|$)/gi)) {
-    for (const lit of m[2].matchAll(/'((?:[^']|'')+)'/g)) {
-      const text = lit[1].replace(/''/g, "'")
+    const list = m[2]
+    const base = m.index + m[0].length - m[2].length
+    // The list's items, split at commas outside brackets and text.
+    let depth = 0
+    let quote = false
+    let from = 0
+    const items: { start: number; text: string }[] = []
+    for (let i = 0; i <= list.length; i++) {
+      const ch = list[i]
+      if (i === list.length || (ch === ',' && !depth && !quote)) {
+        items.push({ start: from, text: list.slice(from, i) })
+        from = i + 1
+      } else if (ch === "'") quote = !quote
+      else if (!quote && ch === '(') depth++
+      else if (!quote && ch === ')') depth--
+    }
+    for (const item of items) {
+      const lit = /^(\s*)'((?:[^']|'')+)'\s*(ASC|DESC)?\s*(NULLS\s+(FIRST|LAST))?\s*$/i.exec(item.text)
+      if (!lit) continue
+      const text = lit[2].replace(/''/g, "'")
       const column = columns.find((c) => c.toLowerCase() === text.toLowerCase())
-      if (!column) continue
-      const at = m.index + m[0].indexOf(m[2]) + lit.index
-      return { literal: text, column, clause: `${m[1].toUpperCase()} BY`, fixed: `${sql.slice(0, at)}${sqlName(column)}${sql.slice(at + lit[0].length)}` }
+      if (column) found.push({ at: base + item.start + lit[1].length, length: lit[2].length + 2, literal: text, column, clause: `${m[1].toUpperCase()} BY` })
     }
   }
-  return null
+  if (!found.length) return null
+  let fixed = sql
+  for (const f of [...found].reverse()) fixed = `${fixed.slice(0, f.at)}${sqlName(f.column)}${fixed.slice(f.at + f.length)}`
+  const [first] = found
+  return { literal: first.literal, column: first.column, clause: first.clause, fixed, count: found.length }
 }

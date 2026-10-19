@@ -424,11 +424,15 @@ test.describe('the messy sample', () => {
     await expect(page.locator('.result-meta')).toContainText('1 row')
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('613,950') // the invoices, not the totals too
     await expect(page.locator('.error-banner')).toHaveCount(0)
-    // A mistake of another kind (a misspelt column) keeps its own explanation; the tidied rows are a second offer.
+    // A mistake of another kind (a misspelt column) keeps its own explanation, and no offer the tidied rows
+    // can't help with (they'd fail the same way).
     await runSql(page, 'SELECT sum(Taxabel) FROM sales_register_april')
     await expect(page.locator('.error-banner')).toContainText('Taxabel')
     await expect(page.locator('.error-banner')).not.toContainText('skips')
-    await expect(page.locator('.error-banner').getByRole('button', { name: 'Run on the tidied rows' })).toBeVisible()
+    await expect(page.locator('.error-banner').getByRole('button', { name: 'Run on the tidied rows' })).toHaveCount(0)
+    // One the tidy-up does change (text where a number belongs, in a function) still gets it.
+    await runSql(page, 'SELECT abs("Taxable Value") FROM sales_register_april')
+    await expect(page.locator('.error-banner')).toContainText('tidy-up steps')
   })
 })
 

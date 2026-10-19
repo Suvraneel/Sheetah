@@ -5,6 +5,10 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 ## Unreleased
 
 ### Added
+- **Amounts written with the currency in letters** convert too: `Rs. 25,000.00`, `INR 7,500`, `USD 99.95`,
+  `1,200/-`, and a trailing minus as SAP writes it (`1,500.00-` is −1,500).
+- **A workbook's cells Excel couldn't give a value** are said as it opens: error cells (#DIV/0!, #N/A) and formulas
+  saved without their result (a program wrote the file without calculating it), which are empty here.
 - **Spreadsheet habits in SQL, put right in one click**: `city & ' - ' & state` (SQL joins text with `||`),
   `""` for empty text, `"Pune"` and `"1000"` in double quotes, a bare `Pune` where a value goes, dates typed without
   quotes (`2024-04-01` is a subtraction, `01/04/2024` a division), `SELECT TOP 10`, a `LIMIT` before `WHERE`,
@@ -311,6 +315,28 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   says to tap for exact values.
 
 ### Fixed
+- **Numbers no longer change on the way in**: a code longer than a number keeps (an ICCID, 20 digits) stays text,
+  in a CSV and in a workbook that holds it as text, as do codes like `1E5` and `00123` there; in a file that writes
+  decimals with a comma (2,50), whole numbers grouped with points (1.500) are read as text, to convert as fifteen
+  hundred, not 1.5; a column called Zipcode or Pincode keeps the zeros in front of its codes past the first
+  20,000 rows; times from a workbook keep their minute (01:00 was 00:59:59).
+- **One-click conversions are checked over the whole column**: a big table's sample saying every value reads is
+  no longer enough; a value written another way further down keeps the chip away, and the column menu says how many
+  values would become empty.
+- **Two-digit years** are read as spreadsheets read them when a file opens (15/08/55 is 1955, not 2055).
+- **Rows that are data stay**: a vendor or brand called TOTAL isn't taken for a total line when its numbers add up
+  to nothing the other rows come to; dates written `1st April 2024` or `Apr-15-2024` aren't undated notes.
+- **SQL help, sharper**: dates typed in a query are read the same way round as each other (a 30 or a 31 anywhere
+  settles it) and fixed all at once, and are never blamed on the data; a name after `>` or in a join's ON isn't
+  offered as text; `₹1000` is offered as 1000; TOP inside a WITH, TOP n PERCENT and TOP with a LIMIT are explained,
+  not rewritten wrong; names in single quotes are only whole GROUP BY / ORDER BY items, all fixed at once, each said
+  by its own clause; India's `10,00,000`, `LIMIT 1,000`, `FROM order`, a FROM after WHERE and a date the calendar
+  doesn't have are explained; ROUNDUP, DATEDIF, SUMPRODUCT, EOMONTH and more say what does the job in SQL.
+- **No rows, explained in more places**: after a table's alias (`o.city = 'pune'`), in a join (the table that has the
+  column), and `= ''` where empty cells are NULL. The "Use IS NULL" button names what it writes.
+- "Run on the tidied rows" no longer stands in for an error the tidy-up can't change (a typo, a syntax error, a date
+  typed without quotes). A fix pressed from the keyboard moves focus on to the rows; fix buttons say what they do
+  ("Join with ||").
 - Accessibility: chips and suggested words are named as they read on screen (voice control finds them); the pivot
   dialog starts on its first field once it's ready, the categories dialog on the category just added; notices are a
   labelled region of their own; focus kept for the rows after an action no longer pulls it back from a click

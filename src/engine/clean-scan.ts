@@ -237,6 +237,19 @@ export function statsSql(table: string, refs: string[], sampleRows = 5000): stri
   return `SELECT\n  ${items.join(',\n  ')}\nFROM (SELECT * FROM ${table} USING SAMPLE ${sampleRows} ROWS)`
 }
 
+/**
+ * For each conversion, how many values it would make empty over the whole table (not blanks, and not the
+ * placeholders it's meant to empty: n/a, -, x): a sample saying "all convert" is checked before a chip
+ * offers it in one click.
+ */
+export function lossesSql(table: string, items: { ref: string; expr: string }[]): string {
+  const counts = items.map(({ ref, expr }, i) => {
+    const v = textOf(ref)
+    return `count(*) FILTER (WHERE nullif(${v}, '') IS NOT NULL AND NOT regexp_full_match(lower(${v}), ${PLACEHOLDER}) AND (${expr}) IS NULL)::DOUBLE AS l${i}`
+  })
+  return `SELECT ${counts.join(', ')} FROM ${table}`
+}
+
 /** Just what says how decimals are written, for each column (read with readStats: values, numbers, commaNumbers, pointOnly, commaOnly). */
 export function decimalsSql(table: string, refs: string[], sampleRows = 5000): string {
   const items = refs.flatMap((ref, i) => {

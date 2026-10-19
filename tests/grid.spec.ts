@@ -177,7 +177,7 @@ test.describe('grid and query engine', () => {
     await page.locator('.error-banner').getByRole('button', { name: 'Use LIMIT 3' }).click()
     // & next: one slip at a time, each with its own fix.
     await expect(page.locator('.error-banner')).toContainText('& joins text in a spreadsheet')
-    await page.locator('.error-banner').getByRole('button', { name: 'Use ||' }).click()
+    await page.locator('.error-banner').getByRole('button', { name: 'Join with ||' }).click()
     await expect(page.locator('.result-meta')).toContainText('3 rows · 1 column')
     await expect(page.locator('.cm-content')).toContainText("city || ' / ' || category")
     // Undo goes back over typed queries too, to the rows before them.
@@ -187,8 +187,11 @@ test.describe('grid and query engine', () => {
     // No rows, because the table writes it with a capital: said, and one click runs it so.
     await runSql(page, "SELECT * FROM orders WHERE city = 'pune'")
     await expect(page.locator('.grid-none')).toContainText("No row has city exactly 'pune': the table writes it 'Pune'")
-    await page.locator('.grid-none').getByRole('button', { name: "Use 'Pune'" }).click()
+    // By keyboard: the button goes with the note, and focus goes on to the rows it found.
+    await page.locator('.grid-none').getByRole('button', { name: "Use 'Pune'" }).focus()
+    await page.keyboard.press('Enter')
     await expect(page.locator('.cm-content')).toContainText("city = 'Pune'")
+    await expect(page.locator('.grid-scroll')).toBeFocused()
     await expect(page.locator('.result-meta')).not.toContainText(/^0 rows/)
     await runSql(page, 'SELECT * FROM orders WHERE customer = NULL')
     await expect(page.locator('.grid-none')).toContainText('Nothing equals NULL')

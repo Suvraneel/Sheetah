@@ -360,3 +360,22 @@ test('a report’s “Total for Acme Corp” is a total label; a product called 
     ['Totally', false],
   ])
 })
+
+test('a conversion is checked over the whole column: values written another way are counted, placeholders aren’t', async () => {
+  const { lossesSql } = await import('../../src/engine/clean-scan')
+  const { cleanExpr } = await import('../../src/engine/clean')
+  await q(`CREATE OR REPLACE TABLE amounts_far AS SELECT * FROM (VALUES ('₹1,200.00'), ('₹15,00,000.50'), ('n/a'), (''), (NULL), ('Rs. 25,000.00'), ('1,500.00-')) t(amount)`)
+  const sql = lossesSql('amounts_far', [{ ref: 'amount', expr: cleanExpr({ column: 'amount', kind: 'number' }) }])
+  const [row] = await q(sql)
+  // Rs. and a trailing minus are read too: nothing lost; n/a and blanks aren't counted.
+  expect(Number(row.l0)).toBe(0)
+  await q(`INSERT INTO amounts_far VALUES ('12 apples')`)
+  expect(Number((await q(sql))[0].l0)).toBe(1)
+  const read = await q(`SELECT list(number_from_text(amount) ORDER BY rowid) AS v FROM amounts_far`)
+  expect(JSON.parse(JSON.stringify(read[0].v))).toEqual([1200, 1500000.5, null, null, null, 25000, -1500, null])
+  const more = await q(`SELECT number_from_text('INR 7,500') AS a, number_from_text('1,200/-') AS b, number_from_text('USD 99.95') AS c, number_from_text('2024-04-01') AS d`)
+  expect(more[0]).toEqual({ a: 7500, b: 1200, c: 99.95, d: null })
+  // Not a currency, not a minus: a part number, a year or a range written with a dash.
+  const not = await q(`SELECT number_from_text('RS-485') AS a, number_from_text('RS232') AS b, number_from_text('2024-') AS c, number_from_text('60-') AS d, number_from_text_comma('1.500,00-') AS e`)
+  expect(not[0]).toEqual({ a: null, b: null, c: null, d: null, e: -1500 })
+})

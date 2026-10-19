@@ -30,7 +30,7 @@ test('lines match one to one by amount and nearest date; a missing line doesn’
   await q(`CREATE OR REPLACE TABLE bank AS SELECT * FROM (VALUES
     (DATE '2024-04-01', 'UPI Ravi', '500.00', NULL), (DATE '2024-04-20', 'UPI Ravi', '500.00', NULL),
     (DATE '2024-04-05', 'NEFT Acme', NULL, '50,000.00 Cr'), (DATE '2024-04-09', 'Bank charges', '118.00', NULL),
-    (DATE '2024-04-10', 'Cash', 'Rs. 500/-', NULL), (NULL, 'Opening balance', NULL, NULL)
+    (DATE '2024-04-10', 'Cash', 'five hundred', NULL), (NULL, 'Opening balance', NULL, NULL)
   ) t("Date", "Narration", "Withdrawal", "Deposit")`)
   // The books: Ravi's second payment written a day early, the first not entered; a receipt the bank hasn't seen.
   await q(`CREATE OR REPLACE TABLE books AS SELECT * FROM (VALUES
@@ -45,7 +45,7 @@ test('lines match one to one by amount and nearest date; a missing line doesn’
   }
   expect((await q(directionSql(spec, numeric(types))))[0]).toEqual({ same: 2, flipped: 0 })
   const rows = await q(matchSql(spec, numeric(types)))
-  // Every line once; the unreadable "Rs. 500/-" is listed with no amount (not lost), the opening line left out.
+  // Every line once; the unreadable "five hundred" is listed with no amount (not lost), the opening line left out.
   expect(rows.map((r) => [r.status, r.amount, r['days apart'] === null ? null : Number(r['days apart'])])).toEqual([
     ['only in bank', -500, null],
     ['matched', 50000, 1],

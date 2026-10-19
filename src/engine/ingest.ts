@@ -165,8 +165,8 @@ async function readDates(name: string, path: string, read: (opts: string) => str
   if (order) dateOrders.set(name.toLowerCase(), order)
 }
 
-/** Codes by their names: ZIP and FIPS codes, area codes, IDs. */
-const CODE_COLUMN = /(^|_)(fips|geoid|geo_id|zcta|ags|ars|nuts\d?|lsoa\w*|msoa\w*|lad\w*|area_code|ons_code|code|zip|pin|postcode)(_|$)/
+/** Codes by their names: ZIP and FIPS codes, area codes, IDs (Zipcode and Pincode written as one word too). */
+const CODE_COLUMN = /(^|_)(fips|geoid|geo_id|zcta|ags|ars|nuts\d?|lsoa\w*|msoa\w*|lad\w*|area_code|ons_code|code|zip|zipcode|pin|pincode|postcode|postalcode|postal)(_|$)/
 
 /**
  * The file reader types a column from its first 20,000 or so rows: codes that start with 0 only further
@@ -192,6 +192,98 @@ async function keepZeros(name: string, read: (opts: string) => string, textColum
   await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(name)} AS SELECT * FROM ${read('')}`)
   const list = lead.map((c) => c.name).join(', ')
   onNote?.(`${list} in ${fileName} ${lead.length === 1 ? 'is a code' : 'are codes'} with zeros in front further down the file (01001): read as text, so they stay.`)
+}
+
+/**
+ * Numbers the file reader typed that the file doesn't mean as numbers: a code longer than a number keeps
+ * (an ICCID's 20 digits read as 8.99e19), and, in a file that writes decimals with a comma (its prices are
+ * 2,50), whole numbers grouped with points (1.500 is fifteen hundred there, not one and a half). Read as text
+ * and said: the code stays as written; the amount converts the comma way, from the suggestion or its menu.
+ * Cheap unless the signs are there: the typed table is looked at first (a number of 16 digits and more that
+ * a double can't hold; thousandths only), the prices' commas on a sample, and the file is read again only
+ * then.
+ */
+async function keepAsWritten(name: string, read: (opts: string) => string, textColumns: string[], fileName: string, onNote?: Noted): Promise<void> {
+  const types = await columnTypes(name)
+  // Only doubles lose digits: BIGINT and HUGEINT keep every one (and show it).
+  const doubles = types.filter((c) => /^(DOUBLE|FLOAT|REAL)$/.test(c.type))
+  if (!doubles.length) return
+  const q = (c: { name: string }) => quoteIdent(c.name)
+  const one = async (sql: string) => ((await sendAll(sql)).toArray()[0]?.toJSON() ?? {}) as Record<string, unknown>
+  const t = await one(
+    `SELECT ${doubles
+      .map((c, i) => `max(abs(${q(c)}))::DOUBLE AS m${i}, (bool_and(${q(c)} IS NULL OR abs(${q(c)} * 1000 - round(${q(c)} * 1000)) < 1e-6) AND bool_or(${q(c)} <> round(${q(c)})))::INTEGER AS k${i}`)
+      .join(', ')} FROM ${quoteIdent(name)}`,
+  )
+  const longs = doubles.filter((_, i) => Number(t[`m${i}`]) >= 2 ** 53)
+  let thousandths = doubles.filter((_, i) => Number(t[`k${i}`]) === 1)
+  if (thousandths.length) {
+    // Evidence from the file itself, never the browser's language: a column of prices written 2,50 (maybe
+    // with ₹ or €, and thousands points), looked at on a sample.
+    const texts = types.filter((c) => c.type === 'VARCHAR').slice(0, 40)
+    const COMMA = `'[(+-]?[^0-9,.]{0,4}[0-9]{1,3}(\\.?[0-9]{3})*,[0-9]{1,2}[^0-9,.]{0,4}\\)?'`
+    const c = texts.length
+      ? await one(
+          `SELECT ${texts.map((x, i) => `count(*) FILTER (WHERE regexp_full_match(trim(${q(x)}), ${COMMA}))::DOUBLE AS c${i}, count(nullif(trim(${q(x)}), ''))::DOUBLE AS v${i}`).join(', ')} FROM (SELECT * FROM ${quoteIdent(name)} USING SAMPLE 5000 ROWS)`,
+        )
+      : {}
+    const commaFile = texts.some((_, i) => Number(c[`c${i}`]) > 0 && Number(c[`c${i}`]) >= 0.9 * Number(c[`v${i}`]))
+    if (!commaFile) thousandths = []
+  }
+  if (!longs.length && !thousandths.length) return
+  // How they're written in the file itself.
+  const cand = [...new Set([...longs, ...thousandths])]
+  const raw = await one(
+    `SELECT ${cand
+      .map((c, i) => {
+        const v = `trim(${q(c)})`
+        return [
+          // Codes: every value whole digits, one of them longer than a double keeps.
+          `bool_and(${v} = '' OR regexp_full_match(${v}, '[0-9]+'))::INTEGER AS w${i}`,
+          `count(*) FILTER (WHERE regexp_full_match(${v}, '[0-9]{16,}'))::DOUBLE AS l${i}`,
+          // Thousands: grouped by points (1.500), and no other decimals (1.5, 0.75).
+          `count(*) FILTER (WHERE regexp_full_match(${v}, '[+-]?[0-9]{1,3}(\\.[0-9]{3})+'))::DOUBLE AS g${i}`,
+          `count(*) FILTER (WHERE regexp_full_match(${v}, '[+-]?[0-9]*\\.[0-9]+') AND NOT regexp_full_match(${v}, '[+-]?[0-9]{1,3}(\\.[0-9]{3})+'))::DOUBLE AS d${i}`,
+        ].join(', ')
+      })
+      .join(', ')} FROM ${read('all_varchar = true')}`,
+  )
+  const codes = cand.filter((c, i) => longs.includes(c) && Number(raw[`w${i}`]) === 1 && Number(raw[`l${i}`]) > 0)
+  const grouped = cand.filter((c, i) => thousandths.includes(c) && !codes.includes(c) && Number(raw[`g${i}`]) > 0 && Number(raw[`d${i}`]) === 0)
+  if (!codes.length && !grouped.length) return
+  textColumns.push(...[...codes, ...grouped].map((c) => c.name))
+  await sendAll(`CREATE OR REPLACE TABLE ${quoteIdent(name)} AS SELECT * FROM ${read('')}`)
+  const list = (cs: { name: string }[]) => cs.map((c) => c.name).join(', ')
+  if (codes.length)
+    onNote?.(`${list(codes)} in ${fileName} ${codes.length === 1 ? 'holds codes' : 'hold codes'} longer than a number keeps (16 digits and more): read as text, every digit as written.`)
+  if (grouped.length)
+    onNote?.(
+      `${list(grouped)} in ${fileName} ${grouped.length === 1 ? 'writes' : 'write'} thousands with a point (1.500 is fifteen hundred), as the file writes decimals with a comma: read as text, to convert the comma way.`,
+    )
+}
+
+/**
+ * Two-digit years read as spreadsheets read them (and Sheetah's own date_from_text): 30–99 are 1930–1999,
+ * 00–29 are 2000–2029. The file reader puts 55 in 2055: a date of birth in the future. Only dates written
+ * with two digits for the year are moved (a loan's maturity written 2035 stays; one four-digit year found
+ * ends the look).
+ */
+async function twoDigitYears(name: string, read: (opts: string) => string, fileName: string, onNote?: Noted): Promise<void> {
+  const dated = (await columnTypes(name)).filter((c) => c.type === 'DATE' || c.type === 'TIMESTAMP')
+  if (!dated.length) return
+  const q = (c: { name: string }) => quoteIdent(c.name)
+  const one = async (sql: string) => ((await sendAll(sql)).toArray()[0]?.toJSON() ?? {}) as Record<string, unknown>
+  const late = await one(`SELECT ${dated.map((c, i) => `count(*) FILTER (WHERE year(${q(c)}) BETWEEN 2030 AND 2068)::DOUBLE AS f${i}`).join(', ')} FROM ${quoteIdent(name)}`)
+  const ahead = dated.filter((_, i) => Number(late[`f${i}`]) > 0)
+  const short: typeof ahead = []
+  for (const c of ahead) {
+    // A value with a four-digit year anywhere: not this. (Stops at the first one.)
+    const four = await sendAll(`SELECT 1 FROM ${read('all_varchar = true')} WHERE regexp_matches(trim(${q(c)}), '(^|[^0-9])[0-9]{4}([^0-9]|$)') LIMIT 1`)
+    if (!four.numRows) short.push(c)
+  }
+  if (!short.length) return
+  for (const c of short) await sendAll(`UPDATE ${quoteIdent(name)} SET ${q(c)} = ${q(c)} - INTERVAL 100 YEAR WHERE year(${q(c)}) BETWEEN 2030 AND 2068`)
+  onNote?.(`Two-digit years in ${short.map((c) => c.name).join(', ')} (${fileName}) are read as spreadsheets read them: 55 is 1955, 24 is 2024.`)
 }
 
 /**
@@ -373,7 +465,9 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
           }
         }
         await keepZeros(name, read, textColumns, file.name, onNote)
+        await keepAsWritten(name, read, textColumns, file.name, onNote)
         await readDates(name, virtualPath, read)
+        await twoDigitYears(name, read, file.name, onNote)
       } catch (e) {
         if (isCancel(e)) {
           await db.dropFile(virtualPath).catch(() => {})
@@ -424,7 +518,15 @@ function parseExcel(file: File): Promise<XlsxReply> {
 async function ingestExcel(file: File, taken: Set<string>, onNote?: Noted): Promise<string[]> {
   const reply = await parseExcel(file)
   if (!reply.ok) throw reply.plain ? new FileKindError(reply.error) : new Error(reply.error)
-  return ingestSheets(file, reply.sheets, taken, onNote)
+  const names = await ingestSheets(file, reply.sheets, taken, onNote)
+  // Cells the reader can only leave empty: said, so a sum isn't taken for the workbook's.
+  const { errors, uncached } = reply.blanks
+  const n = (x: number) => x.toLocaleString(LOCALE)
+  if (errors)
+    onNote?.(`${n(errors)} ${errors === 1 ? 'cell' : 'cells'} in ${file.name} ${errors === 1 ? 'holds' : 'hold'} an Excel error (#DIV/0!, #N/A, #REF!…): empty here, so sums leave ${errors === 1 ? 'it' : 'them'} out where Excel shows the error.`)
+  if (uncached)
+    onNote?.(`${n(uncached)} formula ${uncached === 1 ? 'cell' : 'cells'} in ${file.name} ${uncached === 1 ? 'has' : 'have'} no saved result (the program that wrote it didn’t calculate it): empty here. Open the file in Excel and save it, then open it again.`)
+  return names
 }
 
 /** An ".xls" that is a web page's table or Excel 2003 XML: read here (the browser parses markup). */
@@ -481,9 +583,17 @@ async function ingestSheets(file: File, sheets: XlsxSheet[], taken: Set<string>,
       datesGuessed.delete(name.toLowerCase())
       const path = sandboxPath(`${name}__sheet.csv`)
       await db.registerFileText(path, sheet.csv)
-      const read = (opts: string) => `read_csv_auto(${quoteLiteral(path)}, header = true${opts ? `, ${opts}` : ''})`
+      // Codes Excel holds as text (00123, 1E5, an ICCID's 20 digits) stay text: read as numbers, they'd change.
+      // (Names once each, ignoring case: the reader would refuse two. If it still refuses, read as before.)
+      const named = [...new Map((sheet.text ?? []).map((c) => [c.toLowerCase(), c])).values()]
+      let types = named.length ? `types = {${named.map((c) => `${quoteLiteral(c)}: 'VARCHAR'`).join(', ')}}` : ''
+      const read = (opts: string) => `read_csv_auto(${quoteLiteral(path)}, header = true${[types, opts].filter(Boolean).map((o) => `, ${o}`).join('')})`
       try {
-        await sendAll(`CREATE TABLE ${quoteIdent(name)} AS SELECT * FROM ${read('')}`)
+        await sendAll(`CREATE TABLE ${quoteIdent(name)} AS SELECT * FROM ${read('')}`).catch((e: unknown) => {
+          if (isCancel(e) || !types) throw e
+          types = ''
+          return sendAll(`CREATE TABLE ${quoteIdent(name)} AS SELECT * FROM ${read('')}`)
+        })
         await readDates(name, path, read).catch((e) => (isCancel(e) ? Promise.reject(e) : undefined))
       } finally {
         await db.dropFile(path).catch(() => {})

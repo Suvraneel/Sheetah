@@ -144,3 +144,57 @@ test('the fixes touch only the slip: not text, comments, IN lists, codes or othe
   const { quotedNames } = await import('../../src/engine/errors')
   expect(quotedNames(`SELECT state, sum(amount) AS amount FROM sh GROUP BY state UNION ALL SELECT 'amount', sum(amount) FROM sh`, ['state', 'amount'])).toBeNull()
 })
+
+test('a learner’s near-misses: dates settled by the whole query, columns not taken for text, TOP where it is', async () => {
+  // A financial year typed day first, with no LINE in DuckDB's message: from the query, both dates at once.
+  const fy = await tryIt(`SELECT count(*) AS n FROM sh WHERE d >= '01/04/2024' AND d <= '31/03/2025'`, { monthFirst: true })
+  expect(fy.text).not.toContain('in the data')
+  expect(fy.fixed).toBe(`SELECT count(*) AS n FROM sh WHERE d >= '2024-04-01' AND d <= '2025-03-31'`)
+  expect(fy.rows).toEqual([{ n: 3 }])
+  // > against a name that isn't a column: no fix that turns it into text.
+  const gt = await tryIt(`SELECT * FROM sh WHERE amount > price`)
+  expect(gt.fix).toBeUndefined()
+  expect(gt.text).not.toContain("'price'")
+  // An amount with its currency sign.
+  const money = await tryIt(`SELECT city FROM sh WHERE amount > ₹1000`)
+  expect(money.fixed).toBe(`SELECT city FROM sh WHERE amount > 1000`)
+  expect(money.rows).toEqual([{ city: 'Pune' }])
+  // TOP inside a WITH: said, not moved to the outer query (which would count every row).
+  const cte = await tryIt(`WITH t AS (SELECT TOP 2 city FROM sh ORDER BY amount DESC) SELECT count(*) FROM t`)
+  expect(cte.fix).toBeUndefined()
+  expect(cte.text).toContain('the SELECT it’s in')
+  const pct = await tryIt(`SELECT TOP 5 PERCENT * FROM sh`)
+  expect(pct.fix).toBeUndefined()
+  // India's grouping, LIMIT 1,000, a date the calendar doesn't have, FROM a SQL word.
+  const lakh = await tryIt(`SELECT count(*) AS n FROM sh WHERE amount < 10,00,000`)
+  expect(lakh.fixed).toBe(`SELECT count(*) AS n FROM sh WHERE amount < 1000000`)
+  const lim = await tryIt(`SELECT city FROM sh ORDER BY amount LIMIT 1,000`)
+  expect(lim.fixed).toBe(`SELECT city FROM sh ORDER BY amount LIMIT 1000`)
+  expect((await tryIt(`SELECT * FROM sh WHERE d = '2024-04-31'`)).text).toContain('isn’t a day on the calendar')
+  const word = explainError('Parser Error: syntax error at or near "order"\n\nLINE 1: SELECT * FROM order\n                    ^', { tables: ['orders'], sql: 'SELECT * FROM order' })
+  expect(applyFix('SELECT * FROM order', word.fix!)).toBe('SELECT * FROM orders')
+  expect(explainError('Parser Error: syntax error at or near "FROM"', { sql: 'SELECT * WHERE id = 1 FROM orders' }).text).toContain('FROM is in the wrong place')
+})
+
+test('names in single quotes: only whole items, every one at once, named by their clause', async () => {
+  const { quotedNames } = await import('../../src/engine/errors')
+  // 'total' inside a CASE is a value, not the column.
+  expect(quotedNames(`SELECT * FROM sh ORDER BY CASE WHEN state = 'amount' THEN 0 ELSE 1 END`, ['state', 'amount'])).toBeNull()
+  const both = await tryIt(`SELECT city, sum(amount) AS amount FROM sh GROUP BY 'city' ORDER BY 'amount' DESC`)
+  expect(both.text).toContain("GROUP BY 'city'")
+  expect(both.fixed).toBe(`SELECT city, sum(amount) AS amount FROM sh GROUP BY city ORDER BY amount DESC`)
+  expect(both.rows?.map((r) => r.city)).toEqual(['Pune', 'Goa', 'Delhi'])
+  const order = await tryIt(`SELECT city FROM sh ORDER BY 'amount' DESC`)
+  expect(order.text).toMatch(/^ORDER BY 'amount' sorts/)
+})
+
+test('FROM order means orders (not order_items); a bracket left open isn’t FROM out of place; LIMIT 100,200 isn’t guessed', async () => {
+  const word = explainError('Parser Error: syntax error at or near "order"', { tables: ['order_items', 'orders'], sql: 'SELECT * FROM order' })
+  expect(applyFix('SELECT * FROM order', word.fix!)).toBe('SELECT * FROM orders')
+  expect((await tryIt(`SELECT sum(amount FROM sh`)).text).toContain('bracket is left open')
+  expect((await tryIt(`SELECT CASE WHEN amount > 1 THEN 'a' FROM sh`)).text).toContain('CASE is left open')
+  expect((await tryIt(`SELECT * FROM WHERE amount > 1`)).text).toContain('A table’s name goes after FROM')
+  const pair = await tryIt(`SELECT city FROM sh LIMIT 100,200`)
+  expect(pair.fix).toBeUndefined()
+  expect(pair.text).toContain('LIMIT 200 OFFSET 100')
+})

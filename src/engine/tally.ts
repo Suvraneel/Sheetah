@@ -165,12 +165,12 @@ export function tallySheets(source: string, name = ''): { sheets: MarkupSheet[];
 }
 
 /** The same, as CSV for the file reader (as a workbook's sheets are). */
-export function tallyToCsv(source: string, name = ''): { sheets: { name: string; csv: string; rows: number; skipped: number }[]; notes: Note[] } {
+export function tallyToCsv(source: string, name = ''): { sheets: { name: string; csv: string; rows: number; skipped: number; text: string[] }[]; notes: Note[] } {
   const { sheets, notes } = tallySheets(source, name)
   return {
     sheets: sheets.flatMap((s) => {
-      const { csv, rows, skipped } = sheetToCsv(s.rows)
-      return csv ? [{ name: s.name, csv, rows, skipped }] : []
+      const { csv, rows, skipped, text } = sheetToCsv(s.rows)
+      return csv ? [{ name: s.name, csv, rows, skipped, text }] : []
     }),
     notes,
   }

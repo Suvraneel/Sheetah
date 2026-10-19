@@ -453,3 +453,75 @@ test.describe('dates that read both ways', () => {
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('2024-04-01 10:30')
   })
 })
+
+test.describe('numbers, codes and dates as the file means them', () => {
+  const csv = (name: string, text: string) => ({ name, mimeType: 'text/csv', buffer: Buffer.from(text) })
+  /** The one row a query gives (its first data row in the grid's mirror). */
+  const one = async (page: import('@playwright/test').Page, sql: string) => {
+    await runSql(page, sql)
+    await expect(page.locator('.result-meta')).toContainText('1 row')
+    return page.locator('.sr-grid [role=row]').nth(1)
+  }
+
+  test('1.500 in a file whose prices are 2,50 is fifteen hundred; long codes keep every digit; 55 is 1955', async ({ page }) => {
+    await openApp(page)
+    await page.locator('input[type=file]').setInputFiles([csv('de.csv', 'Artikel;Menge;Preis\nSchraube;1.500;2,50\nMutter;2.000;0,75\nBolzen;750;12,00\nScheibe;12.345;0,10\nDübel;3.000;1,25\n')])
+    await expect(page.locator('.toast', { hasText: 'Menge in de.csv writes thousands with a point' })).toBeVisible()
+    await expect(await one(page, 'SELECT sum(number_from_text_comma(Menge)) AS n FROM de')).toContainText('19,595')
+
+    await page.locator('input[type=file]').setInputFiles([csv('sims.csv', 'iccid,plan\n89911012000032045101,A\n89911012000032045102,B\n')])
+    await expect(page.locator('.toast', { hasText: 'iccid in sims.csv holds codes longer than a number keeps' })).toBeVisible()
+    await expect(await one(page, "SELECT iccid FROM sims WHERE plan = 'B'")).toContainText('89911012000032045102')
+
+    await page.locator('input[type=file]').setInputFiles([csv('people.csv', 'name,dob\nAsha,15/08/55\nRavi,01/12/62\nMeera,23/03/04\n')])
+    await expect(page.locator('.toast', { hasText: 'Two-digit years in dob (people.csv)' })).toBeVisible()
+    await expect(await one(page, 'SELECT string_agg(year(dob)::VARCHAR, \' \' ORDER BY name) AS y FROM people')).toContainText('1955 2004 1962')
+  })
+
+  test('a workbook’s text codes stay text, its times keep their minute, and its error cells are said', async ({ page }) => {
+    await openApp(page)
+    const { unzipSync, zipSync, strFromU8, strToU8 } = await import('fflate')
+    const cols = [
+      { name: 'ICCID', type: 'VARCHAR' },
+      { name: 'Part', type: 'VARCHAR' },
+      { name: 'At', type: 'TIMESTAMP' },
+      { name: 'Amount', type: 'DOUBLE' },
+    ]
+    // 01:00 as Excel stores it: 45383.041666666664, a hair under the hour.
+    const rows = [
+      ['89911012000032045101', '1E5', '2024-04-01 01:00:00', '10'],
+      ['89911012000032045102', '2E3', '2024-04-01 23:59:00', '20'],
+    ]
+    const book = await writeWorkbook([{ name: 'sims', src: { columns: cols, rowCount: rows.length, fetch: async (s, e) => rows.slice(s, e) } }])
+    const files = unzipSync(new Uint8Array(await book.arrayBuffer()))
+    const sheet = Object.keys(files).find((f) => /^xl\/worksheets\/sheet1\.xml$/.test(f))!
+    // A cell holding #DIV/0!, and the hour written as Excel writes it.
+    let xml = strFromU8(files[sheet])
+    xml = xml.replace(/(<c r="D3"[^>]*?)(?: t="n")?>\s*<v>[^<]*<\/v>\s*<\/c>/, '$1 t="e"><f>1/0</f><v>#DIV/0!</v></c>')
+    xml = xml.replace(/(<c r="C2"[^>]*>\s*<v>)[^<]*(<\/v>)/, '$145383.041666666664$2')
+    files[sheet] = strToU8(xml)
+    const bytes = Buffer.from(zipSync(files))
+    await page.locator('input[type=file]').setInputFiles([{ name: 'sims.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: bytes }])
+    await expect(page.locator('.toast', { hasText: '1 cell in sims.xlsx holds an Excel error' })).toBeVisible()
+    await expect(await one(page, `SELECT ICCID || ' ' || Part || ' ' || strftime("At", '%H:%M') AS v FROM sims WHERE Part = '1E5'`)).toContainText('89911012000032045101 1E5 01:00')
+  })
+
+  test('a vendor called TOTAL isn’t a total line; dates written 1st April 2024 aren’t notes', async ({ page }) => {
+    await openApp(page)
+    await page.locator('input[type=file]').setInputFiles([
+      csv('fuel.csv', 'Vendor,Amount,Note\nIndianOil,12000,city\nTOTAL,3000,\nHP,9000,highway\nTOTAL,3000,\nBPCL,12200,city\n'),
+    ])
+    await expect(page.locator('.result-meta')).toContainText('5 rows')
+    await expect(page.getByText('Checking for total lines…')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /total line/ })).toHaveCount(0)
+    await page.locator('input[type=file]').setInputFiles([
+      csv(
+        'spend.csv',
+        'Date,Item,Amount\n01/04/2024,Rent,30000\n1st April 2024,Food,2000\n02/04/2024,Fuel,1500\nApr-15-2024,Books,700\n03/04/2024,Tea,99\n04/04/2024,Taxi,400\n',
+      ),
+    ])
+    await expect(page.locator('.result-meta')).toContainText('6 rows')
+    await expect(page.getByText('Checking for total lines…')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /undated/ })).toHaveCount(0)
+  })
+})

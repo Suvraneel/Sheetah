@@ -74,12 +74,15 @@ export function numberText(t: string, comma: boolean, drcr = false): string {
   // for: on its own, "₹12 Cr" is twelve crore.
   const debit = drcr ? `regexp_matches(${t}, '[0-9)]\\s*[dD][rR]\\.?$')` : 'false'
   const crdr = drcr ? `regexp_replace(${t}, '([0-9)])\\s*([cC][rR]|[dD][rR])\\.?$', '\\1')` : t
-  const unmarked = marksOff(crdr)
+  // The currency in letters too: "Rs. 25,000", "INR 7,500", "1,200/-" (as cheques write it).
+  const unmarked = `regexp_replace(${marksOff(crdr)}, '^\\s*(rs\\.|rs\\s|inr|usd|eur|gbp)\\s*|\\s*(inr|usd|eur|gbp|/-)\\s*$', '', 'gi')`
   const noCurrency = `regexp_replace(${unmarked}, '[₹$€£¥${comma ? '\\s\u00a0\u202f' : ''}]', '', 'g')`
   const grouped = comma
     ? noCurrency
     : `CASE WHEN regexp_full_match(trim(${noCurrency}), '[-+(]?[0-9]{1,3}([ \u00a0\u202f][0-9]{3})+(\\.[0-9]+)?\\)?') THEN regexp_replace(${noCurrency}, '[ \u00a0\u202f]', '', 'g') ELSE ${noCurrency} END`
-  const negative = `regexp_replace(trim(${grouped}), '^\\(\\s*(.*?)\\s*\\)$', '-\\1')`
+  // (1,200.00) and 1,200.00- (a trailing minus, as SAP and some ledgers write it) are negative: with a
+  // separator in it, so 2024- or 60- (a range, a year) isn't read as minus anything.
+  const negative = `regexp_replace(regexp_replace(trim(${grouped}), '^\\(\\s*(.*?)\\s*\\)$', '-\\1'), '^([0-9][0-9.,]*[.,][0-9]+)\\s*-$', '-\\1')`
   // A separator followed by anything but three digits isn't a thousands separator (two are allowed
   // before another comma: Indian grouping, 1,00,000).
   const badGroup = comma ? `'\\.([0-9]{0,2}([^0-9]|$)|[0-9]{4})'` : `',([0-9]?([^0-9]|$)|[0-9]{2}([^0-9,]|$)|[0-9]{4})'`

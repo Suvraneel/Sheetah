@@ -70,3 +70,21 @@ test('text that differs only in capitals or spaces is looked up, and written the
     `SELECT * FROM nr WHERE email IS NULL OR city IS NOT NULL OR note >= NULL`,
   )
 })
+
+test('names after an alias, and = \'\' where the empty cells are NULL', async () => {
+  const sql = `SELECT * FROM nr o WHERE o.paid_at = '2024-04-01'`
+  expect(await count(sql)).toBe(0)
+  const [why] = noRowsReasons(sql, cols)
+  expect(why.fixed).toBe(`SELECT * FROM nr o WHERE o.paid_at::DATE = '2024-04-01'`)
+  expect(await count(why.fixed!)).toBe(1)
+  const city = `SELECT * FROM nr AS o WHERE o.city = 'pune'`
+  const [p] = probes(city, cols)
+  expect(p).toMatchObject({ column: 'city', value: 'pune' })
+  const empty = `SELECT * FROM nr WHERE email = ''`
+  expect(await count(empty)).toBe(0)
+  const [e] = noRowsReasons(empty, cols)
+  expect(e.fixed).toBe(`SELECT * FROM nr WHERE (email IS NULL OR email = '')`)
+  expect(await count(e.fixed!)).toBe(1)
+  // <> NULL is put right as IS NOT NULL, and the button says so.
+  expect(noRowsReasons(`SELECT * FROM nr WHERE email <> NULL`, cols)[0].label).toBe('Use IS NOT NULL')
+})
