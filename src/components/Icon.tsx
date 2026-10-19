@@ -73,12 +73,18 @@ export function BtnIcon({ name = 'arrowRight' }: { name?: IconName }) {
 export function Logo({ size = 22 }: { size?: number }) {
   return (
     <svg className="logo" width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
-      <rect x="3.5" y="3.5" width="17" height="17" rx="5" stroke="currentColor" strokeWidth="1.25" />
-      <path d="M3.5 9.5h17M9.5 9.5v11" stroke="currentColor" strokeWidth="1.25" opacity="0.55" />
-      {/* Cheetah spots on a sheet */}
-      <circle cx="13.4" cy="13.6" r="1.55" fill="currentColor" />
-      <circle cx="17.4" cy="14.9" r="1.1" fill="currentColor" />
-      <circle cx="14.9" cy="17.7" r="1.2" fill="currentColor" />
+      {/* Sheets + cheetah: the sheet is the head, its tabs the ears; the tear lines are its columns, the muzzle a row */}
+      <path
+        d="M10.2 5.6h3.6l3.4-2.4q1.1-.7 1.3.6l.4 4.4Q21 10.2 21 13.2V15q0 6.2-6 6.2H9q-6 0-6-6.2v-1.8q0-3 2.1-5l.4-4.4q.2-1.3 1.3-.6z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <path d="M3.3 16.4h17.4" stroke="currentColor" strokeWidth="1.5" opacity="0.45" />
+      <ellipse cx="8.9" cy="11.3" rx="1.3" ry="1.15" fill="currentColor" />
+      <ellipse cx="15.1" cy="11.3" rx="1.3" ry="1.15" fill="currentColor" />
+      <path d="M8.5 12.3c.3 2.9-.2 5.8-1.3 8.5M15.5 12.3c-.3 2.9.2 5.8 1.3 8.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <path d="M10.7 13.9h2.6L12 15.5z" fill="currentColor" stroke="currentColor" strokeWidth="0.6" strokeLinejoin="round" />
     </svg>
   )
 }
