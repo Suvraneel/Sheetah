@@ -1,7 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getEngine, sqlName } from './engine/db'
 import { ageingColumns, ledgerColumn, type AgeingColumns, monthlySql, signedAmount, signedNote, statementColumns } from './engine/statement'
-import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent, stackLabel, WORDS } from './engine/sql'
+import { isIdLike, isNumericType, isTemporal, LOCALE, quoteIdent, quoteLiteral, stackLabel, WORDS } from './engine/sql'
 import { ACCEPTED, dateOrders, datesGuessed, listTables, type TableMeta } from './engine/tables'
 import { FileKindError } from './engine/load-errors'
 // Reading a file (CSV, Excel, Tally…) is loaded when one is opened, or when the page is idle.
@@ -128,8 +128,11 @@ const remembering = () => {
 const KEEP_KEY = 'sheetah:keep-tables'
 /** With tables kept: where the work was (the query on screen and its steps, each table's steps), to come back to. */
 const WORK_KEY = 'sheetah:kept-work'
+/** A WITH that ends in a change (WITH r AS (…) UPDATE sales …): its words outside quotes say so. */
+const withChange = (st: string) => /^\s*(--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*with\b/i.test(st) && /\b(insert|update|delete|merge)\b/i.test(st.replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"/g, ''))
 /** One statement that only reads (SELECT, WITH, a pivot…): safe to run again on its own. Never a CREATE, DELETE, DROP. */
-const readsOnly = (sql: string) => splitStatements(sql).length === 1 && /^\s*(--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*(SELECT|WITH|FROM|PIVOT|UNPIVOT|VALUES|TABLE|SUMMARIZE|DESCRIBE)\b/i.test(sql)
+const readsOnly = (sql: string) =>
+  splitStatements(sql).length === 1 && /^\s*(--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*(SELECT|WITH|FROM|PIVOT|UNPIVOT|VALUES|TABLE|SUMMARIZE|DESCRIBE)\b/i.test(sql) && !withChange(sql)
 const EDITOR_KEY = 'sheetah:editor-height'
 const editorElement = () => document.getElementById('sql-editor')
 const STARTERS_KEY = 'sheetah:starters'
@@ -385,13 +388,23 @@ export default function App() {
     const cols = meta.columns.map((c) => ({ ...c, numeric: isNumericType(c.type) }))
     // A moment later, so the grid's first rows aren't queued behind a scan of the whole table.
     const t = window.setTimeout(() => {
-      Promise.all([import('./engine/pivot'), import('./components/starters')])
-        .then(([pivot, s]) =>
-          pivot
-            .cardinalities(`SELECT * FROM ${sqlName(meta.name)}`, cols)
-            .catch(() => ({}) as Record<string, number>)
-            .then((counts) => s.startersFor(meta.name, cols.map((c) => ({ ...c, distinct: counts[c.name] })), meta.rows ?? undefined)),
-        )
+      Promise.all([import('./engine/pivot'), import('./components/starters'), import('./engine/clean-scan')])
+        .then(async ([pivot, s, cs]) => {
+          const counts = await pivot.cardinalities(`SELECT * FROM ${sqlName(meta.name)}`, cols).catch(() => ({}) as Record<string, number>)
+          // How text figures write decimals (an amount still text: "1,145.84", or "2.250,50"), as they say.
+          const texts = cols.filter((c) => /^VARCHAR/i.test(c.type)).slice(0, 40)
+          const comma: Record<string, boolean | null> = {}
+          if (texts.length) {
+            const row = await getEngine()
+              .then(({ conn }) => conn.query(cs.decimalsSql(sqlName(meta.name), texts.map((c) => quoteIdent(c.name)))))
+              .then((t) => t.toArray()[0]?.toJSON() as Record<string, unknown> | undefined)
+              .catch(() => undefined)
+            const stats = row ? texts.map((c, i) => ({ name: c.name, s: cs.readStats(row, i) })) : []
+            const file = cs.fileDecimalComma(stats)
+            for (const { name, s: st } of stats) comma[name] = st.commaOnly > 0 && st.pointOnly === 0 ? true : st.pointOnly > 0 && st.commaOnly === 0 ? false : (file ?? null)
+          }
+          return s.startersFor(meta.name, cols.map((c) => ({ ...c, distinct: counts[c.name], comma: comma[c.name] })), meta.rows ?? undefined)
+        })
         .then((list) => live && setStarterLists((all) => ({ ...all, [starterKey]: list })))
         .catch(() => {})
     }, 600)
@@ -506,7 +519,7 @@ export default function App() {
       setError(null)
       setMenu(null)
       const changesData = splitStatements(sql).some(
-        (st) => !/^(\(|with\b|select\b|from\b|values\b|describe\b|show\b|summarize\b|explain\b|pivot\b|unpivot\b|table\b)/i.test(st.replace(/^(\s|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)*/, '')),
+        (st) => !/^(\(|with\b|select\b|from\b|values\b|describe\b|show\b|summarize\b|explain\b|pivot\b|unpivot\b|table\b)/i.test(st.replace(/^(\s|--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)*/, '')) || withChange(st),
       )
       try {
         const run = runSql(sql, { isCurrent: () => seq === runSeq.current && cancelledSeq.current !== seq })
@@ -888,7 +901,9 @@ export default function App() {
             for (const [k, v] of work.steps as [string, { ops: Ops; sig: string }][]) if (typeof k === 'string' && v?.ops && typeof v.sig === 'string') stepsByTable.current.set(k, v)
           const wb = typeof work.base === 'string' ? work.base : ''
           const from = wb ? referencedTables(wb, metas.map((t) => t.name)) : []
-          if (wb && from.length && readsOnly(wb) && work.ops && typeof work.ops === 'object') {
+          // Read-only, as DuckDB itself says (a change can't sit inside a subquery), before it runs again.
+          const reads = wb && readsOnly(wb) ? await getEngine().then(({ conn }) => conn.query(`SELECT * FROM (\n${wb}\n) LIMIT 0`)).then(() => true, () => false) : false
+          if (reads && from.length && work.ops && typeof work.ops === 'object') {
             const wops = { ...emptyOps(), ...(work.ops as Partial<Ops>) }
             const run = compose(wb, wops)
             setEditor(run)
@@ -1300,14 +1315,21 @@ export default function App() {
         taken.add(name.toLowerCase())
         return name
       })
+      // By position (#1, #2…), not by the names the file gave them: next year's file titles its columns
+      // "… 2015 to 2024", and a saved view of this still runs on it. But only while row N still says the
+      // same: a release whose years have moved on (2016 … 2025 under the same places) stops with a reason,
+      // rather than putting 2016's figures under 2015.
+      const said = row.values.map((v) => (v ?? '').trim().replace(/\s+/g, ' '))
+      const differs = said.map((v, i) => `coalesce(regexp_replace(trim(#${i + 1}::VARCHAR), '\\s+', ' ', 'g'), '') IS DISTINCT FROM ${quoteLiteral(v)}`).join(' OR ')
+      const why = `Row ${r + 1} no longer names the columns as it did (${said.filter(Boolean).slice(0, 4).join(', ')}…): use row ${r + 1} as column names again`
       runDerived(
         [
           `-- Row ${r + 1} as the column names`,
-          // By position (#1, #2…), not by the names the file gave them: next year's file titles its columns
-          // "… 2015 to 2024", and a saved view of this still runs on it.
+          `WITH __sheetah_src AS (SELECT *, row_number() OVER () AS __sheetah_row FROM (\n${rows}\n))`,
           `SELECT ${row.columns.map((_, i) => `#${i + 1} AS ${quoteIdent(names[i])}`).join(', ')}`,
-          `FROM (SELECT *, row_number() OVER () AS __sheetah_row FROM (\n${rows}\n))`,
+          'FROM __sheetah_src',
           `WHERE __sheetah_row > ${r + 1}`,
+          `  AND (SELECT CASE WHEN ${differs} THEN error(${quoteLiteral(why)}) END FROM __sheetah_src WHERE __sheetah_row = ${r + 1}) IS NULL`,
           'ORDER BY __sheetah_row',
         ].join('\n'),
         { label: `Row ${r + 1} as column names`, asTable: true },

@@ -3,7 +3,7 @@
  * numbers or dates stored as text and how sure that is, total lines and empty rows, groups to fill down,
  * and the tie-out of total lines against the rows they total.
  */
-import { DATE_FORMATS, isConversion, textOf, type Clean, type TieOut } from './clean'
+import { DATE_FORMATS, isConversion, marksOff, textOf, type Clean, type TieOut } from './clean'
 import { isIdLike, LOCALE, nameKey, quoteLiteral } from './sql'
 
 /** A running balance's name ("Closing Balance", "Bal"), as statement.ts reads one. */
@@ -213,8 +213,8 @@ function statsItems(ref: string, p: string): string[] {
     `count(*) FILTER (WHERE regexp_full_match(regexp_replace(${v}, '[₹$€£¥\\s]', '', 'g'), '[-+(]?[0-9]{1,3}(,[0-9]{3})+\\)?'))::DOUBLE AS ${p}amb_comma`,
     `count(*) FILTER (WHERE regexp_full_match(lower(${v}), ${PLACEHOLDER}))::DOUBLE AS ${p}placeholders`,
     `count(*) FILTER (WHERE regexp_full_match(regexp_replace(${v}, '[₹$€£¥\\s]', '', 'g'), '[-+(]?[0-9]{1,3}(\\.[0-9]{3})+\\)?'))::DOUBLE AS ${p}amb_point`,
-    `count(*) FILTER (WHERE ${v} LIKE '%\\%' ESCAPE '\\' AND percent_from_text(${ref}) IS NOT NULL)::DOUBLE AS ${p}percents`,
-    `count(*) FILTER (WHERE ${v} LIKE '%\\%' ESCAPE '\\' AND percent_from_text_comma(${ref}) IS NOT NULL)::DOUBLE AS ${p}comma_percents`,
+    `count(*) FILTER (WHERE trim(${marksOff(v)}) LIKE '%\\%' ESCAPE '\\' AND percent_from_text(${ref}) IS NOT NULL)::DOUBLE AS ${p}percents`,
+    `count(*) FILTER (WHERE trim(${marksOff(v)}) LIKE '%\\%' ESCAPE '\\' AND percent_from_text_comma(${ref}) IS NOT NULL)::DOUBLE AS ${p}comma_percents`,
     ...DATE_FORMATS.map((f, i) => {
       const hit = `try_strptime(${v}, ${quoteLiteral(f.format)}) IS NOT NULL`
       return `count(*) FILTER (WHERE ${hit}${f.format.includes('%Y') ? ` AND regexp_matches(${v}, '[0-9]{4}')` : ''})::DOUBLE AS ${p}d${i}`

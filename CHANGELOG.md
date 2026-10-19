@@ -202,10 +202,11 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
 
 ### Changed
 - **Kept tables come back with the work**: with *Keep my tables* on, a reload brings back the query on screen (a
-  stack, a pivot, a table with its steps) and each table's steps, not just the tables. Only a query that reads is
-  run again (never a CREATE or DELETE).
-- Example queries sum an amount still written as text (*Amount by customer*, read as a number) rather than passing
-  it over for the quantity beside it.
+  stack, a pivot, a table with its steps) and each table's steps, not just the tables. Only a query that reads, as
+  DuckDB itself says, is run again (never a CREATE, DELETE, or a WITH … UPDATE).
+- Example queries sum an amount still written as text (*Amount by customer*, read as a number, with a decimal comma
+  where its figures use one) rather than passing it over for the quantity beside it; not when nothing says how
+  its decimals are written.
 - **Excel exports are about 40% faster and smaller**: each distinct text is written once (shared strings, as Excel
   does), the checksum comes from the browser's own compressor, and the page draws between every thousand rows
   instead of freezing on a million.
@@ -290,7 +291,8 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   - Figures with notes on them (*92,338[note 3]*, *108,021 (p)*, *56\**) and thousands grouped by spaces (*1 234 567*)
     became empty; they're read as the figures they are. Placeholders for no figure (*x*, *..*, *:*, *-*, *c*) become
     empty in the one-click conversion, and the column menu says how many.
-  - One suppressed "x" on line 350,003 stopped a file opening: that column is read as text (said), nothing lost.
+  - One suppressed "x" on line 350,003 stopped a file opening: the file is read again looking at every line (said),
+    so those columns are text and nothing is lost.
   - Codes with zeros in front only further down a big file (ZIP 00020, FIPS 01001 after 56001) lost them: read as
     text, said so.
   - A browser that writes decimal commas read a UK file's *194,661* as 194.661 in one click (1000× too small), and
@@ -301,13 +303,15 @@ All notable changes. Dates are release dates; versions follow [semver](https://s
   - Hiding an empty column no longer takes away *Turn N year columns into rows*; *CSV* writes 224918, not 224918.0,
     and leaves a lone "-" alone.
   - A saved view with *Use row 4 as column names* runs on next year's release (its columns are taken by position,
-    not by the title the file gave them), and running a view says which columns the new file has that the view
-    doesn't (*new in mye_2024, not in the view: 2024*).
+    not by the title the file gave them) while row 4 still names them the same; when the years have moved on, it
+    stops and says so rather than putting 2016's figures under 2015. Running a view says which columns the new
+    file has that the view doesn't (*new in mye_2024, not in the view: 2024*).
   - A Census file's NAME column of counties isn't flagged as people's names.
-- **Security**: a script could define a macro named for a built-in (*sha256* as md5, *lower*) or for one of Sheetah's
-  own, so Anonymize's pseudonyms or masks quietly stopped protecting anything while their SQL read the same. Such a
-  macro is removed straight away (and said), Sheetah's own are put back, and pseudonym() calls the built-ins by their
-  catalog name. *CSV* (safe for Excel) now also quotes a column name that would start a formula and every column
+- **Security**: a script could define a macro named for a built-in (*sha256* as md5, *right*, even *duckdb_functions*
+  to hide the others) or change one of Sheetah's own, so Anonymize's pseudonyms or masks quietly stopped protecting
+  anything while their SQL read the same. After every script, however the macro was made (IMPORT DATABASE too), the
+  catalog is read by its system name, such a macro is removed (and said), and Sheetah's own and the pseudonym key
+  are put back; pseudonym() calls the built-ins by their catalog name. *CSV* (safe for Excel) now also quotes a column name that would start a formula and every column
   that isn't a number, date or true/false (a union, a list); cells copied from the grid are pasted the same way.
   Query history is kept on the computer only when *Remember queries in this browser* is ticked (history kept before
   stays). Community extensions and persistent secrets are switched off before the engine is sealed.

@@ -114,8 +114,7 @@ test.describe('saved views and local data', () => {
     expect(await page.evaluate(() => localStorage.getItem('sheetah:history'))).toBeNull()
     await page.locator('.history-controls input').check()
     await runSql(page, "SELECT * FROM sales_oct WHERE region = 'North'")
-    await expect(page.locator('.result-meta')).toBeVisible()
-    expect(await page.evaluate(() => localStorage.getItem('sheetah:history'))).toContain('North')
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('sheetah:history'))).toContain('North')
 
     await page.locator('.history-controls input').uncheck()
     expect(await page.evaluate(() => localStorage.getItem('sheetah:history'))).toBeNull()

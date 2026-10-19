@@ -66,13 +66,15 @@ export const textOf = (ref: string) => `trim(${ref}::VARCHAR)`
  * (1 234 567; any, when commas mark decimals: 1 234,56), so a phone number like "98200 12345" isn't
  * mistaken for one. A statistics office's marks after a figure go too: 1,234[note 3], 108,021 (p), 56*.
  */
+/** A figure without a statistics office's marks after it: [note 3], [x], (p) provisional, (r) revised, (e), *; one or several. */
+export const marksOff = (t: string) => `regexp_replace(${t}, '(\\s*(\\[[^\\]]{1,20}\\]|\\((p|r|e|f|est|prov|provisional|revised|estimated?)\\)|\\*+))+\\s*$', '', 'i')`
+
 export function numberText(t: string, comma: boolean, drcr = false): string {
   // "50,000.00 Cr" / "1,200.00 Dr": a bank statement's credit and debit, plus and minus. Only when asked
   // for: on its own, "₹12 Cr" is twelve crore.
   const debit = drcr ? `regexp_matches(${t}, '[0-9)]\\s*[dD][rR]\\.?$')` : 'false'
   const crdr = drcr ? `regexp_replace(${t}, '([0-9)])\\s*([cC][rR]|[dD][rR])\\.?$', '\\1')` : t
-  // Footnote marks and flags: [note 3], [x], (p) provisional, (r) revised, (e) estimated, a trailing *.
-  const unmarked = `regexp_replace(${crdr}, '\\s*(\\[[^\\]]{1,20}\\]|\\((p|r|e|f|est|prov|provisional|revised|estimated?)\\)|\\*+)\\s*$', '', 'i')`
+  const unmarked = marksOff(crdr)
   const noCurrency = `regexp_replace(${unmarked}, '[₹$€£¥${comma ? '\\s\u00a0\u202f' : ''}]', '', 'g')`
   const grouped = comma
     ? noCurrency
@@ -99,8 +101,8 @@ export const CLEAN_MACROS: string[] = [
   `CREATE OR REPLACE TEMP MACRO number_from_text(x) AS TRY_CAST(${numberText(T, false)} AS DOUBLE)`,
   `CREATE OR REPLACE TEMP MACRO number_from_text_comma(x) AS TRY_CAST(${numberText(T, true)} AS DOUBLE)`,
   `CREATE OR REPLACE TEMP MACRO number_from_cr_dr(x) AS TRY_CAST(${numberText(T, false, true)} AS DOUBLE)`,
-  `CREATE OR REPLACE TEMP MACRO percent_from_text(x) AS TRY_CAST(${numberText(`rtrim(${T}, '%')`, false)} AS DOUBLE) / 100`,
-  `CREATE OR REPLACE TEMP MACRO percent_from_text_comma(x) AS TRY_CAST(${numberText(`rtrim(${T}, '%')`, true)} AS DOUBLE) / 100`,
+  `CREATE OR REPLACE TEMP MACRO percent_from_text(x) AS TRY_CAST(${numberText(`rtrim(trim(${marksOff(T)}), '%')`, false)} AS DOUBLE) / 100`,
+  `CREATE OR REPLACE TEMP MACRO percent_from_text_comma(x) AS TRY_CAST(${numberText(`rtrim(trim(${marksOff(T)}), '%')`, true)} AS DOUBLE) / 100`,
   // %Y also reads "24" as the year 24: only values with a four-digit year qualify. Two-digit years are
   // read as spreadsheets read them: 30–99 are 1930–1999, 00–29 are 2000–2029.
   `CREATE OR REPLACE TEMP MACRO date_from_text(x, fmt) AS CASE

@@ -1,7 +1,7 @@
 import { DuckDBDataProtocol } from '@duckdb/duckdb-wasm'
 import { CancelledError, ensureExtension, getEngine, isCancel, quoteIdent, quoteLiteral, sandboxPath, sendAll, withRunLock } from './db'
 import { FileKindError } from './load-errors'
-import { isIdLike, LOCALE, nameKey, tableNameFor } from './sql'
+import { LOCALE, nameKey, tableNameFor } from './sql'
 import { dateOrders, datesGuessed } from './tables'
 import type { XlsxReply, XlsxSheet } from './xlsx.worker'
 
@@ -175,11 +175,14 @@ const CODE_COLUMN = /(^|_)(fips|geoid|geo_id|zcta|ags|ars|nuts\d?|lsoa\w*|msoa\w
  * which every reader of the file reads as text from then on.
  */
 async function keepZeros(name: string, read: (opts: string) => string, textColumns: string[], fileName: string, onNote?: Noted): Promise<void> {
-  const ints = (await columnTypes(name)).filter((c) => /^(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT|UTINYINT|USMALLINT|UINTEGER|UBIGINT)$/.test(c.type) && (isIdLike(c.name) || CODE_COLUMN.test(nameKey(c.name))))
+  const named = (await columnTypes(name)).filter((c) => /^(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT|UTINYINT|USMALLINT|UINTEGER|UBIGINT)$/.test(c.type) && CODE_COLUMN.test(nameKey(c.name)))
+  if (!named.length) return
+  // A file the reader looked over whole (its sample is 20,480 rows) has its codes typed right already; and
+  // codes that lost a zero are shorter than the rest (1001 among 56001): only then is the file read again.
+  const r0 = (await sendAll(`SELECT count(*)::DOUBLE AS n, ${named.map((c, i) => `(min(length(${quoteIdent(c.name)}::VARCHAR)) <> max(length(${quoteIdent(c.name)}::VARCHAR)))::INTEGER AS v${i}`).join(', ')} FROM ${quoteIdent(name)}`)).toArray()[0]?.toJSON() as Record<string, number>
+  if (Number(r0?.n ?? 0) <= 20_000) return
+  const ints = named.filter((_, i) => Number(r0[`v${i}`]) === 1)
   if (!ints.length) return
-  // A file the reader looked over whole (its sample is 20,480 rows) has its codes typed right already.
-  const rows = Number((await sendAll(`SELECT count(*)::DOUBLE AS n FROM ${quoteIdent(name)}`)).toArray()[0]?.toJSON().n ?? 0)
-  if (rows <= 20_000) return
   const r = (await sendAll(`SELECT ${ints.map((c, i) => `bool_or(regexp_matches(${quoteIdent(c.name)}, '^\\s*0[0-9]'))::INTEGER AS z${i}`).join(', ')} FROM ${read('all_varchar = true')}`)).toArray()[0]?.toJSON() as
     | Record<string, number | null>
     | undefined
@@ -279,13 +282,16 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
     // as text, nothing lost. Every way of reading the file reads them so.
     const asText: { column: string; line: string; value: string }[] = []
     const textColumns: string[] = []
-    const typesOpt = () => (textColumns.length ? `types = {${textColumns.map((c) => `${quoteLiteral(c)}: 'VARCHAR'`).join(', ')}}` : '')
+    // First, the whole file looked at to type its columns (not just its first rows); only if that still
+    // trips, the columns named one by one.
+    let wholeFile: { line: string; value: string } | null = null
+    const typesOpt = () => [wholeFile ? 'sample_size = -1' : '', textColumns.length ? `types = {${textColumns.map((c) => `${quoteLiteral(c)}: 'VARCHAR'`).join(', ')}}` : ''].filter(Boolean).join(', ')
     const withTypes = (opts: string) => [typesOpt(), opts].filter(Boolean).join(', ')
     const fromNames = (t: { sep: string; skip: number }, opts = '') =>
       `read_csv(${quoteLiteral(virtualPath)}, delim = ${quoteLiteral(t.sep)}, header = true, skip = ${t.skip}, null_padding = true, strict_mode = false${withTypes(opts) ? `, ${withTypes(opts)}` : ''})`
     try {
       for (;;) {
-        const from = fn === 'read_csv_auto' && asText.length ? `read_csv_auto(${quoteLiteral(virtualPath)}, ${typesOpt()})` : source
+        const from = fn === 'read_csv_auto' && typesOpt() ? `read_csv_auto(${quoteLiteral(virtualPath)}, ${typesOpt()})` : source
         try {
           await sendAll(materialize ? `CREATE TABLE ${quoteIdent(name)} AS SELECT * FROM ${from}` : `CREATE VIEW ${quoteIdent(name)} AS SELECT * FROM ${from}`)
           break
@@ -293,10 +299,20 @@ function ingestRead(file: File, taken: Set<string>, onNote?: Noted): Promise<str
           const msg = e instanceof Error ? e.message : String(e)
           const late = fn === 'read_csv_auto' && !isCancel(e) ? /Error when converting column "([^"]+)"\. Could not convert string "([^"]*)"/.exec(msg) : null
           if (!late || asText.length >= 8 || asText.some((c) => c.column === late[1])) throw e
-          asText.push({ column: late[1], value: late[2], line: /CSV Error on Line: (\d+)/.exec(msg)?.[1] ?? '' })
+          const where = { value: late[2], line: /CSV Error on Line: (\d+)/.exec(msg)?.[1] ?? '' }
+          if (!wholeFile) {
+            wholeFile = where
+            continue
+          }
+          asText.push({ column: late[1], ...where })
           textColumns.push(late[1])
         }
       }
+      const w = wholeFile as { line: string; value: string } | null
+      if (w && !asText.length)
+        onNote?.(
+          `${file.name} has something other than numbers far down (“${w.value}”${w.line ? ` on line ${Number(w.line).toLocaleString(LOCALE)}` : ''}): read again looking at every line, so nothing is lost. Convert to numbers from a column’s menu.`,
+        )
       if (asText.length)
         onNote?.(
           `${asText.map((c) => c.column).join(', ')} in ${file.name} ${asText.length === 1 ? 'has' : 'have'} something other than numbers further down (“${asText[0].value}”${asText[0].line ? ` on line ${Number(asText[0].line).toLocaleString(LOCALE)}` : ''}): read as text, so nothing is lost. Convert to numbers from the column’s menu.`,

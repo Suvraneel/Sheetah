@@ -115,8 +115,7 @@ export function runSql(sql: string, opts: { isCurrent?: () => boolean } = {}): P
   return withRunLock(async () => {
     // Queued behind a file load or another query and superseded meanwhile: don't run it at all.
     if (opts.isCurrent && !opts.isCurrent()) throw new CancelledError()
-    if (!/\b(MACRO|FUNCTION)\b/i.test(sql)) return runLocked(sql)
-    // A script that makes macros: none may stand in for a built-in or for Sheetah's own (see unshadow).
+    // After every script, whatever it says: no macro may stand in for a built-in or for Sheetah's own (see unshadow).
     let res: ResultSet | undefined
     let failed: unknown
     try {
@@ -124,10 +123,10 @@ export function runSql(sql: string, opts: { isCurrent?: () => boolean } = {}): P
     } catch (e) {
       failed = e
     }
-    const names = await unshadow(sql).catch(() => [] as string[])
+    const names = await unshadow().catch(() => [] as string[])
     if (names.length)
       throw new Error(
-        `Sheetah doesn’t let a macro take the name of ${names.length === 1 ? 'a built-in function or one of its own' : 'built-in functions or its own'} (${names.join(', ')}): it would quietly change what Anonymize and the clean-up steps compute. ${names.length === 1 ? 'It was' : 'They were'} removed.`,
+        `Sheetah doesn’t let a script redefine a built-in function or one of its own (${names.join(', ')}): it would quietly change what Anonymize and the clean-up steps compute. Sheetah’s own were put back.`,
       )
     if (failed !== undefined) throw failed
     return res!

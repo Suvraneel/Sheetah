@@ -34,6 +34,9 @@ export interface StarterColumn {
   type: string
   /** Approximate distinct values (from the table), when known. */
   distinct?: number
+  /** For text: how its figures write decimals, as its values (or the file's other columns) say: a comma, a
+   * point, or null when nothing says (1.500 could be either). */
+  comma?: boolean | null
 }
 
 // Anchored: INTEGER[] or DATE[] (lists, from JSON or Parquet) can't be summed or bucketed by month.
@@ -77,15 +80,16 @@ export function startersFor(table: string, cols: StarterColumn[], rows?: number)
     )
   // An amount still written as text ("1,145.84" in a QuickBooks report) that sounds more like the amount than
   // the numbers do (Amount beside Qty): summed read as a number, not passed over for Qty.
+  // Only when its figures say how they write decimals: "1.500" alone could be 1.5 or fifteen hundred.
   const textAmount = cols
-    .filter((c) => TEXT.test(c.type) && !/BOOLEAN/i.test(c.type) && amountLike(c) && !/%$/.test(c.name.trim()) && rank(c.name, MEASURE_WORDS) < MEASURE_WORDS.length)
+    .filter((c) => TEXT.test(c.type) && !/BOOLEAN/i.test(c.type) && typeof c.comma === 'boolean' && amountLike(c) && !/%$/.test(c.name.trim()) && rank(c.name, MEASURE_WORDS) < MEASURE_WORDS.length)
     .sort((a, b) => rank(a.name, MEASURE_WORDS) - rank(b.name, MEASURE_WORDS))[0]
   const measure = textAmount && (!numeric || rank(textAmount.name, MEASURE_WORDS) < rank(numeric.name, MEASURE_WORDS)) ? textAmount : numeric
   const category = cols
     .filter((c) => TEXT.test(c.type) && c.distinct !== undefined && c.distinct >= 2 && c.distinct <= 60 && !amountLike(c))
     .sort((a, b) => rank(a.name, CATEGORY_WORDS) - rank(b.name, CATEGORY_WORDS) || (a.distinct ?? 0) - (b.distinct ?? 0))[0]
   const time = cols.find((c) => TEMPORAL.test(c.type) && !/birth|dob/i.test(c.name))
-  const m = measure && (measure === textAmount ? `number_from_text(${sqlName(measure.name)})` : sqlName(measure.name))
+  const m = measure && (measure === textAmount ? `number_from_text${textAmount.comma ? '_comma' : ''}(${sqlName(measure.name)})` : sqlName(measure.name))
   const total = measure && sqlName(`total_${measure.name.replace(/\W+/g, '_').toLowerCase()}`)
   const out: Starter[] = []
 

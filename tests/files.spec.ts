@@ -326,17 +326,28 @@ test.describe('open data, as statistics offices publish it', () => {
     await expect(row(2)).not.toContainText('x') // a suppressed figure is empty, never 0
   })
 
-  test('a suppressed figure far down doesn’t stop the file opening; codes with zeros further down stay codes', async ({ page }) => {
+  test('a suppressed figure far down doesn’t stop the file opening', async ({ page }) => {
     await openApp(page)
-    const lines = ['area_code,population']
-    for (let i = 0; i < 30_000; i++) lines.push(`${56001 + i},${1000 + i}`)
-    lines.push('01001,x')
+    const lines = ['area_code,population,households']
+    for (let i = 0; i < 30_000; i++) lines.push(`${56001 + i},${1000 + i},${400 + i}`)
+    lines.push('01001,x,[x]')
     await page.locator('input[type=file]').setInputFiles([buf('pop_long.csv', `${lines.join('\n')}\n`)])
     await expect(page.locator('.result-meta')).toContainText('30,001 rows')
-    await expect(page.locator('.toast', { hasText: 'read as text, so nothing is lost' })).toBeVisible()
-    await expect(page.locator('.toast', { hasText: 'area_code in pop_long.csv is a code' })).toBeVisible()
+    await expect(page.locator('.toast', { hasText: 'so nothing is lost' })).toBeVisible()
     await runSql(page, "SELECT count(*) FILTER (WHERE area_code = '01001') AS zeros_kept, typeof(any_value(population)) AS t FROM pop_long")
     await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('1VARCHAR')
+  })
+
+  test('codes with zeros in front only further down a big file stay codes', async ({ page }) => {
+    await openApp(page)
+    const lines = ['zip_code,population']
+    for (let i = 0; i < 30_000; i++) lines.push(`${56001 + i},${1000 + i}`)
+    lines.push('01001,58805')
+    await page.locator('input[type=file]').setInputFiles([buf('zips.csv', `${lines.join('\n')}\n`)])
+    await expect(page.locator('.result-meta')).toContainText('30,001 rows')
+    await expect(page.locator('.toast', { hasText: 'zip_code in zips.csv is a code' })).toBeVisible()
+    await runSql(page, "SELECT count(*) AS zeros_kept FROM zips WHERE zip_code = '01001'")
+    await expect(page.locator('.sr-grid [role=row]').nth(1)).toContainText('1')
   })
 })
 

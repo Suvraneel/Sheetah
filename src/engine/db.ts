@@ -82,6 +82,9 @@ export function getEngine(): Promise<Engine> {
     for (const c of [conn, runConn]) await definePseudonym(c, sessionKey)
     // number_from_text(), date_from_text()…: what clean-up steps write, so their SQL stays readable.
     for (const c of [conn, runConn]) for (const m of CLEAN_MACROS) await c.query(m)
+    // How Sheetah's own macros read, to know them again after any script (see unshadow).
+    for (const r of (await runConn.query(`SELECT function_name AS f, macro_definition AS d FROM system.main.duckdb_functions() WHERE database_name = 'temp' AND function_name IN (${[...OWN_MACROS].map((n) => `'${n}'`).join(', ')})`)).toArray())
+      ownDefinitions.set(String(r.toJSON().f), String(r.toJSON().d))
 
     return { db, conn, runConn, extensions: { parquet, json }, sealed: true }
   })()
@@ -119,28 +122,37 @@ async function definePseudonym(c: duckdb.AsyncDuckDBConnection, key: string) {
 
 /** Sheetah's own macros: the clean-up steps' (number_from_text…) and pseudonym(). */
 const OWN_MACROS = new Set(['pseudonym', ...CLEAN_MACROS.map((m) => /MACRO\s+(\w+)/i.exec(m)?.[1]?.toLowerCase() ?? '')])
+/** Their definitions as made at start (macro_definition), to tell them from a script's of the same name. */
+const ownDefinitions = new Map<string, string>()
 
 /**
- * After SQL that makes macros: one named for a built-in (a "sha256" that's really md5, a "lower" that isn't)
- * or for one of Sheetah's own would quietly change what Anonymize and the clean-up steps compute, though
- * their SQL reads the same. Such macros are dropped and Sheetah's own put back; the names are returned so
- * the user is told. (Call inside the run lock.)
+ * After every script: a macro named for a built-in (a "sha256" that's really md5, a "right" that returns
+ * the whole phone number), or one of Sheetah's own changed, dropped or copied elsewhere, would quietly
+ * change what Anonymize and the clean-up steps compute, though their SQL reads the same. However it was
+ * made (CREATE MACRO, or a file read back with IMPORT DATABASE), such a macro is dropped and Sheetah's own
+ * are put back; the names are returned so the user is told. The catalog is read by its system name, so a
+ * macro called duckdb_functions can't hide anything. (Call inside the run lock.)
  */
-export async function unshadow(sql: string): Promise<string[]> {
+export async function unshadow(): Promise<string[]> {
   const { runConn } = await getEngine()
-  const found = (
+  const own = [...OWN_MACROS].map((n) => `'${n}'`).join(', ')
+  const rows = (
     await runConn.query(
-      `SELECT DISTINCT database_name AS db, schema_name AS s, function_name AS f, function_type AS t FROM duckdb_functions() WHERE NOT internal AND function_name IN (SELECT function_name FROM duckdb_functions() WHERE internal)`,
+      `SELECT database_name AS db, schema_name AS s, function_name AS f, function_type AS t, macro_definition AS d FROM system.main.duckdb_functions()
+       WHERE NOT internal AND (function_name IN (SELECT function_name FROM system.main.duckdb_functions() WHERE internal) OR function_name IN (${own}))`,
     )
   )
     .toArray()
-    .map((r) => r.toJSON() as { db: string; s: string; f: string; t: string })
-  for (const m of found) await runConn.query(`DROP MACRO ${m.t === 'table_macro' ? 'TABLE ' : ''}IF EXISTS ${qi(m.db)}.${qi(m.s)}.${qi(m.f)}`)
-  // Ours, made again whatever the SQL did to them.
-  const mine = [...sql.matchAll(/\b(?:MACRO|FUNCTION)\s+(?:TABLE\s+)?(?:[\w"]+\.)*"?(\w+)"?/gi)].map((x) => x[1].toLowerCase()).filter((n) => OWN_MACROS.has(n))
+    .map((r) => r.toJSON() as { db: string; s: string; f: string; t: string; d: string | null })
+  const ours = (r: (typeof rows)[number]) => OWN_MACROS.has(r.f) && r.db === 'temp' && r.s === 'main' && r.d === ownDefinitions.get(r.f)
+  const bad = rows.filter((r) => !ours(r))
+  const missing = [...OWN_MACROS].filter((n) => !rows.some((r) => r.f === n && ours(r)))
+  const key = String((await runConn.query(`SELECT system.main.getvariable('sheetah_key') AS k`)).toArray()[0]?.toJSON().k ?? '')
+  if (!bad.length && !missing.length && key === sessionKey) return []
+  for (const m of bad) await runConn.query(`DROP MACRO ${m.t === 'table_macro' ? 'TABLE ' : ''}IF EXISTS ${qi(m.db)}.${qi(m.s)}.${qi(m.f)}`)
   for (const m of CLEAN_MACROS) await runConn.query(m)
   await definePseudonym(runConn, sessionKey)
-  return [...new Set([...found.map((m) => m.f), ...mine])]
+  return [...new Set([...bad.map((m) => m.f), ...missing, ...(key === sessionKey ? [] : ['the pseudonym key'])])]
 }
 
 export function keepsPseudonymKey(): boolean {

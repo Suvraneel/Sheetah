@@ -26,6 +26,9 @@ test.describe('clean a column (run on DuckDB)', () => {
       '92338.0', '108021.0', '56.0', '1234567.0', '55259929.5', null, null, null, null,
     ])
     expect(await clean({ kind: 'number', comma: true }, ['1 234,5 (r)', '718.420[note 1]'])).toEqual(['1234.5', '718420.0'])
+    // Several marks; marks after a percent sign; a negative in brackets with a mark.
+    expect(await clean({ kind: 'number' }, ['1,234 [note 3] (p)', '(250) (p)'])).toEqual(['1234.0', '-250.0'])
+    expect(await clean({ kind: 'percent' }, ['12.5% (p)', '12.5%*'])).toEqual(['0.125', '0.125'])
   })
 
   test('a separator in the wrong place is never read as a thousands separator', async () => {

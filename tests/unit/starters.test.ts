@@ -64,8 +64,12 @@ test('a statement’s amounts stored as text are no categories, however they are
 
 test('an amount still written as text is summed as a number, not passed over for the quantity', async () => {
   await q(`CREATE OR REPLACE TABLE qbr AS SELECT ['Acme', 'Beta', 'Cyan'][1 + i % 3] AS customer, (i % 7 + 1) AS qty, '1,' || lpad((i * 37 % 1000)::VARCHAR, 3, '0') || '.50' AS "Amount" FROM range(30) t(i)`)
-  const starters = startersFor('qbr', await columnsOf('qbr'), 30)
+  const cols = (await columnsOf('qbr')).map((c) => (c.name === 'Amount' ? { ...c, comma: false } : c))
+  const starters = startersFor('qbr', cols, 30)
   expect(starters.map((s) => s.label)).toEqual(['Amount by customer', 'Top 10 by Amount', 'Summary of every column'])
   const rows = await q(starters[0].sql)
   expect(rows.reduce((n, r) => n + Number(r.total_amount), 0)).toBeGreaterThan(30_000)
+  // Written with decimal commas: read that way. And when nothing says which, not offered at all.
+  expect(startersFor('qbr', cols.map((c) => (c.name === 'Amount' ? { ...c, comma: true } : c)), 30)[0].sql).toContain('number_from_text_comma("Amount")')
+  expect(startersFor('qbr', cols.map((c) => (c.name === 'Amount' ? { ...c, comma: null } : c)), 30)[0].label).toBe('qty by customer')
 })
