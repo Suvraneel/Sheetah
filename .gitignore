@@ -27,3 +27,4 @@ tests/.fixtures/
 test-results/
 playwright-report/
 Claude outputs/
+brag-output/
